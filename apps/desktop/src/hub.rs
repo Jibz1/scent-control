@@ -25,7 +25,7 @@ use tokio::time::{Instant, sleep, sleep_until};
 
 use crate::ble::{self, BleHandle, Reply};
 use crate::mqtt::{self, BrokerSettings, MqttHandle};
-use crate::route::{TransportPref, ble_worth_trying, route, why_no_route};
+use crate::route::{TransportPref, ble_known, route, why_no_route};
 use crate::state::{AppState, DeviceView, Event, unix_now};
 
 /// How long a Bluetooth scan listens.
@@ -310,8 +310,9 @@ struct Shared<T> {
     state: Arc<Mutex<AppState>>,
     events: Sender<Event>,
     repaint: Arc<dyn Fn() + Send + Sync>,
-    /// When Bluetooth last failed to reach each diffuser, by device ID. Auto stays
-    /// off Bluetooth for a while after that (see `route::ble_worth_trying`).
+    /// When Bluetooth last failed to reach each diffuser, by device ID. While the
+    /// broker is connected, Auto stays off Bluetooth for a while after that (see
+    /// `route::ble_known`).
     ble_failed: Mutex<HashMap<String, i64>>,
 }
 
@@ -361,15 +362,19 @@ impl<T: Transport> Shared<T> {
     async fn deliver(&self, device_id: &str, work: &Work, pref: TransportPref) -> bool {
         let (ble_id, heard_ble) = self.ble_target(device_id);
         let failed_at = lock(&self.ble_failed).get(device_id).copied();
-        // A forced Bluetooth ignores the cool-down: the person asked for it.
-        let ble_known = ble_id.is_some()
-            && (pref == TransportPref::Bluetooth
-                || ble_worth_trying(failed_at, heard_ble, unix_now()));
         let on_broker = self.transport.broker_route_id().is_some();
-        let ways = route(pref, ble_known, on_broker);
+        let bluetooth = ble_known(
+            pref,
+            ble_id.is_some(),
+            failed_at,
+            heard_ble,
+            on_broker,
+            unix_now(),
+        );
+        let ways = route(pref, bluetooth, on_broker);
         if ways.is_empty() {
             let what = work.name(pref.first_choice());
-            self.failed(Some(device_id), what, why_no_route(pref, ble_id.is_some()));
+            self.failed(Some(device_id), what, why_no_route(pref));
             return false;
         }
 
@@ -1358,6 +1363,27 @@ mod tests {
         assert_eq!(rig.fake().labels()[0], "ble ble-1 TURN_ON");
         let events = rig.events();
         assert_eq!(sent(&events)[0].0, Via::Bluetooth);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_the_broker_auto_still_tries_bluetooth_after_a_failure() {
+        // No broker: there is no WiFi to fall back to, so skipping Bluetooth would only
+        // turn a slow command into a certain failure.
+        let rig = Rig::new().device(ONE, Some("ble-1"));
+        rig.fake()
+            .script_ble([Ble::After(Duration::ZERO, Err("Timed out.".to_owned()))]);
+        let on = Work::send(Command::TurnOn { on: true });
+
+        assert!(!rig.shared.deliver(ONE, &on, TransportPref::Auto).await);
+        rig.fake().clear();
+        rig.events();
+
+        assert!(rig.shared.deliver(ONE, &on, TransportPref::Auto).await);
+        assert_eq!(
+            rig.fake().labels(),
+            ["ble ble-1 TURN_ON", "ble ble-1 TURN_ON done"]
+        );
+        assert_eq!(sent(&rig.events())[0].0, Via::Bluetooth);
     }
 
     #[tokio::test(start_paused = true)]
