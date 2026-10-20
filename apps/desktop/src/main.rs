@@ -44,6 +44,10 @@ mod secrets;
 mod store;
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod transport;
+
+#[cfg(target_os = "macos")]
 use app::ScentApp;
 
 #[cfg(target_os = "macos")]
