@@ -25,7 +25,7 @@ use tokio::time::{Instant, sleep, sleep_until};
 
 use crate::ble::Reply;
 use crate::mqtt::BrokerSettings;
-use crate::route::{TransportPref, ble_known, route, why_no_route};
+use crate::route::{TransportPref, ble_known, route, why_no_route, wifi_available};
 use crate::state::{AppState, DeviceView, Event, unix_now};
 use crate::transport::{Radios, Transport, lock};
 
@@ -46,6 +46,14 @@ const RECHECK_BROKER: Duration = Duration::from_secs(1);
 const NO_BROKER_PASSWORD: &str = "No broker password saved. Add it in Settings (if you already did, the Keychain couldn't be read).";
 
 const BLUETOOTH_STOPPED: &str = "Bluetooth stopped before it answered.";
+
+/// How long the hub waits for Bluetooth to answer before it counts as failed. The
+/// worker bounds every step itself (a failed connect takes about 13 s, plus a few
+/// seconds of I/O), so this only keeps one stuck request from holding a diffuser's
+/// queue for good if that ever stops being true.
+const BLUETOOTH_BACKSTOP: Duration = Duration::from_secs(30);
+
+const LOST_JOBS: &str = "An earlier command to this diffuser stopped unexpectedly, so it and any commands queued behind it were dropped. This one is not affected.";
 
 const TIME_SYNC_FAILED: &str = "The schedule went out, but the time sync after it didn't, so the diffuser may not run it yet. Send the schedule again.";
 
@@ -204,14 +212,24 @@ impl Work {
     }
 }
 
+/// What the state says about one diffuser that decides how to reach it.
+#[derive(Default)]
+struct Target {
+    ble_id: Option<String>,
+    /// When it was last heard over Bluetooth.
+    heard_ble: Option<i64>,
+    /// Whether it is known to be on WiFi (the rule for pinging it, `on_wifi`).
+    on_wifi: bool,
+}
+
 /// What every task of the hub shares.
 struct Shared<T> {
     transport: T,
     state: Arc<Mutex<AppState>>,
     events: Sender<Event>,
     repaint: Arc<dyn Fn() + Send + Sync>,
-    /// When Bluetooth last failed to reach each diffuser, by device ID. While the
-    /// broker is connected, Auto stays off Bluetooth for a while after that (see
+    /// When Bluetooth last failed to reach each diffuser, by device ID. While WiFi can
+    /// take over, Auto stays off Bluetooth for a while after that (see
     /// `route::ble_known`).
     ble_failed: Mutex<HashMap<String, i64>>,
 }
@@ -245,14 +263,16 @@ impl<T: Transport> Shared<T> {
         });
     }
 
-    /// A diffuser's Bluetooth ID and when it was last heard over Bluetooth, copied out
-    /// of the state so that the lock is let go at once.
-    fn ble_target(&self, device_id: &str) -> (Option<String>, Option<i64>) {
+    /// What the state says about a diffuser that decides the route, copied out so that
+    /// the lock is let go at once. A diffuser the state does not know has none of it.
+    fn target(&self, device_id: &str) -> Target {
         lock(&self.state)
             .devices
             .get(device_id)
-            .map_or((None, None), |device| {
-                (device.ble_id.clone(), device.heard_ble)
+            .map_or_else(Target::default, |device| Target {
+                ble_id: device.ble_id.clone(),
+                heard_ble: device.heard_ble,
+                on_wifi: on_wifi(device),
             })
     }
 
@@ -260,18 +280,24 @@ impl<T: Transport> Shared<T> {
     /// when one fails. Emits `Sent` for the one that worked, and one `Failed` for
     /// whatever failed on the way. True when it got there.
     async fn deliver(&self, device_id: &str, work: &Work, pref: TransportPref) -> bool {
-        let (ble_id, heard_ble) = self.ble_target(device_id);
+        let Target {
+            ble_id,
+            heard_ble,
+            on_wifi,
+        } = self.target(device_id);
         let failed_at = lock(&self.ble_failed).get(device_id).copied();
+        // The broker being up does not mean this diffuser is on it.
         let on_broker = self.transport.broker_route_id().is_some();
+        let wifi = wifi_available(pref, on_broker, on_wifi, ble_id.is_some());
         let bluetooth = ble_known(
             pref,
             ble_id.is_some(),
             failed_at,
             heard_ble,
-            on_broker,
+            wifi,
             unix_now(),
         );
-        let ways = route(pref, bluetooth, on_broker);
+        let ways = route(pref, bluetooth, wifi);
         if ways.is_empty() {
             let what = work.name(pref.first_choice());
             self.failed(Some(device_id), what, why_no_route(pref));
@@ -422,11 +448,16 @@ impl<T: Transport> Shared<T> {
     }
 }
 
-/// How a Bluetooth request ended. A reply that never comes means the worker is gone.
+/// How a Bluetooth request ended. A reply that never comes means the worker is gone,
+/// and one that takes longer than [`BLUETOOTH_BACKSTOP`] counts as a failure.
 async fn answer(reply: Reply) -> Result<(), String> {
-    reply
-        .await
-        .unwrap_or_else(|_| Err(BLUETOOTH_STOPPED.to_owned()))
+    match tokio::time::timeout(BLUETOOTH_BACKSTOP, reply).await {
+        Ok(answered) => answered.unwrap_or_else(|_| Err(BLUETOOTH_STOPPED.to_owned())),
+        Err(_) => Err(format!(
+            "Bluetooth didn't answer in {} s.",
+            BLUETOOTH_BACKSTOP.as_secs()
+        )),
+    }
 }
 
 /// The transport to try next: the first one on the route that has not failed yet.
@@ -583,8 +614,11 @@ impl<T: Transport> Dispatcher<T> {
             Ok(()) => return,
             Err(SendError(job)) => job,
         };
-        // The queue's task is gone, which only happens if it panicked. Start a new one
-        // rather than lose the job: a fresh task has not run yet, so it takes it.
+        // The queue's task is gone, which only happens if it panicked. It took with it
+        // the job it was running and every job queued behind that one, so say so, and
+        // start a new queue for this job: a fresh task has not run yet, so it takes it.
+        self.shared
+            .failed(Some(&device_id), "Hub".to_owned(), LOST_JOBS.to_owned());
         self.queues.remove(&device_id);
         let _ = self.queue(&device_id).send(job);
     }
@@ -855,6 +889,10 @@ mod tests {
         After(Duration, Result<(), String>),
         /// The worker went away without answering.
         Dies,
+        /// The worker never answers, though it is still there.
+        Never,
+        /// Whatever handles the request panics.
+        Panics,
     }
 
     /// A transport that touches neither Bluetooth nor the network. It notes what it is
@@ -867,6 +905,8 @@ mod tests {
         wifi_commands: Mutex<Vec<(String, Command)>>,
         route_id: Mutex<Option<String>>,
         reconnects: Mutex<Vec<(String, bool)>>,
+        /// Reply senders kept alive so that their replies stay unanswered.
+        held: Mutex<Vec<oneshot::Sender<Result<(), String>>>>,
     }
 
     impl Fake {
@@ -879,6 +919,7 @@ mod tests {
                 wifi_commands: Mutex::new(Vec::new()),
                 route_id: Mutex::new(None),
                 reconnects: Mutex::new(Vec::new()),
+                held: Mutex::new(Vec::new()),
             }
         }
 
@@ -915,6 +956,12 @@ mod tests {
                 None => (Duration::ZERO, Ok(())),
                 Some(Ble::After(delay, result)) => (delay, result),
                 Some(Ble::Dies) => return reply,
+                Some(Ble::Never) => {
+                    lock(&self.held).push(answer);
+                    return reply;
+                }
+                // Unwinds without the panic hook, so nothing is printed.
+                Some(Ble::Panics) => std::panic::resume_unwind(Box::new("panicked on purpose")),
             };
             let (calls, began) = (Arc::clone(&self.calls), self.began);
             tokio::spawn(async move {
@@ -988,6 +1035,12 @@ mod tests {
             let mut view = DeviceView::new(id);
             view.ble_id = ble_id.map(str::to_owned);
             lock(&self.state).devices.insert(id.to_owned(), view);
+            self
+        }
+
+        /// Says the diffuser has WiFi set up, as its info string does.
+        fn on_wifi(self, id: &str) -> Rig {
+            lock(&self.state).devices.get_mut(id).unwrap().info = Some(info(id, true));
             self
         }
 
@@ -1184,7 +1237,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_bluetooth_failure_falls_back_to_wifi_with_one_failed_line() {
-        let rig = Rig::new().device(ONE, Some("ble-1"));
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
         rig.broker_up();
         rig.fake().script_ble([Ble::After(
             secs(13),
@@ -1233,7 +1286,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn after_a_bluetooth_failure_auto_skips_it_for_a_while_but_forced_bluetooth_does_not() {
-        let rig = Rig::new().device(ONE, Some("ble-1"));
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
         rig.broker_up();
         rig.fake()
             .script_ble([Ble::After(Duration::ZERO, Err("Timed out.".to_owned()))]);
@@ -1287,8 +1340,126 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn when_both_routes_fail_it_is_one_failed_line() {
+    async fn a_diffuser_that_is_not_on_wifi_is_never_sent_to_over_the_broker() {
+        // Found by a scan and not on WiFi yet. The broker is up, but this diffuser is
+        // not on it: a publish to its topic would be accepted and heard by nobody, and
+        // reported as sent.
+        for wifi_configured in [None, Some(false)] {
+            let rig = Rig::new().device(ONE, Some("ble-1"));
+            lock(&rig.state).devices.get_mut(ONE).unwrap().info =
+                wifi_configured.map(|configured| info(ONE, configured));
+            rig.broker_up();
+            rig.fake()
+                .script_ble([Ble::After(Duration::ZERO, Err("Timed out.".to_owned()))]);
+            let on = Work::send(Command::TurnOn { on: true });
+
+            assert!(!rig.shared.deliver(ONE, &on, TransportPref::Auto).await);
+            let events = rig.events();
+            assert!(sent(&events).is_empty(), "{events:?}");
+            assert_eq!(
+                failed(&events),
+                [(
+                    Some(ONE.to_owned()),
+                    "Bluetooth TURN_ON".to_owned(),
+                    "Timed out.".to_owned()
+                )]
+            );
+            assert_eq!(
+                rig.fake().labels(),
+                ["ble ble-1 TURN_ON", "ble ble-1 TURN_ON done"]
+            );
+            rig.fake().clear();
+
+            // Nor does the failure start a cool-down: Bluetooth is tried again at once.
+            assert!(rig.shared.deliver(ONE, &on, TransportPref::Auto).await);
+            assert_eq!(
+                rig.fake().labels(),
+                ["ble ble-1 TURN_ON", "ble ble-1 TURN_ON done"]
+            );
+            assert_eq!(sent(&rig.events())[0].0, Via::Bluetooth);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_diffuser_with_no_bluetooth_id_is_sent_to_over_the_broker_even_if_not_known_on_wifi()
+    {
+        // Nothing else could reach it, and the broker is how it first shows up.
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        let on = Work::send(Command::TurnOn { on: true });
+        assert!(rig.shared.deliver(ONE, &on, TransportPref::Auto).await);
+        assert_eq!(sent(&rig.events())[0].0, Via::Wifi);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_bluetooth_reply_that_never_comes_is_a_failure_after_30_s() {
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        rig.broker_up();
+        rig.fake().script_ble([Ble::Never]);
+        let started = Instant::now();
+
+        let on = Work::send(Command::TurnOn { on: true });
+        // The outer limit only turns a hang into a failed assertion.
+        let done =
+            tokio::time::timeout(secs(120), rig.shared.deliver(ONE, &on, TransportPref::Auto))
+                .await;
+
+        assert_eq!(done, Ok(true), "WiFi took over");
+        assert_eq!(started.elapsed(), secs(30));
+        let lines = failed(&rig.events());
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].2.contains("didn't answer"), "{}", lines[0].2);
+        assert!(lines[0].2.contains("went over WiFi"), "{}", lines[0].2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_scan_that_never_answers_is_reported_after_30_s() {
+        let rig = Rig::new();
+        rig.fake().script_ble([Ble::Never]);
+        let started = Instant::now();
+
+        let scanned = tokio::time::timeout(secs(120), rig.shared.scan()).await;
+
+        assert!(scanned.is_ok(), "the scan was waited for without end");
+        assert_eq!(started.elapsed(), secs(30));
+        let lines = failed(&rig.events());
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, None);
+        assert_eq!(lines[0].1, "Bluetooth scan");
+        assert!(lines[0].2.contains("didn't answer"), "{}", lines[0].2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn commands_lost_with_a_dead_queue_are_reported_and_the_next_one_still_goes() {
         let rig = Rig::new().device(ONE, Some("ble-1"));
+        // The first command panics inside the queue's task, taking the one queued
+        // behind it down with it.
+        rig.fake().script_ble([Ble::Panics]);
+        let hub = rig.serve();
+        hub.send(turn_on(ONE, true, TransportPref::Auto)).unwrap();
+        hub.send(turn_on(ONE, false, TransportPref::Auto)).unwrap();
+        settle().await;
+        assert!(sent(&rig.events()).is_empty());
+
+        // The next command finds the queue dead. It says what was lost, and goes.
+        hub.send(turn_on(ONE, true, TransportPref::Auto)).unwrap();
+        settle().await;
+        let events = rig.events();
+        let lines = failed(&events);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0.as_deref(), Some(ONE));
+        assert_eq!(lines[0].1, "Hub");
+        assert!(lines[0].2.contains("dropped"), "{}", lines[0].2);
+        // The Bluetooth frame keeps its `-|` terminator.
+        assert_eq!(
+            sent(&events),
+            [(Via::Bluetooth, format!("{TURN_ON_FRAME}-|"), Some(true))]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn when_both_routes_fail_it_is_one_failed_line() {
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
         rig.broker_up();
         rig.fake()
             .script_ble([Ble::After(Duration::ZERO, Err("No answer.".to_owned()))]);
@@ -1378,7 +1549,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_bluetooth_worker_that_went_away_counts_as_a_failure() {
-        let rig = Rig::new().device(ONE, Some("ble-1"));
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
         rig.broker_up();
         rig.fake().script_ble([Ble::Dies]);
 
@@ -1400,9 +1571,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn reading_the_status_follows_the_same_route() {
-        let rig = Rig::new().device(ONE, Some("ble-1"));
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
         rig.broker_up();
         let hub = rig.serve();
+        // The diffuser is on WiFi, so it is pinged now and then; leave those out.
+        let pings = |label: &String| !label.ends_with(" PING");
+        let events = || -> Vec<Event> {
+            let mut all = rig.events();
+            all.retain(|event| !matches!(event, Event::Pinged { .. }));
+            all
+        };
 
         // Bluetooth reads what the diffuser last reported. Nothing is written, so
         // there is no `Sent`.
@@ -1411,11 +1589,12 @@ mod tests {
         })
         .unwrap();
         settle().await;
+        let labels: Vec<String> = rig.fake().labels().into_iter().filter(pings).collect();
         assert_eq!(
-            rig.fake().labels(),
+            labels,
             ["ble ble-1 read status", "ble ble-1 read status done"]
         );
-        assert!(rig.events().is_empty());
+        assert!(events().is_empty());
         rig.fake().clear();
 
         // When Bluetooth fails, GET_STATUS goes over WiFi.
@@ -1426,22 +1605,19 @@ mod tests {
         })
         .unwrap();
         settle().await;
-        let events = rig.events();
+        let events = events();
         assert_eq!(failed(&events)[0].1, "Bluetooth read status");
         let status = sent(&events);
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].0, Via::Wifi);
         assert!(status[0].1.contains("GET_STATUS"), "{status:?}");
-        assert!(
-            rig.fake()
-                .labels()
-                .contains(&"wifi TESTDEVICE01 GET_STATUS".to_owned())
-        );
+        let labels = rig.fake().labels();
+        assert!(labels.contains(&"wifi TESTDEVICE01 GET_STATUS".to_owned()));
     }
 
     #[tokio::test(start_paused = true)]
     async fn sent_events_never_carry_a_password() {
-        let rig = Rig::new().device(ONE, Some("ble-1"));
+        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
         rig.broker_up();
         rig.fake()
             .script_ble([Ble::After(Duration::ZERO, Err("No answer.".to_owned()))]);

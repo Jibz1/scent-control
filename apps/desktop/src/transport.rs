@@ -90,7 +90,7 @@ impl Transport for Radios {
     }
 
     fn reconnect(&self, settings: BrokerSettings, password: Option<Secret>) {
-        // The old worker goes first, so two logins never overlap.
+        // The old worker is told to stop first, so it is not left logged in beside the new one.
         let old = lock(&self.broker).take();
         drop(old);
         let Some(password) = password else { return };
@@ -109,4 +109,75 @@ impl Transport for Radios {
 /// these locks guard stays usable, and the hub must not die of it.
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::channel;
+
+    use scent_core::Secret;
+
+    use super::*;
+
+    const ID: &str = "TESTDEVICE01";
+
+    /// An address `mqtt::spawn` turns down before it loads any certificate, so it
+    /// starts no worker and touches no network.
+    fn unparseable() -> BrokerSettings {
+        BrokerSettings {
+            url: "ws://not-encrypted.example.test/mqtt".to_owned(),
+            ..BrokerSettings::default()
+        }
+    }
+
+    fn refused(radios: &Radios) -> String {
+        radios.wifi_send(ID, &Command::GetStatus).unwrap_err()
+    }
+
+    // The Bluetooth worker `Radios::new` starts is idle: it creates no
+    // `btleplug::Manager` until its first request, and these tests make none.
+    #[test]
+    fn a_broker_that_never_connected_is_not_up_and_refuses_sends() {
+        let (events, received) = channel();
+        let radios = Radios::new(events, Arc::new(|| {}));
+
+        // Nothing started yet.
+        assert_eq!(radios.broker_route_id(), None);
+        assert!(refused(&radios).contains("Not connected"));
+
+        // A worker slot exists, but its handle never started. The route ID is offered
+        // only while the broker is connected, so it is still `None`: this is all that
+        // separates "a worker exists" from "the broker is up".
+        radios.reconnect(unparseable(), Some(Secret::new("x".to_owned())));
+        assert!(lock(&radios.broker).is_some());
+        assert_eq!(radios.broker_route_id(), None);
+        assert!(refused(&radios).contains("Not connected"));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(Event::BrokerDisconnected(_))
+        ));
+    }
+
+    #[test]
+    fn reconnecting_without_a_password_drops_the_old_worker_and_starts_none() {
+        let (events, _received) = channel();
+        let radios = Radios::new(events, Arc::new(|| {}));
+        radios.reconnect(unparseable(), Some(Secret::new("x".to_owned())));
+        assert!(lock(&radios.broker).is_some());
+
+        radios.reconnect(unparseable(), None);
+
+        assert!(lock(&radios.broker).is_none());
+        assert_eq!(radios.broker_route_id(), None);
+        assert!(refused(&radios).contains("Not connected"));
+    }
+
+    #[test]
+    fn a_bad_device_id_is_refused_by_the_broker_handle() {
+        let (events, _received) = channel();
+        let radios = Radios::new(events, Arc::new(|| {}));
+        radios.reconnect(unparseable(), Some(Secret::new("x".to_owned())));
+        let error = radios.wifi_send("#", &Command::GetStatus).unwrap_err();
+        assert!(error.contains("device ID"), "{error}");
+    }
 }

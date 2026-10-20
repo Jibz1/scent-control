@@ -30,8 +30,8 @@ impl TransportPref {
 }
 
 /// The transports to try, in order. `ble_known` is whether Bluetooth is worth trying
-/// for this diffuser (see [`ble_known`]); `on_broker` is whether the broker is
-/// connected. Only available transports are
+/// for this diffuser (see [`ble_known`]); `on_broker` is whether WiFi is a way to it
+/// (see [`wifi_available`]: the broker is connected, and this diffuser can use it). Only available transports are
 /// kept. Auto is Bluetooth first, then WiFi; a forced transport has no fallback.
 pub fn route(pref: TransportPref, ble_known: bool, on_broker: bool) -> Vec<Via> {
     let bluetooth = ble_known.then_some(Via::Bluetooth);
@@ -58,23 +58,38 @@ pub fn ble_worth_trying(failed_at: Option<i64>, heard_ble: Option<i64>, now: i64
     }
 }
 
+/// Whether WiFi is a way to this diffuser, the `on_broker` argument of [`route`] and
+/// [`ble_known`]. The broker must be connected. A forced WiFi is the person's call.
+/// For Auto the diffuser must also be on WiFi (`device_on_wifi`), or have no Bluetooth
+/// ID: the broker is up whether or not this diffuser is on it, and a publish to the
+/// topic of a diffuser that is not would be accepted, reported as sent, and heard by
+/// nobody.
+pub fn wifi_available(
+    pref: TransportPref,
+    on_broker: bool,
+    device_on_wifi: bool,
+    has_ble_id: bool,
+) -> bool {
+    on_broker && (pref == TransportPref::Wifi || device_on_wifi || !has_ble_id)
+}
+
 /// The `ble_known` argument of [`route`]: whether to count Bluetooth as available.
 /// It needs a Bluetooth ID. A forced Bluetooth is then always tried, as the person
 /// asked for it. Auto tries it unless [`ble_worth_trying`] says to leave it alone, and
-/// only when the broker is connected: with no WiFi to fall back to there is nothing to
-/// save by skipping Bluetooth, and skipping it would turn a slow command into a
-/// certain failure.
+/// only when `wifi` is available ([`wifi_available`]): with no WiFi to fall back to
+/// there is nothing to save by skipping Bluetooth, and skipping it would turn a slow
+/// command into a certain failure.
 pub fn ble_known(
     pref: TransportPref,
     has_ble_id: bool,
     failed_at: Option<i64>,
     heard_ble: Option<i64>,
-    on_broker: bool,
+    wifi: bool,
     now: i64,
 ) -> bool {
     has_ble_id
         && (pref == TransportPref::Bluetooth
-            || !on_broker
+            || !wifi
             || ble_worth_trying(failed_at, heard_ble, now))
 }
 
@@ -219,6 +234,24 @@ mod tests {
             failed + 1
         ));
         assert!(!ble_known(forced, false, None, None, true, failed + 1));
+    }
+
+    #[test]
+    fn wifi_counts_only_for_a_diffuser_that_can_use_it() {
+        let [auto, wifi] = [TransportPref::Auto, TransportPref::Wifi];
+        // No broker: no WiFi, whatever the diffuser is.
+        for pref in [auto, wifi, TransportPref::Bluetooth] {
+            assert!(!wifi_available(pref, false, true, true), "{pref:?}");
+            assert!(!wifi_available(pref, false, false, false), "{pref:?}");
+        }
+        // A forced WiFi is the person's call.
+        assert!(wifi_available(wifi, true, false, true));
+        // Auto: a diffuser that is on WiFi...
+        assert!(wifi_available(auto, true, true, true));
+        // ...but not one that is not, which would only be sent to an empty topic...
+        assert!(!wifi_available(auto, true, false, true));
+        // ...unless there is no other way to reach it.
+        assert!(wifi_available(auto, true, false, false));
     }
 
     #[test]
