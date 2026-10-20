@@ -16,6 +16,11 @@ mod app;
 #[allow(dead_code)]
 mod state;
 
+// The hub (Task 8) is what starts the Bluetooth worker.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod ble;
+
 // The hub (Task 8) is what starts the MQTT worker and reads the broker password.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]

@@ -19,3 +19,6 @@ dirs = "=7.0.0"
 rumqttc = { version = "=0.25.1", default-features = false, features = ["websocket", "use-rustls"] }
 tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "sync", "time"] }
 keyring = "=4.2.0"
+btleplug = "=0.13.4"
+uuid = "=1.27.0"
+futures = "=0.3.34"
