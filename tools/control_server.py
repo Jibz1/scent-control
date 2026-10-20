@@ -127,6 +127,47 @@ def events_from_session_log(lines: list[str], device_id: str) -> list[dict]:
     return events
 
 
+def apply_event(devices: dict, event: dict) -> None:
+    """Fold one message into what we know about its device."""
+    device_id = event.get("deviceId")
+    if not device_id or not DEVICE_ID.fullmatch(device_id) or event.get("direction") != "from_device":
+        return
+    device = devices.setdefault(device_id, {"deviceId": device_id, "label": device_id})
+    device["bleSeen" if event.get("via") == "bluetooth" else "lastSeen"] = event["ts"]
+    payload = event.get("payload") or {}
+    if event.get("action") == "device_connected" and payload:
+        device["info"] = payload
+    if event.get("status"):
+        device.setdefault("status", {}).update({k: v for k, v in event["status"].items() if k not in ("raw", "kind", "array")})
+    if "rssi" in payload:
+        device["rssi"] = payload["rssi"]
+    if isinstance(payload.get("profile"), dict):
+        device["profile"] = payload["profile"]
+
+
+def replay_captures(folder: Path, devices: dict) -> int:
+    """Rebuild each device's last known state from earlier captures, oldest first."""
+    alias_to_id = {d["alias"]: device_id for device_id, d in devices.items() if d.get("alias")}
+    events: list[dict] = []
+    for path in sorted(folder.glob("*.jsonl")):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if path.name.startswith(("broker-", "control-")):
+            for line in lines:
+                record = _loads(line)
+                if isinstance(record, dict) and record.get("dir") == "rx" and str(record.get("channel", "")).startswith("mqtt:"):
+                    event = parse_device_message(record["channel"][5:], record.get("text", "").encode("utf-8"))
+                    event["ts"] = dt.datetime.fromisoformat(record["ts"]).astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+                    events.append(event)
+        elif path.name.startswith("session-"):
+            device_id = alias_to_id.get(path.name[len("session-"):].split("-")[0])
+            if device_id:
+                events.extend(events_from_session_log(lines, device_id))
+    events.sort(key=lambda e: e["ts"])
+    for event in events:
+        apply_event(devices, event)
+    return len([e for e in events if e.get("direction") == "from_device"])
+
+
 def _loads(text: str) -> object:
     try:
         return json.loads(text)
@@ -221,22 +262,7 @@ class Hub:
 
     def ingest(self, event: dict) -> None:
         with self.lock:
-            device_id = event.get("deviceId")
-            if device_id and DEVICE_ID.fullmatch(device_id):
-                device = self.devices.setdefault(device_id, {"deviceId": device_id, "label": device_id})
-                if event["direction"] == "from_device":
-                    device["bleSeen" if event.get("via") == "bluetooth" else "lastSeen"] = event["ts"]
-                    if event["action"] == "device_connected" and event["payload"]:
-                        device["info"] = event["payload"]
-                    if event["status"]:
-                        device.setdefault("status", {}).update(
-                            {k: v for k, v in event["status"].items() if k not in ("raw", "kind", "array")}
-                        )
-                    if event["payload"] and "rssi" in event["payload"]:
-                        device["rssi"] = event["payload"]["rssi"]
-                    profile = (event["payload"] or {}).get("profile")
-                    if isinstance(profile, dict):
-                        device["profile"] = profile
+            apply_event(self.devices, event)
             self.events.append(event)
             listeners = list(self.listeners)
         for q in listeners:
@@ -350,7 +376,10 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError, ConnectionError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
-    hub = Hub(client, CaptureLog(captures_dir() / f"control-{stamp()}.jsonl"), known_devices(DEFAULT_CONFIG), args.route_id)
+    devices = known_devices(DEFAULT_CONFIG)
+    replayed = replay_captures(captures_dir(), devices) if captures_dir().exists() else 0
+    print(f"rebuilt last known state from {replayed} earlier messages", flush=True)
+    hub = Hub(client, CaptureLog(captures_dir() / f"control-{stamp()}.jsonl"), devices, args.route_id)
     hub.greet()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(hub))
     print(f"test bench at http://127.0.0.1:{args.port}  (Ctrl-C to stop)", flush=True)

@@ -78,3 +78,19 @@ def test_events_from_session_log_turns_a_bluetooth_session_into_events():
     assert all(e["via"] == "bluetooth" and e["deviceId"] == "TESTDEVICE01" for e in events)
     assert events[0]["status"] == {"raw": "level:3", "kind": "value", "intensity": 3}
     assert events[1]["payload"] == {"intensity": 3}
+
+def test_replay_captures_rebuilds_last_known_state(tmp_path):
+    import json as _json
+    from control_server import replay_captures
+    (tmp_path / "broker-20261020T090829.jsonl").write_text(_json.dumps({
+        "ts": "2026-10-20T14:29:17.000+00:00", "dir": "rx", "channel": "mqtt:scentiment-mqtt-prod/user/route-test-1",
+        "text": '{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-67}}'}) + "\n")
+    (tmp_path / "session-hvac-20261020T084839.jsonl").write_text(_json.dumps({
+        "ts": "2026-10-20T13:48:40.000+00:00", "dir": "rx", "channel": "ble-notify", "text": "S:0,L:1,C:2,Bat:200",
+        "parsed": {"raw": "S:0,L:1,C:2,Bat:200", "kind": "status_text", "power": 0, "intensity": 1, "charging": 2, "battery": 200}}) + "\n")
+    devices = {"TESTDEVICE01": {"deviceId": "TESTDEVICE01", "label": "Air 2", "alias": "air2"},
+               "TESTDEVICE02": {"deviceId": "TESTDEVICE02", "label": "HVAC 2", "alias": "hvac"}}
+    assert replay_captures(tmp_path, devices) == 2
+    air2, hvac = devices["TESTDEVICE01"], devices["TESTDEVICE02"]
+    assert (air2["status"]["charging"], air2["status"]["battery"], air2["rssi"]) == (2, 200, -67) and air2["lastSeen"]
+    assert (hvac["status"]["power"], hvac["status"]["charging"]) == (0, 2) and hvac["bleSeen"] and "lastSeen" not in hvac
