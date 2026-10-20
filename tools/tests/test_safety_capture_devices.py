@@ -55,3 +55,11 @@ def test_capture_log_masks_echoed_secrets_in_rx(tmp_path):
     log.rx(echoed, {"kind": "json", "json": json.loads(echoed)}, "ble-notify")
     text = (tmp_path / "s.jsonl").read_text()
     assert "hunter2!" not in text and "ExampleWiFi" in text
+
+def test_captures_dir_follows_environment(monkeypatch, tmp_path):
+    import capture
+    from pathlib import Path
+    monkeypatch.setenv("SCENT_CAPTURES_DIR", str(tmp_path / "elsewhere"))
+    assert capture.captures_dir() == tmp_path / "elsewhere"
+    monkeypatch.delenv("SCENT_CAPTURES_DIR")
+    assert capture.captures_dir() == Path(capture.__file__).resolve().parent.parent / "captures"

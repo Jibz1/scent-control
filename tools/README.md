@@ -45,7 +45,12 @@ A tool started by Claude (or another app without that declaration) gets killed.
   for the WiFi password.
 - **Through `./bt`:** `./bt <script> …` runs the script inside `macos/ScentTools.app`,
   a minimal wrapper whose Info.plist declares Bluetooth use. macOS asks once to allow
-  "ScentTools". Output is shown when the command finishes. `./bt` has no keyboard
+  "ScentTools". macOS also stops that app from reading `~/Documents`, so `./bt` keeps
+  a runtime copy of the tools in `~/Library/Application Support/ScentControl/tools-runtime`
+  (synced on every run), runs the script there, and copies its captures back to
+  `../captures/`. Files a command reads, such as a schedule file, must be inside that
+  runtime copy: write them to its `captures/` folder. Output is shown when the
+  command finishes. `./bt` has no keyboard
   input, so it can't run commands that prompt for a password. It also doesn't see
   your shell's environment variables, so it loads `tools/.env.local` (gitignored),
   e.g. `SCENT_BROKER_PASSWORD=…`.
@@ -59,8 +64,9 @@ A tool started by Claude (or another app without that declaration) gets killed.
 ./bt session.py listen air2 --seconds 30  # print notifications
 ./bt session.py send air2 TURN_ON '{"on":1}'
 ./bt session.py sync-time air2
-.venv/bin/python session.py make-test-schedule --start-in 3 --duration 4 > ../captures/sched.json
-./bt session.py profile air2 ../captures/sched.json --timezone -4
+RT="$HOME/Library/Application Support/ScentControl/tools-runtime"
+.venv/bin/python session.py make-test-schedule --start-in 3 --duration 4 > "$RT/captures/sched.json"
+./bt session.py profile air2 captures/sched.json --timezone -4   # path relative to the runtime copy
 ./bt session.py restart air2              # soft restart only
 ./bt session.py save-mqtt air2 --broker wss://<domain>/mqtt --username scent-test   # password from .env.local
 .venv/bin/python session.py wifi air2     # from Terminal.app: prompts for the WiFi name and password

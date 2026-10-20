@@ -7,7 +7,7 @@ import sys
 
 from bleak import BleakScanner
 
-from capture import CAPTURES_DIR, stamp
+from capture import captures_dir, stamp
 from scentiment_ble import is_scentiment_name, parse_name
 
 
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{r['rssi']:>5} dBm  {r['address']}  {r['name']!s:<32}  {model}")
         if r["service_uuids"] or r["manufacturer_data"]:
             print(f"         services {r['service_uuids']}  manufacturer {r['manufacturer_data']}")
-    out = CAPTURES_DIR / f"scan-{stamp()}.json"
+    out = captures_dir() / f"scan-{stamp()}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=2))
     print(f"{len(rows)} device(s); saved {out}")

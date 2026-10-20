@@ -7,7 +7,7 @@ import sys
 from dataclasses import asdict
 
 from ble_client import ConnectError, connect_client
-from capture import CAPTURES_DIR, stamp
+from capture import captures_dir, stamp
 from devices import DeviceEntry, resolve
 from scentiment_ble import INFO_UUID, parse_info
 
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
             for d in ch["descriptors"]:
                 print(f"    desc {d['uuid']}")
     print(f"mtu {result['mtu']}  info {result['info']}")
-    out = CAPTURES_DIR / f"gatt-{entry.alias}-{stamp()}.json"
+    out = captures_dir() / f"gatt-{entry.alias}-{stamp()}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2))
     print(f"saved {out}")

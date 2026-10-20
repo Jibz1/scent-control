@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ble_client import ConnectError, DiffuserLink
-from capture import CAPTURES_DIR, CaptureLog, stamp
+from capture import CaptureLog, captures_dir, stamp
 from devices import resolve
 from safety import RefusedCommand, check_allowed
 from scentiment_ble import build_profile, trial_schedule_entry
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     payload = _prompt_secrets(args, payload)
-    log = CaptureLog(CAPTURES_DIR / f"session-{entry.alias}-{stamp()}.jsonl")
+    log = CaptureLog(captures_dir() / f"session-{entry.alias}-{stamp()}.jsonl")
     listen = args.seconds if getattr(args, "seconds", None) is not None else args.listen
     try:
         asyncio.run(_run(entry, log, args.command, action, payload, listen))

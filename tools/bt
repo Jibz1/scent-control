@@ -1,9 +1,27 @@
 #!/bin/sh
 # Usage: tools/bt <script.py> [args...]
-# Runs a Bluetooth tool through ScentTools.app so macOS grants it Bluetooth access.
-# Not for commands that prompt for a password (wifi); run those from Terminal.app.
+#
+# macOS lets a process use Bluetooth only if the app responsible for it declares
+# Bluetooth use, and it stops that app from reading ~/Documents. So bt keeps a
+# runtime copy of these tools outside ~/Documents, runs the script there inside
+# ScentTools.app, then copies the captures back into the repo's captures/.
+# bt has no keyboard input: run commands that prompt for a password (wifi) from
+# Terminal.app instead.
+set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
-out="$(mktemp -t scent-bt-out)"; err="$(mktemp -t scent-bt-err)"
-open -W -n --stdout "$out" --stderr "$err" "$here/macos/ScentTools.app" --args "$@"
-cat "$out"; cat "$err" >&2
+rt="$HOME/Library/Application Support/ScentControl/tools-runtime"
+mkdir -p "$rt/captures"
+rsync -a --delete --exclude '.venv/' --exclude '__pycache__/' --exclude '*.egg-info/' \
+	--exclude 'tests/' --exclude 'captures/' "$here/" "$rt/"
+if [ ! -x "$rt/.venv/bin/python" ]; then
+	python3 -m venv "$rt/.venv"
+	"$rt/.venv/bin/pip" install -q "bleak>=1.0,<2" "paho-mqtt>=2.1,<3"
+fi
+out="$(mktemp -t scent-bt-out)"
+err="$(mktemp -t scent-bt-err)"
+open -W -n --stdout "$out" --stderr "$err" "$rt/macos/ScentTools.app" --args "$@"
+cat "$out"
+cat "$err" >&2
 rm -f "$out" "$err"
+mkdir -p "$here/../captures"
+rsync -a "$rt/captures/" "$here/../captures/"

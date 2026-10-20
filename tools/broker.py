@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import paho.mqtt.client as mqtt
 
-from capture import CAPTURES_DIR, CaptureLog, redact_text, stamp
+from capture import CaptureLog, captures_dir, redact_text, stamp
 from safety import RefusedCommand, check_allowed
 from scentiment_ble import build_profile, parse_notification
 
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {err}", file=sys.stderr)
         return 2
 
-    log = CaptureLog(CAPTURES_DIR / f"broker-{stamp()}.jsonl")
+    log = CaptureLog(captures_dir() / f"broker-{stamp()}.jsonl")
     try:
         client = _connect(target, args.username, _password())
     except (OSError, ConnectionError) as err:

@@ -5,11 +5,15 @@ Secrets are masked before anything is written, in both directions.
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 from scentiment_ble import mask_secrets, redact_frame
 
-CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
+def captures_dir() -> Path:
+    """Where raw output goes: $SCENT_CAPTURES_DIR, else the repo's gitignored captures/."""
+    override = os.environ.get("SCENT_CAPTURES_DIR")
+    return Path(override) if override else Path(__file__).resolve().parent.parent / "captures"
 
 
 def stamp() -> str:
