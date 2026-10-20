@@ -127,20 +127,80 @@ def events_from_session_log(lines: list[str], device_id: str) -> list[dict]:
     return events
 
 
+PING_EVERY_S = 30
+ANSWER_WITHIN_S = 15
+ONLINE_FOR_S = 75
+
+
+def online_status(ping_at: str | None, ack_at: str | None, now: str) -> str:
+    """"online", "waiting" (pinged, no answer yet), "offline" (pinged, no answer in time) or "unknown"."""
+    seconds = lambda a, b: (dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds()
+    if ack_at and (not ping_at or ack_at >= ping_at):
+        return "online" if seconds(ack_at, now) <= ONLINE_FOR_S else "unknown"
+    if ping_at:
+        return "waiting" if seconds(ping_at, now) <= ANSWER_WITHIN_S else "offline"
+    return "unknown"
+
+
+def _is_factory(entry: dict) -> bool:
+    return bool(entry.get("isFactory")) or entry.get("index") == 1
+
+
+def expected_state(payload: dict, now_utc: dt.datetime) -> dict:
+    """What a diffuser should be doing at `now_utc` according to a sent UPDATE_PROFILE payload."""
+    schedule = (payload.get("profile") or {}).get("schedule") or []
+    local = now_utc.astimezone(dt.timezone(dt.timedelta(hours=float(payload.get("timezone") or 0))))
+    weekday, clock = (local.weekday() + 1) % 7, local.strftime("%H:%M")
+    for entry in schedule:
+        if not _is_factory(entry) and entry.get("enable") and weekday in (entry.get("weekdays") or []) \
+                and entry.get("startTime", "") <= clock < entry.get("endTime", ""):
+            level = (entry.get("workingState") or {}).get("level")
+            return {"power": 1, "level": level, "source": f"schedule {entry['startTime']}–{entry['endTime']}", "until": entry["endTime"]}
+    factory = next((e for e in schedule if _is_factory(e)), None)
+    if factory and factory.get("enable"):
+        return {"power": 1, "level": (factory.get("workingState") or {}).get("level"), "source": "always-on entry", "until": None}
+    return {"power": 0, "level": None, "source": "always-on entry", "until": None}
+
+
+def _remember_sent_profile(device: dict, event: dict) -> None:
+    payload = event.get("payload") or {}
+    if payload.get("schedule_flag") == 0 and device.get("sentProfile"):
+        # flag 0 changes only the always-on entry (manual state); keep the timed entries we sent before
+        factory = [e for e in (payload.get("profile") or {}).get("schedule") or [] if _is_factory(e)]
+        timed = [e for e in device["sentProfile"]["profile"]["schedule"] if not _is_factory(e)]
+        payload = dict(payload, profile={"schedule": factory + timed})
+    device["sentProfile"] = payload
+    device["sentProfileAt"] = event["ts"]
+
+
 def apply_event(devices: dict, event: dict) -> None:
-    """Fold one message into what we know about its device."""
+    """Fold one message into what we know about its device, keeping each reading's time and source."""
     device_id = event.get("deviceId")
-    if not device_id or not DEVICE_ID.fullmatch(device_id) or event.get("direction") != "from_device":
+    if not device_id or not DEVICE_ID.fullmatch(device_id):
+        return
+    if event.get("direction") == "to_device":
+        if event.get("action") == "UPDATE_PROFILE" and isinstance(event.get("payload"), dict):
+            _remember_sent_profile(devices.setdefault(device_id, {"deviceId": device_id, "label": device_id}), event)
+        return
+    if event.get("direction") != "from_device":
         return
     device = devices.setdefault(device_id, {"deviceId": device_id, "label": device_id})
-    device["bleSeen" if event.get("via") == "bluetooth" else "lastSeen"] = event["ts"]
+    via = "bluetooth" if event.get("via") == "bluetooth" else "wifi"
+    device["bleSeen" if via == "bluetooth" else "lastSeen"] = event["ts"]
     payload = event.get("payload") or {}
+    if event.get("action") == "acknowledgement":
+        device["ackAt"] = event["ts"]
     if event.get("action") == "device_connected" and payload:
         device["info"] = payload
+    readings = device.setdefault("readings", {})
     if event.get("status"):
-        device.setdefault("status", {}).update({k: v for k, v in event["status"].items() if k not in ("raw", "kind", "array")})
+        fresh = {k: v for k, v in event["status"].items() if k not in ("raw", "kind", "array")}
+        device.setdefault("status", {}).update(fresh)
+        for key, value in fresh.items():
+            readings[key] = {"value": value, "at": event["ts"], "via": via}
     if "rssi" in payload:
         device["rssi"] = payload["rssi"]
+        readings["rssi"] = {"value": payload["rssi"], "at": event["ts"], "via": via}
     if isinstance(payload.get("profile"), dict):
         device["profile"] = payload["profile"]
 
@@ -190,8 +250,31 @@ class Hub:
         client.subscribe(TOPIC_PREFIX + "#", qos=1)
 
     def state(self) -> dict:
+        now = dt.datetime.now().isoformat(timespec="seconds")
         with self.lock:
-            return {"devices": self.devices, "routeId": self.route_id}
+            now_utc = dt.datetime.now(dt.timezone.utc)
+            for device in self.devices.values():
+                device["online"] = online_status(device.get("pingAt"), device.get("lastSeen"), now)
+                if device.get("sentProfile"):
+                    device["expected"] = expected_state(device["sentProfile"], now_utc)
+            return {"devices": self.devices, "routeId": self.route_id, "now": now}
+
+    def keep_pinging(self) -> None:
+        """Ping every diffuser that has used this broker, so "online" means "answered recently"."""
+        def loop() -> None:
+            while True:
+                threading.Event().wait(PING_EVERY_S)
+                with self.lock:
+                    on_broker = [d for d, info in self.devices.items() if info.get("lastSeen")]
+                for device_id in on_broker:
+                    self.ping(device_id)
+        threading.Thread(target=loop, daemon=True).start()
+
+    def ping(self, device_id: str) -> None:
+        topic, envelope = build_publish({"deviceId": device_id, "action": "PING", "payload": {"userid": self.route_id}})
+        with self.lock:
+            self.devices.setdefault(device_id, {"deviceId": device_id, "label": device_id})["pingAt"] = dt.datetime.now().isoformat(timespec="seconds")
+        self.publish(topic, envelope)
 
     def recent(self) -> list[dict]:
         with self.lock:
@@ -216,9 +299,7 @@ class Hub:
     def greet(self) -> None:
         """Ask every known diffuser to answer, so the page shows which ones are on this broker."""
         for device_id in list(self.devices):
-            for action, payload in (("PING", {"userid": self.route_id}), ("GET_STATUS", {})):
-                topic, envelope = build_publish({"deviceId": device_id, "action": action, "payload": payload})
-                self.publish(topic, envelope)
+            self.ping(device_id)
 
     def read_over_bluetooth(self, device_id: str) -> dict:
         """Run `bt session.py status <alias>` (Bluetooth needs the ScentTools wrapper) and record the result."""
@@ -381,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"rebuilt last known state from {replayed} earlier messages", flush=True)
     hub = Hub(client, CaptureLog(captures_dir() / f"control-{stamp()}.jsonl"), devices, args.route_id)
     hub.greet()
+    hub.keep_pinging()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(hub))
     print(f"test bench at http://127.0.0.1:{args.port}  (Ctrl-C to stop)", flush=True)
     try:

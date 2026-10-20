@@ -94,3 +94,52 @@ def test_replay_captures_rebuilds_last_known_state(tmp_path):
     air2, hvac = devices["TESTDEVICE01"], devices["TESTDEVICE02"]
     assert (air2["status"]["charging"], air2["status"]["battery"], air2["rssi"]) == (2, 200, -67) and air2["lastSeen"]
     assert (hvac["status"]["power"], hvac["status"]["charging"]) == (0, 2) and hvac["bleSeen"] and "lastSeen" not in hvac
+
+def test_online_status_from_ping_and_ack():
+    from control_server import online_status
+    assert online_status(ping_at=None, ack_at=None, now="2026-10-20T10:30:00") == "unknown"
+    assert online_status("2026-10-20T10:29:50", "2026-10-20T10:29:51", "2026-10-20T10:30:00") == "online"
+    assert online_status("2026-10-20T10:29:50", "2026-10-20T10:28:00", "2026-10-20T10:30:00") == "waiting"
+    assert online_status("2026-10-20T10:29:30", "2026-10-20T10:20:00", "2026-10-20T10:30:00") == "offline"
+
+def test_apply_event_keeps_each_reading_with_its_time_and_source():
+    from control_server import apply_event
+    devices = {}
+    apply_event(devices, {"deviceId": "TESTDEVICE01", "direction": "from_device", "ts": "2026-10-20T09:29:17", "action": "update_status",
+                          "payload": {"rssi": -67}, "status": {"kind": "status_array", "power": 1, "charging": 2, "battery": 200}})
+    apply_event(devices, {"deviceId": "TESTDEVICE01", "direction": "from_device", "ts": "2026-10-20T10:13:00", "via": "bluetooth",
+                          "action": "enable:0", "payload": None, "status": {"kind": "value", "power": 0}})
+    readings = devices["TESTDEVICE01"]["readings"]
+    assert readings["power"] == {"value": 0, "at": "2026-10-20T10:13:00", "via": "bluetooth"}
+    assert readings["charging"] == {"value": 2, "at": "2026-10-20T09:29:17", "via": "wifi"}
+    assert readings["rssi"]["value"] == -67
+
+def test_ack_events_mark_the_device_as_answering():
+    from control_server import apply_event
+    devices = {}
+    apply_event(devices, {"deviceId": "TESTDEVICE01", "direction": "from_device", "ts": "2026-10-20T10:30:09", "action": "acknowledgement",
+                          "payload": {"deviceId": "TESTDEVICE01", "msg": "{\"result\":\"ALREADY_ADDED\"}"}, "status": None})
+    assert devices["TESTDEVICE01"]["ackAt"] == "2026-10-20T10:30:09"
+
+FACTORY_OFF = {"index": 1, "startTime": "00:00", "endTime": "23:59", "weekdays": [0, 1, 2, 3, 4, 5, 6],
+               "workingState": {"level": 1, "fan": 0, "led": 0, "timer": 0}, "enable": False, "isFactory": True}
+WINDOW = {"startTime": "10:24", "endTime": "10:27", "weekdays": [2], "workingState": {"level": 3, "fan": 0, "led": 0, "timer": 0}, "enable": True}
+
+def test_expected_state_follows_the_schedule_in_the_devices_time_zone():
+    import datetime as dt
+    from control_server import expected_state
+    payload = {"profile": {"schedule": [FACTORY_OFF, WINDOW]}, "timezone": -5.0, "schedule_flag": 1}
+    during = expected_state(payload, dt.datetime(2026, 10, 20, 15, 25, tzinfo=dt.timezone.utc))  # Tue 10:25 at UTC-5
+    assert during == {"power": 1, "level": 3, "source": "schedule 10:24–10:27", "until": "10:27"}
+    after = expected_state(payload, dt.datetime(2026, 10, 20, 15, 28, tzinfo=dt.timezone.utc))
+    assert after == {"power": 0, "level": None, "source": "always-on entry", "until": None}
+
+def test_sent_profiles_are_remembered_and_flag_0_only_replaces_the_always_on_entry():
+    from control_server import apply_event
+    devices = {}
+    sent = lambda payload: {"deviceId": "TESTDEVICE01", "direction": "to_device", "ts": "2026-10-20T10:21:06", "action": "UPDATE_PROFILE", "payload": payload, "status": None}
+    apply_event(devices, sent({"profile": {"schedule": [FACTORY_OFF, WINDOW]}, "timezone": -5.0, "schedule_flag": 1}))
+    on = dict(FACTORY_OFF, enable=True)
+    apply_event(devices, sent({"profile": {"schedule": [on]}, "timezone": -5.0, "schedule_flag": 0}))
+    schedule = devices["TESTDEVICE01"]["sentProfile"]["profile"]["schedule"]
+    assert schedule == [on, WINDOW] and devices["TESTDEVICE01"]["sentProfileAt"] == "2026-10-20T10:21:06"
