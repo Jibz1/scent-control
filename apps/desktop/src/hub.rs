@@ -32,6 +32,10 @@ use crate::transport::{Radios, Transport, lock};
 /// How long a Bluetooth scan listens.
 const SCAN_SECS: u64 = 10;
 
+/// The `what` of the `Failed` event for a scan that didn't run, which is how the
+/// screens know the scan is over.
+pub const SCAN_FAILED: &str = "Bluetooth scan";
+
 /// How long after a schedule the diffuser is told the time. The other order did not
 /// run on the Air 2 (see `docs/findings.md`).
 const SYNC_TIME_AFTER: Duration = Duration::from_secs(5);
@@ -68,11 +72,16 @@ pub enum UiCommand {
         cmd: Command,
         pref: TransportPref,
     },
-    /// Asks a diffuser for its state: Bluetooth reads what it last reported, WiFi
-    /// sends `GET_STATUS`. Goes the way Auto does.
-    ReadStatus { device_id: String },
+    /// Asks a diffuser for its state, the way `pref` says: Bluetooth reads what it
+    /// last reported, WiFi sends `GET_STATUS`.
+    ReadStatus {
+        device_id: String,
+        pref: TransportPref,
+    },
     /// Replaces the schedule table on a diffuser, then tells it the time. Over WiFi
     /// only: setting a schedule over Bluetooth is unconfirmed (see `docs/findings.md`).
+    // Nothing sends it until the schedule editor exists.
+    #[allow(dead_code)]
     SendSchedule { device_id: String, profile: Profile },
     /// Drops the broker connection and makes a new one, with these settings and the
     /// password just read from (or saved to) the Keychain. This is also how a refused
@@ -413,7 +422,7 @@ impl<T: Transport> Shared<T> {
 
     async fn scan(&self) {
         if let Err(error) = answer(self.transport.ble_scan(SCAN_SECS)).await {
-            self.failed(None, "Bluetooth scan".to_owned(), error);
+            self.failed(None, SCAN_FAILED.to_owned(), error);
         }
     }
 
@@ -564,8 +573,8 @@ fn worth_pinging(device: &DeviceView) -> bool {
 /// that came over WiFi (the saved state keeps the readings' source, not when it was
 /// last heard). This, not `wifi_configured`, decides whether WiFi is a way to it,
 /// since a diffuser with WiFi set up may still be on Scentiment's cloud, where a
-/// publish to our broker would be heard by nobody.
-fn on_our_broker(device: &DeviceView) -> bool {
+/// publish to our broker would be heard by nobody. The screens use it to say so.
+pub fn on_our_broker(device: &DeviceView) -> bool {
     device.heard_wifi.is_some()
         || device
             .readings
@@ -576,7 +585,7 @@ fn on_our_broker(device: &DeviceView) -> bool {
 /// A job for one diffuser's queue.
 enum Job {
     Send { cmd: Command, pref: TransportPref },
-    ReadStatus,
+    ReadStatus { pref: TransportPref },
     Schedule(Profile),
 }
 
@@ -610,7 +619,9 @@ impl<T: Transport> Dispatcher<T> {
                 cmd,
                 pref,
             } => self.enqueue(device_id, Job::Send { cmd, pref }),
-            UiCommand::ReadStatus { device_id } => self.enqueue(device_id, Job::ReadStatus),
+            UiCommand::ReadStatus { device_id, pref } => {
+                self.enqueue(device_id, Job::ReadStatus { pref });
+            }
             UiCommand::SendSchedule { device_id, profile } => {
                 self.enqueue(device_id, Job::Schedule(profile));
             }
@@ -661,9 +672,8 @@ async fn work_through<T: Transport>(
             Job::Send { cmd, pref } => {
                 shared.deliver(&device_id, &Work::send(cmd), pref).await;
             }
-            Job::ReadStatus => {
-                let work = Work::read_status();
-                shared.deliver(&device_id, &work, TransportPref::Auto).await;
+            Job::ReadStatus { pref } => {
+                shared.deliver(&device_id, &Work::read_status(), pref).await;
             }
             Job::Schedule(profile) => shared.send_schedule(&device_id, profile).await,
         }
@@ -1679,6 +1689,7 @@ mod tests {
         // there is no `Sent`.
         hub.send(UiCommand::ReadStatus {
             device_id: ONE.to_owned(),
+            pref: TransportPref::Auto,
         })
         .unwrap();
         settle().await;
@@ -1695,6 +1706,7 @@ mod tests {
             .script_ble([Ble::After(Duration::ZERO, Err("No answer.".to_owned()))]);
         hub.send(UiCommand::ReadStatus {
             device_id: ONE.to_owned(),
+            pref: TransportPref::Auto,
         })
         .unwrap();
         settle().await;
@@ -1706,6 +1718,60 @@ mod tests {
         assert!(status[0].1.contains("GET_STATUS"), "{status:?}");
         let labels = rig.fake().labels();
         assert!(labels.contains(&"wifi TESTDEVICE01 GET_STATUS".to_owned()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reading_the_status_honors_the_transport_choice() {
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
+        rig.broker_up();
+        let hub = rig.serve();
+        let read = |pref| UiCommand::ReadStatus {
+            device_id: ONE.to_owned(),
+            pref,
+        };
+        // The diffuser is on WiFi, so it is pinged now and then; leave those out.
+        let labels = || -> Vec<String> {
+            let mut labels = rig.fake().labels();
+            labels.retain(|label| !label.ends_with(" PING"));
+            labels
+        };
+        let events = || -> Vec<Event> {
+            let mut all = rig.events();
+            all.retain(|event| !matches!(event, Event::Pinged { .. }));
+            all
+        };
+
+        // WiFi: GET_STATUS goes out and Bluetooth is left alone, though it is in reach.
+        hub.send(read(TransportPref::Wifi)).unwrap();
+        settle().await;
+        assert_eq!(labels(), ["wifi TESTDEVICE01 GET_STATUS"]);
+        let events_wifi = events();
+        assert_eq!(
+            sent(&events_wifi).iter().map(|s| s.0).collect::<Vec<_>>(),
+            [Via::Wifi]
+        );
+        assert!(failed(&events_wifi).is_empty());
+        rig.fake().clear();
+
+        // Bluetooth: a failure is reported and WiFi does not take over.
+        rig.fake()
+            .script_ble([Ble::After(Duration::ZERO, Err("No answer.".to_owned()))]);
+        hub.send(read(TransportPref::Bluetooth)).unwrap();
+        settle().await;
+        assert_eq!(
+            labels(),
+            ["ble ble-1 read status", "ble ble-1 read status done"]
+        );
+        let events_ble = events();
+        assert!(sent(&events_ble).is_empty());
+        assert_eq!(
+            failed(&events_ble),
+            [(
+                Some(ONE.to_owned()),
+                "Bluetooth read status".to_owned(),
+                "No answer.".to_owned()
+            )]
+        );
     }
 
     #[tokio::test(start_paused = true)]

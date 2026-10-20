@@ -21,6 +21,7 @@ tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "sync", 
 keyring = "=4.2.0"
 btleplug = "=0.13.4"
 uuid = "=1.27.0"
+libc = "=0.2.191"
 futures = "=0.3.34"
 
 [dev-dependencies]

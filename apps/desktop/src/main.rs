@@ -10,42 +10,32 @@ compile_error!("scent-desktop is macOS only");
 #[cfg(target_os = "macos")]
 mod app;
 
-// The hub and the screens (later tasks) are what use the state and the store; until
-// then the binary on its own would flag them as dead code.
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-mod state;
-
-// The screens (Task 9) start the hub and read the broker password from the Keychain;
-// the hub starts the two workers and decides the route. Until then the binary on its
-// own would flag all of these as dead code.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
 mod ble;
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 mod hub;
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 mod mqtt;
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 mod route;
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 mod secrets;
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
+mod state;
+
+#[cfg(target_os = "macos")]
 mod store;
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 mod transport;
+
+#[cfg(target_os = "macos")]
+mod ui;
 
 #[cfg(target_os = "macos")]
 use app::ScentApp;

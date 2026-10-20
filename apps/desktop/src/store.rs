@@ -1,8 +1,9 @@
 //! The app's memory between runs: the diffusers it knows, their names and their
-//! last readings, in `desktop.json`.
+//! last readings, and where the broker is, in `desktop.json`.
 //!
-//! The file holds devices and nothing else: no log, no live status, and no secrets
-//! (the broker password lives in the Keychain, and WiFi passwords are never kept).
+//! The file holds devices and the broker's address and nothing else: no log, no live
+//! status, and no secrets (the broker password lives in the Keychain, and WiFi
+//! passwords are never kept).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 use scent_core::{DeviceInfo, Via, valid_device_id};
 use serde::{Deserialize, Serialize};
 
+use crate::mqtt::BrokerSettings;
 use crate::state::{AppState, DeviceView, Field, Reading};
 
 const FILE_NAME: &str = "desktop.json";
@@ -21,6 +23,26 @@ const CORRUPT_NAME: &str = "desktop.json.corrupt";
 
 pub struct Store {
     pub dir: PathBuf,
+}
+
+/// What [`Store::load`] found.
+#[derive(Debug)]
+pub struct Loaded {
+    pub state: AppState,
+    /// The default settings when the file doesn't say.
+    pub broker: BrokerSettings,
+    /// Set when there was a file and it could not be used, for the screens to show.
+    pub notice: Option<String>,
+}
+
+impl Loaded {
+    fn fresh(notice: Option<String>) -> Loaded {
+        Loaded {
+            state: AppState::default(),
+            broker: BrokerSettings::default(),
+            notice,
+        }
+    }
 }
 
 impl Store {
@@ -35,47 +57,66 @@ impl Store {
         self.dir.join(FILE_NAME)
     }
 
-    /// What was saved, or an empty state when there is nothing usable: no file yet,
-    /// a file we can't read, or one that isn't what we wrote. The problem goes to
-    /// stderr. A file that is damaged is kept as `desktop.json.corrupt`.
-    pub fn load(&self) -> AppState {
+    /// What was saved, or an empty state and the default settings when there is
+    /// nothing usable: no file yet, a file we can't read, or one that isn't what we
+    /// wrote. The problem goes to stderr. A file that is damaged is kept as
+    /// `desktop.json.corrupt`, and the notice says so. No file yet is not a problem.
+    pub fn load(&self) -> Loaded {
         let path = self.path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 eprintln!("scent-control: no saved state at {} yet", path.display());
-                return AppState::default();
+                return Loaded::fresh(None);
             }
             Err(error) => {
                 eprintln!("scent-control: can't read {}: {error}", path.display());
-                return AppState::default();
+                return Loaded::fresh(Some(format!(
+                    "Scent Control couldn't read its saved diffusers from {}: {error}. \
+                     It started empty, and the next save replaces that file.",
+                    path.display()
+                )));
             }
         };
         match serde_json::from_slice::<Stored>(&bytes) {
-            Ok(stored) => stored.into_state(),
+            Ok(stored) => stored.into_loaded(),
             Err(error) => {
                 eprintln!(
                     "scent-control: {} is not usable ({error}); starting empty",
                     path.display()
                 );
                 let aside = self.dir.join(CORRUPT_NAME);
-                if let Err(error) = fs::rename(&path, &aside) {
-                    eprintln!(
-                        "scent-control: can't keep it as {}: {error}",
-                        aside.display()
-                    );
-                }
-                AppState::default()
+                let notice = match fs::rename(&path, &aside) {
+                    Ok(()) => format!(
+                        "Scent Control's saved diffusers file was damaged, so it started \
+                         empty. The damaged file was kept as {CORRUPT_NAME} in {}.",
+                        self.dir.display()
+                    ),
+                    Err(error) => {
+                        eprintln!(
+                            "scent-control: can't keep it as {}: {error}",
+                            aside.display()
+                        );
+                        format!(
+                            "Scent Control's saved diffusers file ({}) was damaged, so it \
+                             started empty. It couldn't be set aside ({error}), so the next \
+                             save replaces it.",
+                            path.display()
+                        )
+                    }
+                };
+                Loaded::fresh(Some(notice))
             }
         }
     }
 
-    /// Writes the devices. The file is written whole under another name and then
-    /// renamed over the old one, so a crash leaves the old file or the new one.
-    pub fn save(&self, state: &AppState) -> io::Result<()> {
+    /// Writes the devices and the broker settings. The file is written whole under
+    /// another name and then renamed over the old one, so a crash leaves the old file
+    /// or the new one.
+    pub fn save(&self, state: &AppState, broker: &BrokerSettings) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
-        let json =
-            serde_json::to_vec_pretty(&Stored::from_state(state)).map_err(io::Error::other)?;
+        let json = serde_json::to_vec_pretty(&Stored::from_state(state, broker))
+            .map_err(io::Error::other)?;
         let temp = self.dir.join(TEMP_NAME);
         let written = (|| {
             let mut file = File::create(&temp)?;
@@ -95,6 +136,44 @@ impl Store {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     devices: Vec<StoredDevice>,
+    /// Missing from files written before the settings were kept.
+    #[serde(default)]
+    broker: StoredBroker,
+}
+
+/// Where the broker is. Not the password: that is in the Keychain.
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+struct StoredBroker {
+    url: String,
+    username: String,
+    route_id: String,
+}
+
+impl Default for StoredBroker {
+    fn default() -> StoredBroker {
+        StoredBroker::from(&BrokerSettings::default())
+    }
+}
+
+impl From<&BrokerSettings> for StoredBroker {
+    fn from(broker: &BrokerSettings) -> StoredBroker {
+        StoredBroker {
+            url: broker.url.clone(),
+            username: broker.username.clone(),
+            route_id: broker.route_id.clone(),
+        }
+    }
+}
+
+impl From<StoredBroker> for BrokerSettings {
+    fn from(broker: StoredBroker) -> BrokerSettings {
+        BrokerSettings {
+            url: broker.url,
+            username: broker.username,
+            route_id: broker.route_id,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -128,8 +207,9 @@ struct StoredReading {
 }
 
 impl Stored {
-    fn from_state(state: &AppState) -> Stored {
+    fn from_state(state: &AppState, broker: &BrokerSettings) -> Stored {
         Stored {
+            broker: broker.into(),
             devices: state
                 .devices
                 .values()
@@ -150,7 +230,7 @@ impl Stored {
 
     /// Anything that can't be used is left out, with a note on stderr: a device
     /// whose ID is not a device ID, a reading of a field or source we don't know.
-    fn into_state(self) -> AppState {
+    fn into_loaded(self) -> Loaded {
         let mut state = AppState::default();
         for stored in self.devices {
             if !valid_device_id(&stored.id) {
@@ -180,7 +260,11 @@ impl Stored {
             }
             state.devices.insert(stored.id, device);
         }
-        state
+        Loaded {
+            state,
+            broker: self.broker.into(),
+            notice: None,
+        }
     }
 }
 
@@ -291,12 +375,12 @@ mod tests {
     #[test]
     fn a_missing_file_gives_an_empty_state() {
         let dir = TempDir::new("missing");
-        assert_eq!(store(&dir).load(), AppState::default());
+        assert_eq!(store(&dir).load().state, AppState::default());
         // Not even the folder exists yet.
         let nested = Store {
             dir: dir.path().join("not/there"),
         };
-        assert_eq!(nested.load(), AppState::default());
+        assert_eq!(nested.load().state, AppState::default());
     }
 
     #[test]
@@ -305,8 +389,12 @@ mod tests {
         let nested = Store {
             dir: dir.path().join("a/b"),
         };
-        nested.save(&AppState::default()).unwrap();
-        nested.save(&AppState::default()).unwrap();
+        nested
+            .save(&AppState::default(), &BrokerSettings::default())
+            .unwrap();
+        nested
+            .save(&AppState::default(), &BrokerSettings::default())
+            .unwrap();
         let names: Vec<String> = fs::read_dir(&nested.dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -359,7 +447,7 @@ mod tests {
             },
             6,
         );
-        store(&dir).save(&s).unwrap();
+        store(&dir).save(&s, &BrokerSettings::default()).unwrap();
 
         let text = fs::read_to_string(dir.path().join("desktop.json")).unwrap();
         assert!(
@@ -367,8 +455,85 @@ mod tests {
             "{text}"
         );
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let keys: Vec<&String> = json.as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["devices"]);
+        let mut keys: Vec<&String> = json.as_object().unwrap().keys().collect();
+        keys.sort();
+        // The devices, and where the broker is. The password is neither.
+        assert_eq!(keys, ["broker", "devices"]);
+    }
+
+    fn custom_broker() -> BrokerSettings {
+        BrokerSettings {
+            url: "wss://broker.example.test:8443/mqtt".into(),
+            username: "someone".into(),
+            route_id: "route-9".into(),
+        }
+    }
+
+    #[test]
+    fn the_broker_settings_round_trip_and_the_password_is_not_among_them() {
+        let dir = TempDir::new("broker-round-trip");
+        store(&dir)
+            .save(&AppState::default(), &custom_broker())
+            .unwrap();
+
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.broker, custom_broker());
+        assert_eq!(loaded.notice, None);
+
+        let text = fs::read_to_string(dir.path().join("desktop.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut keys: Vec<&String> = json["broker"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["route_id", "url", "username"]);
+        assert!(!text.to_lowercase().contains("password"), "{text}");
+    }
+
+    #[test]
+    fn a_file_with_no_broker_object_gives_the_default_settings() {
+        // Written before the settings were kept, or by hand.
+        let dir = TempDir::new("no-broker");
+        fs::write(dir.path().join("desktop.json"), r#"{"devices":[]}"#).unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.broker, BrokerSettings::default());
+        // Not damaged: nothing to tell the person, and the file stays where it is.
+        assert_eq!(loaded.notice, None);
+        assert!(dir.path().join("desktop.json").exists());
+        assert!(!dir.path().join("desktop.json.corrupt").exists());
+    }
+
+    #[test]
+    fn a_broker_object_with_gaps_is_filled_from_the_defaults() {
+        let dir = TempDir::new("partial-broker");
+        fs::write(
+            dir.path().join("desktop.json"),
+            r#"{"devices":[],"broker":{"username":"someone"}}"#,
+        )
+        .unwrap();
+        let loaded = store(&dir).load();
+        let defaults = BrokerSettings::default();
+        assert_eq!(loaded.broker.username, "someone");
+        assert_eq!(loaded.broker.url, defaults.url);
+        assert_eq!(loaded.broker.route_id, defaults.route_id);
+        assert_eq!(loaded.notice, None);
+    }
+
+    #[test]
+    fn a_damaged_file_comes_with_a_notice_that_names_where_it_went() {
+        let dir = TempDir::new("notice");
+        fs::write(dir.path().join("desktop.json"), "{").unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.state, AppState::default());
+        assert_eq!(loaded.broker, BrokerSettings::default());
+        let notice = loaded.notice.expect("a notice");
+        assert!(notice.contains("desktop.json.corrupt"), "{notice}");
+
+        // No file yet is not damage; neither is a good one.
+        let fresh = TempDir::new("no-notice");
+        assert_eq!(store(&fresh).load().notice, None);
+        store(&fresh)
+            .save(&AppState::default(), &BrokerSettings::default())
+            .unwrap();
+        assert_eq!(store(&fresh).load().notice, None);
     }
 
     #[test]
@@ -385,7 +550,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let loaded = store(&dir).load();
+        let loaded = store(&dir).load().state;
         assert_eq!(loaded.devices.keys().collect::<Vec<_>>(), [ID1]);
         let d = &loaded.devices[ID1];
         assert_eq!(d.label, "Bedroom");
@@ -398,10 +563,10 @@ mod tests {
         for bad in ["", "[]", r#"{"devices":5}"#, "\u{0}\u{1}"] {
             let dir = TempDir::new("bad-shape");
             fs::write(dir.path().join("desktop.json"), bad).unwrap();
-            assert_eq!(store(&dir).load(), AppState::default(), "{bad:?}");
+            assert_eq!(store(&dir).load().state, AppState::default(), "{bad:?}");
         }
         let dir = TempDir::new("bad-bytes");
         fs::write(dir.path().join("desktop.json"), [0xff, 0xfe, 0x00]).unwrap();
-        assert_eq!(store(&dir).load(), AppState::default());
+        assert_eq!(store(&dir).load().state, AppState::default());
     }
 }

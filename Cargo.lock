@@ -3068,6 +3068,7 @@ dependencies = [
  "eframe",
  "futures",
  "keyring",
+ "libc",
  "rumqttc",
  "scent-core",
  "serde",

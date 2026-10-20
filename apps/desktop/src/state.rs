@@ -658,6 +658,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::mqtt::BrokerSettings;
     use crate::store::{Store, TempDir};
 
     const ID1: &str = "TESTDEVICE01";
@@ -1450,8 +1451,8 @@ mod tests {
         );
         s.apply_at(Event::BrokerConnected, NOW);
 
-        store.save(&s).unwrap();
-        let loaded = store.load();
+        store.save(&s, &BrokerSettings::default()).unwrap();
+        let loaded = store.load().state;
 
         let (before, after) = (&s.devices[ID1], &loaded.devices[ID1]);
         assert_eq!(after.id, ID1);
@@ -1474,7 +1475,7 @@ mod tests {
         // A file that is not JSON: an empty state, and the file kept aside.
         let file = dir.path().join("desktop.json");
         fs::write(&file, "{").unwrap();
-        assert_eq!(store.load(), AppState::default());
+        assert_eq!(store.load().state, AppState::default());
         assert_eq!(
             fs::read_to_string(dir.path().join("desktop.json.corrupt")).unwrap(),
             "{"
