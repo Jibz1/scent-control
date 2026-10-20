@@ -231,9 +231,10 @@ impl Done {
         self.answer.is_closed()
     }
 
-    /// Answers the caller. A failure that nobody is waiting to hear (the reply was
-    /// dropped) becomes an `Event::Failed` so that it is not lost. It carries no device
-    /// ID: only the hub knows which device the Bluetooth ID belongs to.
+    /// Answers the caller of a job that ran. A failure that nobody is waiting to hear
+    /// (the reply was dropped while the job ran) becomes an `Event::Failed` so that it
+    /// is not lost. It carries no device ID: only the hub knows which device the
+    /// Bluetooth ID belongs to.
     fn finish(self, emitter: &Emitter, result: Result<(), String>) {
         match result {
             Ok(()) => {
@@ -249,6 +250,15 @@ impl Done {
                     });
                 }
             }
+        }
+    }
+
+    /// Answers the caller of a job that never ran, unless the caller has stopped
+    /// waiting: then it is dropped without a word, as a job skipped for that reason is,
+    /// since the caller has reported its own timeout.
+    fn finish_unless_abandoned(self, emitter: &Emitter, result: Result<(), String>) {
+        if !self.is_abandoned() {
+            self.finish(emitter, result);
         }
     }
 }
@@ -346,8 +356,10 @@ impl BleHandle {
 /// Starts the worker on its own thread and returns at once. Every event it sends to
 /// `events` is followed by a call to `repaint`.
 ///
-/// Failures reach the caller through the [`Reply`]. Only when the caller has dropped
-/// the reply does the worker send an `Event::Failed` (with no device ID) instead.
+/// Failures reach the caller through the [`Reply`]. A job whose caller dropped the
+/// reply before it ran is dropped without a word, as are the jobs behind a link that
+/// couldn't be opened whose callers have stopped waiting. Only a job that fails while
+/// it runs, with nobody left to hear, becomes an `Event::Failed` (with no device ID).
 pub fn spawn(events: Sender<Event>, repaint: impl Fn() + Send + 'static) -> BleHandle {
     let (jobs, queue) = mpsc::channel(QUEUE);
     let reporter = events.clone();
@@ -927,9 +939,12 @@ impl Link {
         let open = match ensure_open(&mut self.open, &self.shared, self.id).await {
             Ok(open) => open,
             Err(error) => {
-                done.finish(&self.shared.emitter, Err(error.clone()));
+                // None of these ran. Those whose callers gave up say nothing.
+                done.finish_unless_abandoned(&self.shared.emitter, Err(error.clone()));
                 while let Ok(queued) = jobs.try_recv() {
-                    queued.done.finish(&self.shared.emitter, Err(error.clone()));
+                    queued
+                        .done
+                        .finish_unless_abandoned(&self.shared.emitter, Err(error.clone()));
                 }
                 return false;
             }
@@ -1255,6 +1270,32 @@ mod tests {
         let (done, reply) = Done::new("Bluetooth scan");
         drop(reply);
         done.finish(&emitter, Ok(()));
+        assert!(received.try_recv().is_err());
+    }
+
+    // A job that never ran, because its link couldn't be opened (the job itself, or one
+    // queued behind it), says nothing when its caller has stopped waiting: the caller
+    // reported its own timeout already. `serve` has no seam to run against without a
+    // peripheral, so this is the call it makes for those jobs.
+    #[test]
+    fn an_abandoned_job_that_never_ran_is_dropped_without_a_word() {
+        let (events, received) = std::sync::mpsc::channel();
+        let repaints = Arc::new(AtomicUsize::new(0));
+        let emitter = emitter(events, &repaints);
+
+        let (done, reply) = Done::new("Bluetooth send SAVE_MQTT");
+        drop(reply);
+        done.finish_unless_abandoned(&emitter, Err("Timed out while connecting.".into()));
+        assert!(received.try_recv().is_err(), "no Failed event");
+        assert_eq!(repaints.load(Ordering::SeqCst), 0);
+
+        // A caller that still waits hears why.
+        let (done, mut reply) = Done::new("Bluetooth send SAVE_MQTT");
+        done.finish_unless_abandoned(&emitter, Err("Timed out while connecting.".into()));
+        assert_eq!(
+            reply.try_recv().unwrap(),
+            Err("Timed out while connecting.".to_owned())
+        );
         assert!(received.try_recv().is_err());
     }
 
