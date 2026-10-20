@@ -159,14 +159,15 @@ def redact_frame(frame: bytes) -> str:
         obj = json.loads(text)
     except ValueError:
         return f"<unparsable {len(frame)} bytes>"
-    return _compact(_mask(obj)) + "-|"
+    return _compact(mask_secrets(obj)) + "-|"
 
 
-def _mask(value: object) -> object:
+def mask_secrets(value: object) -> object:
+    """Copy of a JSON value with every secret-named key's value replaced by \"***\"."""
     if isinstance(value, dict):
-        return {k: "***" if k.lower() in SECRET_KEYS else _mask(v) for k, v in value.items()}
+        return {k: "***" if k.lower() in SECRET_KEYS else mask_secrets(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_mask(v) for v in value]
+        return [mask_secrets(v) for v in value]
     return value
 
 
