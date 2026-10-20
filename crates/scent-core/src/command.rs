@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde_json::{Value, json};
 
-use crate::Level;
+use crate::{Level, Profile};
 
 /// Largest piece written to the Bluetooth characteristic in one go. Scentiment's
 /// app asks for an MTU of 180, so a write carries 177 bytes after the 3-byte header.
@@ -57,7 +57,7 @@ impl fmt::Display for Secret {
 /// Everything the app may send to a diffuser, and nothing else. There is no
 /// variant for firmware updates, hard or factory resets, light commands or
 /// free-form JSON, so none of those can be expressed, let alone sent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     TurnOn {
         on: bool,
@@ -80,6 +80,9 @@ pub enum Command {
         password: Secret,
     },
     SoftRestart,
+    /// Sets the schedule table, or only the always-on entry. Follow it with
+    /// `SyncTime`, as Scentiment's app does; the other order did not run on the Air 2.
+    UpdateProfile(Profile),
 }
 
 impl Command {
@@ -95,6 +98,7 @@ impl Command {
             (Command::WifiConnect { .. }, _) => "WIFI_CONNECT",
             (Command::SoftRestart, Via::Bluetooth) => "SECRET_COMMAND",
             (Command::SoftRestart, Via::Wifi) => "RESET",
+            (Command::UpdateProfile(_), _) => "UPDATE_PROFILE",
         }
     }
 
@@ -159,13 +163,16 @@ impl Command {
                 Via::Bluetooth => json!({ "command": "restart" }),
                 Via::Wifi => json!({ "mode": "soft" }),
             },
+            Command::UpdateProfile(profile) => profile.to_payload(),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{Command, Level, Secret, Via, chunks};
+    use crate::{
+        AlwaysOn, Command, Entry, HhMm, Level, Profile, ScheduleFlag, Secret, Via, chunks,
+    };
 
     #[test]
     fn ble_frames_are_compact_json_with_terminator() {
@@ -291,6 +298,66 @@ mod tests {
             Command::Ping { userid: None }.redacted(Via::Wifi),
             r#"{"action":"PING"}"#
         );
+    }
+
+    // Expected bytes below were produced by tools/scentiment_ble.py (build_profile and encode_command).
+    #[test]
+    fn update_profile_frames_match_the_python_tools_on_both_transports() {
+        let timed = Profile {
+            always_on: AlwaysOn {
+                enable: false,
+                level: Level::new(1).unwrap(),
+            },
+            entries: vec![Entry {
+                start: HhMm::parse("07:00").unwrap(),
+                end: HhMm::parse("09:00").unwrap(),
+                weekdays: vec![1, 2, 3, 4, 5],
+                level: Level::new(3).unwrap(),
+                enable: true,
+            }],
+            timezone_hours: -5.0,
+            flag: ScheduleFlag::Replace,
+        };
+        let body = r#"{"action":"UPDATE_PROFILE","payload":{"profile":{"schedule":[{"index":1,"startTime":"00:00","endTime":"23:59","weekdays":[0,1,2,3,4,5,6],"workingState":{"level":1,"fan":0,"led":0,"timer":0},"enable":false,"isFactory":true},{"startTime":"07:00","endTime":"09:00","weekdays":[1,2,3,4,5],"workingState":{"level":3,"fan":0,"led":0,"timer":0},"enable":true}]},"timezone":-5.0,"schedule_flag":1}}"#;
+        let c = Command::UpdateProfile(timed);
+        assert_eq!(c.ble_frame(), format!("{body}-|").into_bytes());
+        assert_eq!(c.mqtt_body(), body.as_bytes());
+
+        let always_on = Command::UpdateProfile(Profile {
+            always_on: AlwaysOn {
+                enable: true,
+                level: Level::new(1).unwrap(),
+            },
+            entries: vec![],
+            timezone_hours: 5.5,
+            flag: ScheduleFlag::AlwaysOnOnly,
+        });
+        assert_eq!(
+            always_on.ble_frame(),
+            br#"{"action":"UPDATE_PROFILE","payload":{"profile":{"schedule":[{"index":1,"startTime":"00:00","endTime":"23:59","weekdays":[0,1,2,3,4,5,6],"workingState":{"level":1,"fan":0,"led":0,"timer":0},"enable":true,"isFactory":true}]},"timezone":5.5,"schedule_flag":0}}-|"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn update_profile_has_nothing_to_redact() {
+        let c = Command::UpdateProfile(Profile {
+            always_on: AlwaysOn {
+                enable: false,
+                level: Level::new(2).unwrap(),
+            },
+            entries: vec![],
+            timezone_hours: 0.0,
+            flag: ScheduleFlag::Replace,
+        });
+        for via in [Via::Bluetooth, Via::Wifi] {
+            assert_eq!(c.action(via), "UPDATE_PROFILE");
+            let frame = String::from_utf8(match via {
+                Via::Bluetooth => c.ble_frame(),
+                Via::Wifi => c.mqtt_body(),
+            })
+            .unwrap();
+            assert_eq!(c.redacted(via), frame);
+        }
     }
 
     #[test]
