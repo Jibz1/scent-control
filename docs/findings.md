@@ -26,6 +26,7 @@ the device itself, starting and stopping on time.
 | `PING`/`userid` persistence | **Confirmed.** The first `PING {"userid"}` replies `ADDED`, later ones `ALREADY_ADDED`. The user ID survives a soft restart: the device announces itself on `user/<userId>` without a new `PING`. A `PING` over Bluetooth also stores it. |
 | Control over WiFi | `TURN_ON` works and is acknowledged. `SET_LEVEL` and `UPDATE_PROFILE` (`schedule_flag 0`, the always-on entry) work **without** any reply. Light commands have no effect. `GET_STATUS` answers only sometimes. `SYNC_TIME` never replies. WiFi commands seemed held while a Bluetooth session was open, and replies can lag ~14 s. |
 | On-device schedules | **Confirmed on the Air 2** (10:24 start; 11:03–11:06 start and stop), with no phone or Bluetooth involved. **The order matters:** `UPDATE_PROFILE` (`schedule_flag 1`) then `SYNC_TIME` works, as in Scentiment's app. `SYNC_TIME` first, then the schedule, did not run. |
+| Schedule over Bluetooth | **Unknown.** `SYNC_TIME` then `UPDATE_PROFILE` were sent over BLE for a 09:31–09:35 window, but nobody observed the result, and that order also failed over WiFi. Retest with the working order (`UPDATE_PROFILE`, then `SYNC_TIME`). |
 | Power cut | Not tested as a true power cut: the Air 2 **has a battery** and kept running unplugged. A soft restart keeps the broker, the user ID and WiFi. |
 | Button / touchscreen reporting | Not tested yet (Phase 2). |
 | Status reporting | The device reports **only on a change**. `0xFEF3` holds the last value it sent (e.g. `led:50`), not a live status. `PING`, `GET_STATUS` over Bluetooth, and re-sending the same intensity trigger nothing. Unplugging the Air 2 sent no power-source change. |
@@ -489,7 +490,7 @@ The app sends the whole table with `UPDATE_PROFILE`:
   itself is unknown.
 - Success is reported as `OTA_SUCCESS`/`OTA_SUCCEED`.
 
-### What still has to be tested on our devices
+### What still had to be tested (as of the app-code review; see "Phase 0 results" for outcomes)
 
 1. `0xFEF4` on both units: the HVAC 2's model code and both firmware versions.
 2. Whether `SAVE_MQTT` works over BLE, which broker URL schemes it accepts

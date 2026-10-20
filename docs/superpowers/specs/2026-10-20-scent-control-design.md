@@ -158,11 +158,12 @@ eventually be open source and support other brands.
 Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconciler)
     │                     │
     │ Bluetooth           │ MQTT (server's own login)
-    │ (setup + fallback)  ▼
+    │ (setup, and control │
+    │  when nearby)       ▼
     └──────────────▶ MQTT broker ◀──wss (one login per diffuser)── Diffusers on home WiFi
 ```
 
-- **Mobile app** (`apps/mobile`): Bluetooth for setup and fallback control, HTTPS to
+- **Mobile app** (`apps/mobile`): Bluetooth for setup and for control when in range, HTTPS to
   the server for everything else, and a live connection to the server for status
   updates (builder's call: SSE or WebSocket).
 - **Server** (`apps/server`): the API, accounts and homes, the device registry,
@@ -360,7 +361,8 @@ fixtures, the server and broker on Railway, and app setup and manual control.
 Android first, since the owner has a Pixel 6a for testing (designer's call).
 
 **Phase 2: schedules, status and resilience.** The schedule editor, the desired-state
-reconciler, status and oil level, the Bluetooth fallback, and the HVAC 2.
+reconciler, status, Bluetooth-first control, and the HVAC 2 (oil level is unavailable;
+see the Phase 0 appendix).
 
 **Phase 3: other people.** Sign-up, homes and invites, TestFlight and APK builds,
 and the privacy policy. Needs a domain for sign-in email first (§5).
@@ -416,7 +418,9 @@ follows for later phases:
 10. **One WiFi home per diffuser.** A diffuser on our broker can't use Scentiment's
     cloud at the same time. Bluetooth works for both apps, one at a time.
 11. **Not yet tested, moved to Phase 2:** button and touchscreen change reporting, a true
-    power cut (the Air 2 has a battery), and HVAC 2 schedules.
+    power cut (the Air 2 has a battery), HVAC 2 schedules, and **setting a schedule over
+    Bluetooth** (`UPDATE_PROFILE` + `SYNC_TIME` over BLE). That last one matters now that
+    Bluetooth is the first choice when nearby. Until it's confirmed, schedules go over WiFi.
 12. **macOS desktop clients must be app bundles that declare Bluetooth use**, which
     matters for the desktop app (see the Phase 1 design addition).
 

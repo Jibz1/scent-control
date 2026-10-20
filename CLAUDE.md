@@ -25,13 +25,15 @@ at any point.
 Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconciler)
     │                     │
     │ Bluetooth           │ MQTT (server's own login)
-    │ (setup + fallback)  ▼
+    │ (setup, and control │
+    │  when nearby)       ▼
     └──────────────▶ MQTT broker ◀──wss (one login per diffuser)── Diffusers on home WiFi
 ```
 
-- **Mobile app:** Bluetooth for setup (`WIFI_CONNECT`, then `SAVE_MQTT` pointing at
-  our broker) and as a fallback when a diffuser is offline. Everything else goes
-  through the server over HTTPS.
+- **Apps:** Bluetooth for setup and for control whenever a diffuser is in range
+  (owner, Bluetooth-first). Setup sends `SAVE_MQTT` pointing at our broker plus a soft
+  restart; `WIFI_CONNECT` is only needed when the diffuser isn't on WiFi yet.
+  Otherwise everything goes through the server over HTTPS.
 - **Server:** API, accounts and homes, device registry, schedules, per-device broker
   logins, and the desired-state reconciler. The person's most recent change wins,
   wherever it was made. A reboot or reconnect is never a change.
@@ -39,7 +41,8 @@ Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconci
   certificate. Each diffuser has one login and may only use its own topics.
 - **Protocol package:** pure codec shared by app and server.
 - **Drivers and capabilities:** each device family is a driver, so other brands can
-  slot in later. The app shows only what a device supports, for example oil level.
+  slot in later. The app shows only what a device supports (on firmware 2.30 neither
+  model reports oil level or accepts light commands).
 - Schedules are stored on and run by the diffuser. The server keeps the master copy,
   re-sends it when needed, and re-sends the time zone offset when daylight saving
   changes.
@@ -88,7 +91,7 @@ docs/                findings, design, plans
 
 ## Phases
 
-0. **Prove it on the real devices (current, a gate):**
+0. **Prove it on the real devices (done 2026-10-20, gate: go; see `docs/findings.md`):**
    - Bluetooth control.
    - `SAVE_MQTT` over Bluetooth to a `wss://` test broker.
    - Schedules running on the device.
@@ -99,7 +102,7 @@ docs/                findings, design, plans
    ask the owner.
 1. **One diffuser end to end for the owner:** protocol package, server and broker on
    Railway, app setup and manual control. Android first.
-2. **Schedules, status, resilience:** the reconciler, oil level, Bluetooth fallback,
+2. **Schedules, status, resilience:** the reconciler, Bluetooth-first control,
    and the HVAC 2.
 3. **Other people:** sign-up with an emailed code, homes and invites, TestFlight and
    APK builds. Needs a domain for email first.

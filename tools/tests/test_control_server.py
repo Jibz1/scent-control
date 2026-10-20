@@ -143,3 +143,28 @@ def test_sent_profiles_are_remembered_and_flag_0_only_replaces_the_always_on_ent
     apply_event(devices, sent({"profile": {"schedule": [on]}, "timezone": -5.0, "schedule_flag": 0}))
     schedule = devices["TESTDEVICE01"]["sentProfile"]["profile"]["schedule"]
     assert schedule == [on, WINDOW] and devices["TESTDEVICE01"]["sentProfileAt"] == "2026-10-20T10:21:06"
+
+def test_hub_resubscribes_after_the_broker_reconnects(tmp_path):
+    from capture import CaptureLog
+    from control_server import Hub, TOPIC_PREFIX
+    class Reason:
+        is_failure = False
+    class FakeClient:
+        def __init__(self):
+            self.subscriptions, self.on_connect, self.on_message = [], None, None
+        def subscribe(self, topic, qos=0):
+            self.subscriptions.append(topic)
+    client = FakeClient()
+    Hub(client, CaptureLog(tmp_path / "c.jsonl"), {}, "route-test-1")
+    client.on_connect(client, None, None, Reason(), None)  # paho reconnected with a clean session
+    assert client.subscriptions == [TOPIC_PREFIX + "#", TOPIC_PREFIX + "#"]
+
+def test_post_requests_must_come_from_the_bench_page():
+    from control_server import allowed_post
+    ok = {"Host": "127.0.0.1:8765", "Content-Type": "application/json", "Origin": "http://127.0.0.1:8765"}
+    assert allowed_post(ok, 8765)
+    assert allowed_post({**ok, "Host": "localhost:8765", "Origin": "http://localhost:8765"}, 8765)
+    assert allowed_post({"Host": "127.0.0.1:8765", "Content-Type": "application/json"}, 8765)  # curl: no Origin
+    assert not allowed_post({**ok, "Content-Type": "text/plain"}, 8765)        # a cross-site form or no-preflight fetch
+    assert not allowed_post({**ok, "Origin": "https://evil.example"}, 8765)
+    assert not allowed_post({**ok, "Host": "attacker.example:8765"}, 8765)     # DNS rebinding

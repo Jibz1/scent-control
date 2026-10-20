@@ -1,0 +1,9 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "mqtt",
+  "topic": "scentiment-mqtt-prod/server-notifications/device",
+  "note": "first connect after SAVE_MQTT, before any PING",
+  "text": "{\"action\":\"device_connected\",\"payload\":{\"deviceId\":\"TESTDEVICE01\",\"fw\":\"2.30\",\"model\":\"Diffuser\",\"variant\":\"Black\",\"manufacturer\":\"01\"}}"
+}

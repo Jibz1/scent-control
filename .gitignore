@@ -32,6 +32,9 @@ captures/
 *.btsnoop
 btsnoop_hci.log
 
+# Agent working files (progress ledgers may hold device identifiers)
+.superpowers/
+
 # OS and editors
 .DS_Store
 .idea/

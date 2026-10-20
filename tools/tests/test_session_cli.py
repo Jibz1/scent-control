@@ -22,3 +22,8 @@ def test_status_report_combines_info_and_status():
     assert report["deviceId"] == "TESTDEVICE01" and report["alias"] == "air2"
     assert report["status"] == {"power": 1, "intensity": 3, "charging": 2, "battery": 200}
     assert report["info"]["wifi_status"] == 3
+
+def test_make_test_schedule_keeps_the_always_on_entry_off_by_default(capsys):
+    assert main(["make-test-schedule"]) == 0
+    factory = json.loads(capsys.readouterr().out)["profile"]["schedule"][0]
+    assert factory["isFactory"] is True and factory["enable"] is False

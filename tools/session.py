@@ -23,7 +23,7 @@ DEFAULT_FACTORY = {
     "endTime": "23:59",
     "weekdays": [0, 1, 2, 3, 4, 5, 6],
     "workingState": {"level": 1, "fan": 0, "led": 0, "timer": 0},
-    "enable": True,
+    "enable": False,  # off, so only the test entry runs (on would run the diffuser all day)
     "isFactory": True,
 }
 

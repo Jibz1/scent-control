@@ -228,6 +228,21 @@ def replay_captures(folder: Path, devices: dict) -> int:
     return len([e for e in events if e.get("direction") == "from_device"])
 
 
+def allowed_post(headers, port: int) -> bool:
+    """Only the bench page itself may send commands, not other sites open in the same browser.
+
+    JSON bodies force a CORS preflight that this server never answers, and Host/Origin
+    checks stop DNS rebinding. Tools without an Origin (curl) are still allowed.
+    """
+    local = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    origin = headers.get("Origin")
+    return (
+        (headers.get("Content-Type") or "").split(";")[0].strip() == "application/json"
+        and headers.get("Host") in local
+        and (origin is None or origin in {f"http://{h}" for h in local})
+    )
+
+
 def _loads(text: str) -> object:
     try:
         return json.loads(text)
@@ -247,7 +262,13 @@ class Hub:
         self.listeners: list[queue.Queue] = []
         self.lock = threading.Lock()
         client.on_message = self._on_message
+        client.on_connect = self._on_connect
         client.subscribe(TOPIC_PREFIX + "#", qos=1)
+
+    def _on_connect(self, client, _userdata, _flags, reason_code, _properties) -> None:
+        # paho reconnects on its own with a clean session, which drops subscriptions
+        if not reason_code.is_failure:
+            client.subscribe(TOPIC_PREFIX + "#", qos=1)
 
     def state(self) -> dict:
         now = dt.datetime.now().isoformat(timespec="seconds")
@@ -366,6 +387,8 @@ def make_handler(hub: Hub):
                 self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if not allowed_post(self.headers, self.server.server_port):
+                return self._json(403, {"error": "commands are only accepted from the bench page"})
             if self.path == "/api/ble-read":
                 try:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
