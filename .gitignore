@@ -1,0 +1,36 @@
+# Dependencies and builds
+node_modules/
+dist/
+build/
+.turbo/
+.expo/
+*.tsbuildinfo
+
+# Python tools
+__pycache__/
+.venv/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+
+# Mobile build outputs and vendor apps (never commit someone else's app)
+*.apk
+*.aab
+*.ipa
+
+# Device captures may contain WiFi passwords or account data
+captures/
+*.btsnoop
+btsnoop_hci.log
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
