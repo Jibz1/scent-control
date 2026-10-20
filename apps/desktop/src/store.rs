@@ -277,10 +277,11 @@ impl Stored {
         }
         let mut broker = BrokerSettings::from(self.broker);
         // A hand-edited address that can't be used would otherwise surface later as a
-        // missing password. The default is no worse than none.
+        // missing password. The default is no worse than none; who we are on the broker
+        // stays.
         let notice = BrokerUrl::parse(&broker.url).err().map(|error| {
             eprintln!("scent-control: the saved broker address is not usable: {error}");
-            broker = BrokerSettings::default();
+            broker.url = BrokerSettings::default().url;
             BAD_BROKER_ADDRESS.to_owned()
         });
         Loaded {
@@ -554,8 +555,11 @@ mod tests {
             );
             fs::write(dir.path().join("desktop.json"), file).unwrap();
             let loaded = store(&dir).load();
-            // All of it goes back to the defaults, not just the address.
-            assert_eq!(loaded.broker, BrokerSettings::default(), "{bad:?}");
+            // The address goes back to the default; who we are on the broker stays.
+            let defaults = BrokerSettings::default();
+            assert_eq!(loaded.broker.url, defaults.url, "{bad:?}");
+            assert_eq!(loaded.broker.username, "someone", "{bad:?}");
+            assert_eq!(loaded.broker.route_id, "route-9", "{bad:?}");
             let notice = loaded.notice.expect("a notice");
             assert!(notice.contains("broker address"), "{notice}");
             assert!(notice.contains("Settings"), "{notice}");

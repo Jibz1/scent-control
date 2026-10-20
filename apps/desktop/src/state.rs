@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use scent_core::{
-    Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Online, Profile, ScheduleFlag, Status,
-    Via, online_status, parse_mqtt, parse_notification, valid_device_id,
+    Ack, Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Online, Profile, ScheduleFlag,
+    Status, Via, online_status, parse_mqtt, parse_notification, valid_device_id,
 };
 
 /// How many log entries the app keeps. The oldest go first.
@@ -360,19 +360,27 @@ impl AppState {
             device_id,
             status,
             rssi,
+            ack,
             connected,
             raw,
             ..
         } = parse_mqtt(topic, body);
-        self.push_log(LogEntry {
-            at,
-            device_id: device_id.clone(),
-            via: Some(Via::Wifi),
-            direction,
-            action: action.unwrap_or_else(|| NO_ACTION.to_owned()),
-            text: raw,
-            sent: false,
-        });
+        // The ping round (our `PING`, then the diffuser's "already added") happens every
+        // 30 s for each diffuser. Logged, it would push the conversation out of the
+        // capped log within hours. It is still heard, below.
+        let routine = ack == Some(Ack::AlreadyAdded)
+            || (direction == Direction::ToDevice && action.as_deref() == Some("PING"));
+        if !routine {
+            self.push_log(LogEntry {
+                at,
+                device_id: device_id.clone(),
+                via: Some(Via::Wifi),
+                direction,
+                action: action.unwrap_or_else(|| NO_ACTION.to_owned()),
+                text: raw,
+                sent: false,
+            });
+        }
         // Our own commands come back to us too (we hear everything under the
         // prefix). They are logged above and tell us nothing about the diffuser.
         if direction != Direction::FromDevice {
@@ -682,6 +690,11 @@ mod tests {
     /// Power 1, intensity 2, charging 2, battery 200, rssi -66.
     const UPDATE_STATUS: &str =
         include_str!("../../../fixtures/scentiment/air2-mqtt-update-status-object.json");
+    /// The reply to every `PING` after the first.
+    const ACK_ALREADY_ADDED: &str =
+        include_str!("../../../fixtures/scentiment/air2-mqtt-ack-already-added.json");
+    /// The reply to the first `PING` with a route ID.
+    const ACK_ADDED: &str = include_str!("../../../fixtures/scentiment/air2-mqtt-ack-added.json");
 
     // Builders
 
@@ -904,10 +917,11 @@ mod tests {
     #[test]
     fn messages_to_a_device_are_logged_but_change_nothing() {
         let mut s = known_air2();
-        let ping = r#"{"action":"PING","payload":{"userid":"route-test-1"}}"#;
-        s.apply_at(mqtt(DEVICE1_TOPIC, ping, 100), NOW);
+        // (A `PING` is a message to a device too, but a routine one: see below.)
+        let command = r#"{"action":"TURN_ON","payload":{"on":1}}"#;
+        s.apply_at(mqtt(DEVICE1_TOPIC, command, 100), NOW);
         s.apply_at(
-            mqtt("scentiment-mqtt-prod/device/TESTDEVICE02", ping, 101),
+            mqtt("scentiment-mqtt-prod/device/TESTDEVICE02", command, 101),
             NOW,
         );
         assert_eq!(s.devices.len(), 1, "no device appears from an echo");
@@ -921,8 +935,8 @@ mod tests {
         let entry = echoes[0];
         assert_eq!(entry.device_id.as_deref(), Some(ID1));
         assert_eq!(entry.via, Some(Via::Wifi));
-        assert_eq!(entry.action, "PING");
-        assert_eq!(entry.text, ping);
+        assert_eq!(entry.action, "TURN_ON");
+        assert_eq!(entry.text, command);
     }
 
     #[test]
@@ -1430,6 +1444,88 @@ mod tests {
         // Masking twice is the same as masking once (summaries arrive already redacted).
         let once = mask_passwords(r#"{"ssid":"x","password":"hunter2!"}"#);
         assert_eq!(mask_passwords(&once), once);
+    }
+
+    // Routine traffic
+
+    /// A `PING` from this app, as the broker hands it back on the diffuser's topic.
+    fn our_ping(at: i64) -> Event {
+        let ping = Command::Ping {
+            userid: Some("route-test-1".to_owned()),
+        };
+        Event::Mqtt {
+            topic: DEVICE1_TOPIC.to_owned(),
+            body: ping.mqtt_body(),
+            at,
+        }
+    }
+
+    #[test]
+    fn a_ping_round_is_not_logged_but_the_diffuser_is_still_heard() {
+        let mut s = AppState::default();
+        s.apply_at(our_ping(100), NOW);
+        s.apply_at(fixture_event(ACK_ALREADY_ADDED, 101), NOW);
+        // Neither the ping nor its answer fills the log...
+        assert!(s.log.is_empty(), "{:?}", s.log);
+        // ...but the answer is still the diffuser being heard on our broker.
+        let device = &s.devices[ID1];
+        assert_eq!(device.heard_wifi, Some(101));
+        // And the ping we sent says nothing about the diffuser.
+        let mut s = AppState::default();
+        s.apply_at(our_ping(100), NOW);
+        assert!(s.devices.is_empty());
+        // A round from a diffuser already in the log leaves the log as it was.
+        let mut s = AppState::default();
+        s.apply_at(fixture_event(UPDATE_STATUS, 90), NOW);
+        let before = s.log.len();
+        for round in 0..3 {
+            s.apply_at(our_ping(100 + round * 30), NOW);
+            s.apply_at(fixture_event(ACK_ALREADY_ADDED, 101 + round * 30), NOW);
+        }
+        assert_eq!(s.log.len(), before);
+        assert_eq!(s.devices[ID1].heard_wifi, Some(161));
+    }
+
+    #[test]
+    fn the_first_registration_and_every_other_reply_are_still_logged() {
+        let mut s = AppState::default();
+        s.apply_at(fixture_event(ACK_ADDED, 100), NOW);
+        s.apply_at(fixture_event(UPDATE_STATUS, 101), NOW);
+        let ack = |msg: &str| {
+            let body = serde_json::json!({
+                "action": "acknowledgement",
+                "payload": { "deviceId": ID1, "msg": msg },
+            });
+            mqtt(USER_TOPIC, &body.to_string(), 102)
+        };
+        // Another acknowledgement with a result, and one that isn't JSON.
+        s.apply_at(
+            ack(r#"{"user_id":"route-test-1","result":"BATTERY_MODE"}"#),
+            NOW,
+        );
+        s.apply_at(ack("Credentials saved"), NOW);
+        // A command that isn't a ping, and a ping that isn't an acknowledgement.
+        s.apply_at(
+            Event::Mqtt {
+                topic: DEVICE1_TOPIC.to_owned(),
+                body: Command::TurnOn { on: true }.mqtt_body(),
+                at: 103,
+            },
+            NOW,
+        );
+        s.apply_at(mqtt(USER_TOPIC, r#"{"action":"PING"}"#, 104), NOW);
+        let actions: Vec<&str> = s.log.iter().map(|entry| entry.action.as_str()).collect();
+        assert_eq!(
+            actions,
+            [
+                "acknowledgement",
+                "update_status",
+                "acknowledgement",
+                "acknowledgement",
+                "TURN_ON",
+                "PING"
+            ]
+        );
     }
 
     // Local store
