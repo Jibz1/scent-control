@@ -22,7 +22,7 @@ DEFAULT_FACTORY = {
     "startTime": "00:00",
     "endTime": "23:59",
     "weekdays": [0, 1, 2, 3, 4, 5, 6],
-    "workingState": {"level": 2, "fan": 0, "led": 0, "timer": 0},
+    "workingState": {"level": 1, "fan": 0, "led": 0, "timer": 0},
     "enable": True,
     "isFactory": True,
 }
@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     trial = sub.add_parser("make-test-schedule", help="print a schedule file with a short test entry")
     trial.add_argument("--start-in", type=int, default=3, help="minutes from now (default 3)")
     trial.add_argument("--duration", type=int, default=4, help="minutes (default 4)")
-    trial.add_argument("--level", type=int, default=3, choices=(1, 2, 3))
+    trial.add_argument("--level", type=int, default=1, choices=(1, 2, 3))
     trial.add_argument("--factory", type=Path, help="JSON file with the device's own factory entry")
     return parser
 

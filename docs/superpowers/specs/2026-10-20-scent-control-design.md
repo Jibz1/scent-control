@@ -243,6 +243,9 @@ Phase 0.
   `SET_RGB_*`) if the device accepts them over MQTT.
 - **Over Bluetooth:** `TURN_ON`, `SET_LEVEL`, `SET_RGB_LEVEL` and `SET_RGB_LED`, as
   documented.
+- **Default intensity is 1 (owner, 2026-10-20)** wherever the app or server has to
+  pick one: switching on, new schedule times and the always-on entry. Scentiment's app
+  uses 2 for "Diffuser" models.
 - **Schedules:**
   - The server keeps the master schedule table for each device and sends the
     whole table with `UPDATE_PROFILE` (`schedule_flag: 1`), followed by

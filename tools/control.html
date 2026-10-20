@@ -130,7 +130,7 @@ details summary { cursor: pointer; color: var(--ink-soft); font-size: 0.85rem; }
       <div class="row">
         <span class="name">Always-on</span>
         <label><input type="checkbox" id="factory-on"> runs all day</label>
-        <label>level <select id="factory-level"><option>1</option><option selected>2</option><option>3</option></select></label>
+        <label>level <select id="factory-level"><option selected>1</option><option>2</option><option>3</option></select></label>
       </div>
       <p class="hint">This is the diffuser's fixed first entry, which doubles as its manual on/off. Leave it off so only the times below run.</p>
 
@@ -361,7 +361,7 @@ function selectDevice(id) {
 function hhmm(date) { return date.toTimeString().slice(0, 5); }
 
 function addEntry(entry) {
-  state.entries.push(entry || { startTime: "07:00", endTime: "09:00", weekdays: [1, 2, 3, 4, 5], level: 2, enable: true });
+  state.entries.push(entry || { startTime: "07:00", endTime: "09:00", weekdays: [1, 2, 3, 4, 5], level: 1, enable: true });
   renderEntries();
 }
 
@@ -432,11 +432,11 @@ function loadReported() {
   const factory = schedule.find((e) => e.isFactory || e.index === 1);
   if (factory) {
     $("factory-on").checked = !!factory.enable;
-    $("factory-level").value = String((factory.workingState || {}).level || 2);
+    $("factory-level").value = String((factory.workingState || {}).level || 1);
   }
   state.entries = schedule.filter((e) => e !== factory).map((e) => ({
     startTime: e.startTime, endTime: e.endTime, weekdays: e.weekdays || [],
-    level: (e.workingState || {}).level || 2, enable: !!e.enable,
+    level: (e.workingState || {}).level || 1, enable: !!e.enable,
   }));
   renderEntries();
 }
@@ -501,7 +501,7 @@ $("add-entry").onclick = () => addEntry();
 $("add-test").onclick = () => {
   const start = new Date(Date.now() + 3 * 60000), end = new Date(start.getTime() + 4 * 60000);
   if (end.getDate() !== new Date().getDate()) return alert("A test time would cross midnight. Add one by hand instead.");
-  addEntry({ startTime: hhmm(start), endTime: hhmm(end), weekdays: [start.getDay()], level: 3, enable: true });
+  addEntry({ startTime: hhmm(start), endTime: hhmm(end), weekdays: [start.getDay()], level: 1, enable: true });
 };
 $("send-schedule").onclick = () => {
   if (!state.selected) return alert("Pick a diffuser first.");
