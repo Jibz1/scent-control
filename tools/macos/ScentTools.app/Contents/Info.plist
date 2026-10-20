@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.scent-control.tools</string>
+	<key>CFBundleName</key>
+	<string>ScentTools</string>
+	<key>CFBundleExecutable</key>
+	<string>scent-tools</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Scent Control's Phase 0 tools scan for and talk to your diffusers over Bluetooth.</string>
+</dict>
+</plist>

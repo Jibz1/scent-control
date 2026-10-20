@@ -34,7 +34,35 @@ If bleak's macOS dependency (pyobjc) fails to install on your Python, run
 - Raw output goes to `../captures/`, which stays out of git. Commit only sanitized
   fixtures under `../fixtures/scentiment/`.
 
+## Running Bluetooth tools on macOS
+
+macOS only lets a program use Bluetooth if the app responsible for it declares that
+it does. A tool started from Terminal.app runs under Terminal's permission.
+A tool started by Claude (or another app without that declaration) gets killed.
+
+- **From Terminal.app:** run `.venv/bin/python <script> …` directly. macOS asks once
+  to allow Terminal to use Bluetooth. Use this for `session.py wifi`, which prompts
+  for the WiFi password.
+- **Through `./bt`:** `./bt <script> …` runs the script inside `macos/ScentTools.app`,
+  a minimal wrapper whose Info.plist declares Bluetooth use. macOS asks once to allow
+  "ScentTools". Output is shown when the command finishes. `./bt` has no keyboard
+  input, so it can't run commands that prompt for a password.
+
 ## Usage
 
-Usage for `scan.py`, `gatt_dump.py`, `session.py` and `broker.py` is added as each
-tool lands.
+```bash
+./bt scan.py --timeout 15                 # list nearby Scentiment diffusers (--all for everything)
+./bt gatt_dump.py air2                    # services, characteristics, readable values; sends nothing
+./bt session.py info air2                 # parsed 0xFEF4 device info
+./bt session.py listen air2 --seconds 30  # print notifications
+./bt session.py send air2 TURN_ON '{"on":1}'
+./bt session.py sync-time air2
+.venv/bin/python session.py make-test-schedule --start-in 3 --duration 4 > ../captures/sched.json
+./bt session.py profile air2 ../captures/sched.json --timezone -4
+./bt session.py restart air2              # soft restart only
+SCENT_BROKER_PASSWORD=… ./bt session.py save-mqtt air2 --broker wss://<domain>/mqtt --username scent-test
+.venv/bin/python session.py wifi air2     # from Terminal.app: prompts for the WiFi name and password
+```
+
+Every session writes `../captures/session-<alias>-<timestamp>.jsonl`, with secrets
+masked.

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs a tools/ script with this app as the responsible process, so macOS can ask
+# for Bluetooth permission. Started through tools/bt, never directly.
+cd "$(dirname "$0")/../../../.." || exit 1
+exec ./.venv/bin/python "$@"

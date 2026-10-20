@@ -9,6 +9,13 @@ from pathlib import Path
 
 from scentiment_ble import mask_secrets, redact_frame
 
+CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
+
+
+def stamp() -> str:
+    """Local timestamp for capture file names."""
+    return dt.datetime.now().strftime("%Y%m%dT%H%M%S")
+
 
 class CaptureLog:
     def __init__(self, path: Path) -> None:
@@ -19,7 +26,7 @@ class CaptureLog:
         self._write({"dir": "tx", "channel": channel, "text": redact_frame(frame)})
 
     def rx(self, text: str, parsed: dict, channel: str) -> None:
-        self._write({"dir": "rx", "channel": channel, "text": _redact_text(text), "parsed": mask_secrets(parsed)})
+        self._write({"dir": "rx", "channel": channel, "text": redact_text(text), "parsed": mask_secrets(parsed)})
 
     def note(self, message: str) -> None:
         self._write({"dir": "note", "channel": "", "text": message})
@@ -30,7 +37,8 @@ class CaptureLog:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _redact_text(text: str) -> str:
+def redact_text(text: str) -> str:
+    """Mask secrets in text that parses as JSON; return other text unchanged."""
     try:
         obj = json.loads(text)
     except ValueError:

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Usage: tools/bt <script.py> [args...]
+# Runs a Bluetooth tool through ScentTools.app so macOS grants it Bluetooth access.
+# Not for commands that prompt for a password (wifi); run those from Terminal.app.
+here="$(cd "$(dirname "$0")" && pwd)"
+out="$(mktemp -t scent-bt-out)"; err="$(mktemp -t scent-bt-err)"
+open -W -n --stdout "$out" --stderr "$err" "$here/macos/ScentTools.app" --args "$@"
+cat "$out"; cat "$err" >&2
+rm -f "$out" "$err"
