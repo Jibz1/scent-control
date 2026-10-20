@@ -1,0 +1,7 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "hvac",
+  "firmware": "2.30",
+  "channel": "ble-info",
+  "text": "03|Hvac|Black|TESTDEVICE02|2.30|true|2"
+}

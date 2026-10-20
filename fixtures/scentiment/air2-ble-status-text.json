@@ -1,0 +1,8 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "ble-notify",
+  "note": "read from 0xFEF3",
+  "text": "S:0,L:0,C:2,Bat:200"
+}

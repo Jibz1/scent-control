@@ -1,0 +1,8 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "hvac",
+  "firmware": "2.30",
+  "channel": "ble-notify",
+  "note": "notification right after connect",
+  "text": "S:0,L:1,C:2,Bat:200"
+}

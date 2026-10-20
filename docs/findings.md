@@ -17,6 +17,47 @@ and `tools/gatt_dump.py`.
   the HVAC 2 has turned up, so nothing public is known about its chips or its Bluetooth
   protocol. Scanning it is the first real unknown.
 
+## 2026-10-20: Read-only survey of our two diffusers [observed]
+
+Tools: `tools/scan.py`, `gatt_dump.py` and `session.py info/listen`, run from a Mac
+(macOS 27) about 3–5 m from both units, with the phone's Bluetooth off. Nothing was
+sent to either device. Real device IDs are replaced below with `TESTDEVICE01` (Air 2)
+and `TESTDEVICE02` (HVAC 2).
+
+| | Diffuser Air 2 | Diffuser HVAC 2 |
+|---|---|---|
+| Advertised name | `Scentiment-D B n <deviceId>` | `Scentiment-H B n <deviceId>` |
+| Model / variant code | `D` / `B` (Black) | `H` / `B` (Black) |
+| RSSI at the Mac | −71 dBm | −60 dBm |
+| Advertisement | name only: no service UUIDs, manufacturer data or service data | same |
+| GATT | service `0x0180` with `0xFEF4` (read), `0xFEF3` (read, notify, CCCD), `0xDEAD` (write) | **identical** |
+| MTU (macOS) | 256 | 256 |
+| `0xFEF4` info | `01\|Diffuser\|Black\|TESTDEVICE01\|2.30\|true\|3` | `03\|Hvac\|Black\|TESTDEVICE02\|2.30\|true\|2` |
+| Firmware | 2.30 | 2.30 |
+| WiFi configured / status | true / 3 | true / 2 |
+| `0xFEF3` read | `S:0,L:0,C:2,Bat:200` | `S:0,L:1,C:2,Bat:200` |
+| Unprompted notifications in 30 s after connecting | none | one: `S:0,L:1,C:2,Bat:200` right after connect |
+
+What this tells us:
+
+- **The HVAC 2 speaks the same Bluetooth protocol as the Air 2**: same GATT layout, info
+  format and status text. The manufacturer ID differs (`03` vs `01`), and the model
+  name in `0xFEF4` is `Hvac`, matching Scentiment's app's `H` code.
+- **`deviceId` is 12 hex digits and matches the last token of the advertised name**
+  (it looks like a MAC address). The third name token is `n` on both. Its meaning is
+  unknown.
+- **Both units are still on a WiFi network from their original setup**
+  (`wifi_configured` true, status 2 and 3). On firmware > 2.0, Scentiment's app treats
+  2 or 3 as connected. What 2 versus 3 means (for example, WiFi only versus WiFi plus
+  broker) is unknown. Until `SAVE_MQTT` moves them, they are presumably trying to reach
+  Scentiment's broker.
+- **Firmware 2.30 on both:** `SYNC_TIME` applies (> 1.3.8), up to 100 schedule entries
+  (> 2.21), and the `wifiStatus` 2/3 rule applies (> 2.0).
+- **`0xFEF3` can be read directly.** It returns the status text, so a state read
+  doesn't depend on the device choosing to send a notification. The Air 2 sent no
+  notification on connect, unlike the report in Scent Assistant's issue #42.
+- Both report `C:2,Bat:200`, which is "on external power".
+
 ## 2026-10-19: Scent Assistant (prior art)
 
 Source: https://github.com/mr-sparks/scent-assistant at commit `9a5fc05` (2026-10-09),
