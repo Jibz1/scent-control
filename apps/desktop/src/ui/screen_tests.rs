@@ -1,0 +1,135 @@
+//! The screens driven through egui_kittest, as a person would use them: clicks, keys
+//! and what accessibility sees. No hub: the commands they ask for are collected.
+
+use std::path::Path;
+
+use eframe::egui::{self, Key};
+
+use super::Screens;
+use super::tests::{NOW, ONE, state};
+use super::theme;
+use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
+use crate::mqtt::BrokerSettings;
+use crate::state::{AppState, BrokerState};
+
+/// The screens with what they asked for, for a test harness to drive.
+struct Rig {
+    screens: Screens,
+    state: AppState,
+    commands: Vec<UiCommand>,
+}
+
+/// A harness that draws the screens in egui's fonts, without a hub. The first frame
+/// installs the theme, which is in use from the next.
+fn harness(state: AppState) -> egui_kittest::Harness<'static, Rig> {
+    let mut frames = 0;
+    let rig = Rig {
+        screens: Screens::new(None),
+        state,
+        commands: Vec::new(),
+    };
+    egui_kittest::Harness::builder()
+        .with_size(theme::WINDOW_SIZE)
+        .with_os(egui::os::OperatingSystem::Mac)
+        .build_ui_state(
+            move |ui, rig: &mut Rig| {
+                frames += 1;
+                if frames == 1 {
+                    theme::install(ui.ctx(), Path::new("/nonexistent"));
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                let requests = rig
+                    .screens
+                    .show(ui, &rig.state, &BrokerSettings::default(), NOW);
+                rig.commands.extend(requests.commands);
+            },
+            rig,
+        )
+}
+
+#[test]
+fn the_switch_sends_the_power_and_shows_it_while_it_goes() {
+    use egui::accesskit::{Role, Toggled};
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut state = state();
+    state.devices.get_mut(ONE).unwrap().sent = None;
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    // On, as reported.
+    let power = harness.get_by_role_and_label(Role::Switch, "Power");
+    assert_eq!(power.accesskit_node().toggled(), Some(Toggled::True));
+    harness.get_by_role_and_label(Role::Switch, "Power").click();
+    harness.run_steps(2);
+    assert!(
+        matches!(
+            harness.state().commands[..],
+            [UiCommand::Send {
+                cmd: scent_core::Command::TurnOn { on: false },
+                pref: crate::route::TransportPref::Auto,
+                ..
+            }]
+        ),
+        "one command, to turn it off"
+    );
+    // Off while the command is on its way, though nothing says so yet.
+    let power = harness.get_by_role_and_label(Role::Switch, "Power");
+    assert_eq!(power.accesskit_node().toggled(), Some(Toggled::False));
+}
+
+#[test]
+fn the_toolbar_hides_the_log_and_opens_settings_as_does_command_comma() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(state());
+    harness.run_steps(2);
+    harness.get_by_label("Hide Log").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Hide Log").is_none());
+    harness.get_by_label("Show Log").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Hide Log").is_some());
+
+    assert!(!harness.state().screens.settings.is_open());
+    harness.get_by_label("Settings").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.settings.is_open());
+    harness.get_by_label("Cancel").click();
+    harness.run_steps(2);
+    assert!(!harness.state().screens.settings.is_open());
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::Comma);
+    harness.run_steps(2);
+    assert!(harness.state().screens.settings.is_open());
+    assert!(harness.state().commands.is_empty());
+}
+
+#[test]
+fn a_log_line_can_be_copied() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(state());
+    harness.run_steps(2);
+    let failure = |node: &egui_kittest::kittest::AccessKitNode<'_>| {
+        node.value()
+            .is_some_and(|line| line.ends_with("No answer."))
+    };
+    harness.get_by(failure).click_secondary();
+    harness.run_steps(2);
+    harness.get_by_label("Copy").click();
+    harness.step();
+    let copied = harness.output().platform_output.commands.iter().any(
+        |command| matches!(command, egui::OutputCommand::CopyText(text) if text == "No answer."),
+    );
+    assert!(copied, "{:?}", harness.output().platform_output.commands);
+}
+
+#[test]
+fn no_password_saved_is_a_notice_with_a_way_to_settings() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = state();
+    state.broker = BrokerState::Disconnected(NO_BROKER_PASSWORD.to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    harness.get_by_label("Open Settings").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.settings.is_open());
+}
