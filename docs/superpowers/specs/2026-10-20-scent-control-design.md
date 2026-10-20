@@ -495,7 +495,7 @@ look with a theme and a few custom widgets.
 
   | Role | Light | Dark |
   |---|---|---|
-  | Accent (systemBlue) | `#007AFF` | `#0A84FF` |
+  | Accent (systemIndigo; was systemBlue before the polish) | `#5856D6` | `#5E5CE6` |
   | Answering (systemGreen) | `#34C759` | `#30D158` |
   | Waiting, pending (systemOrange) | `#FF9500` | `#FF9F0A` |
   | Error, login refused (systemRed) | `#FF3B30` | `#FF453A` |
@@ -560,6 +560,93 @@ look with a theme and a few custom widgets.
   selection, and the log pane opening. No decorative animation.
 - **Icons:** none drawn from SF Symbols, since egui can't use them. Status dots and
   words carry the meaning.
+
+### Design polish (owner, 2026-10-20: "make the desktop look nice using your best design skills")
+
+This builds on the Apple design language above and changes nothing about how the app behaves.
+
+**The subject.** A calm home utility for the air in a room. The owner glances at it to answer
+one question: is each diffuser diffusing, and how strongly? Today the layout is a settings form:
+- every row carries the same weight;
+- power and intensity appear twice, once as a reading and once as a control;
+- the answer is one row among many.
+
+**Bold in one place: the diffusion hero.** The top of the detail pane is one card that shows
+the state and changes it.
+
+```
+┌ sidebar ─────────┐┌ detail (centred column, max 640 pt) ─────────────────────┐
+│ ●●●              ││                                        [Show Log] [⚙]    │
+│ Diffusers        ││  Bedroom                                     (Title 1)   │
+│ ┌──┐ Bedroom     ││  Air 2, answering over WiFi                  (secondary) │
+│ │▯≈│ Diffusing   ││                                                          │
+│ └──┘ at Medium   ││  ╭─ hero card (radius 14) ─────────────────────────────╮ │
+│ ┌──┐ HVAC 2      ││  │  ((( ▯ )))   Diffusing                  (26 pt)  [◯━]│ │
+│ │▭≡│ Not         ││  │   arcs =     Medium intensity            (15 pt)     │ │
+│ └──┘ answering   ││  │   level      [  Low  |  Medium  |  High  ]           │ │
+│                  ││  ╰─────────────────────────────────────────────────────╯ │
+│ Found Nearby     ││  Today  ░░░░░██████░░░░░░░███░░░░ │now   (when known)    │
+│ ┌──┐ Air 2  ▂▄▆  ││  Details (grouped): Power source · WiFi signal ▂▄▆ Good  │
+│                  ││           · Last report · Firmware · Device ID           │
+│ ● Broker conn.   ││  Connection (grouped): Send over [Auto|WiFi|BT] · Read   │
+│ [Scan for Diff.] ││  Schedule (grouped): footnote + [Edit Schedule…]         │
+└──────────────────┘└──────────────────────────────────────────────────────────┘
+```
+
+**The hero card.**
+- A drawn diffuser glyph, with one to three mist arcs for the level. Arcs are accent-filled
+  while it's diffusing and grey when it's off.
+- The state in words at 26 pt ("Diffusing", "Off", "Sending…") with "Low/Medium/High
+  intensity" under it.
+- The power switch at its trailing edge, and a full-width intensity segmented control.
+- The controls show the reported state. A command on its way shows in orange as "Sending…",
+  so nothing is duplicated.
+- The arcs ease (about 200 ms) only when the level changes. Nothing animates on its own.
+
+**Accent: systemIndigo.** Light `#5856D6`, dark `#5E5CE6`, replacing systemBlue as the
+app's accent. HIG lets an app set its own accent.
+- Indigo reads as calm, evening and ambience, which suits a scent app.
+- It stays clearly apart from the green, orange, red and grey used for status.
+- Every other system color stays as it is.
+
+**Sidebar.**
+- Each row gets a 28 pt rounded tile with a drawn glyph: Air 2 is a capsule with mist arcs,
+  HVAC 2 is a box with vent slits. The tile is indigo-tinted when answering and grey
+  otherwise, and the status dot sits on the tile's corner.
+- The second line is what it's doing, in words: "Diffusing at Medium", "Off", "Not
+  answering", "Waiting".
+- A diffuser with no name shows its model ("HVAC 2"), never its raw ID.
+- Found Nearby rows show signal bars (dBm in the tooltip).
+- The broker status moves to the sidebar footer, above Scan for Diffusers. The toolbar
+  keeps only Show/Hide Log and the gear.
+
+**Layout and type.**
+- The detail pane is a single centered column, at most 640 pt wide, with 24 pt between
+  sections.
+- Radii follow hierarchy: hero 14, grouped boxes 10, controls 6.
+- Device name in Title 1 (22), hero state 26 semibold, section headings in Headline (13
+  semibold), body 13, secondary 11.
+- No middle-dot strings: separate facts with commas, or give them their own rows.
+
+**Log, hidden by default.**
+- Rows read as sentences: "Turned on, over WiFi", "Set intensity to High, over
+  Bluetooth", "Bedroom reported on, Medium, plugged in", "No answer over Bluetooth".
+- Each row has a sent or heard chevron and the time in tabular figures.
+- The raw (masked) JSON shows in SF Mono only when a row is expanded.
+
+**Schedules.**
+- When the app knows the schedule (one sent this session), the detail pane shows a "Today"
+  strip: 24 hours, scheduled windows filled with the accent, and a marker for now.
+- The schedule editor shows a week grid (7 rows × 24 h) previewing its entries, so overlaps
+  and gaps show before sending.
+
+The header has no glyph tile of its own: the hero card already carries the glyph, so a second one would only repeat it.
+
+**Empty states.** Each is a glyph, one Title 2 line, one sentence, and one default button:
+- no diffusers: "No diffusers yet", "Scan to find the diffusers in Bluetooth range.",
+  [Scan for Diffusers];
+- nothing selected;
+- a found diffuser selected: [Add Diffuser…].
 
 ### What desktop v1 does: the test bench, as a real app
 

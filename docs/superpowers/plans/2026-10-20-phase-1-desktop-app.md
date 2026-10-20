@@ -775,6 +775,94 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
+### Task 10b: Design polish (owner, 2026-10-20)
+
+The owner asked: "make the desktop look nice using your best design skills". The binding
+design is in the spec section "Design polish (owner, 2026-10-20 …)" in
+`docs/superpowers/specs/2026-10-20-scent-control-design.md`. Read it first, together with
+the "Design language" section above it, which still applies. Its accent token is now
+systemIndigo. This task applies the polish to every screen, including Task 10's add sheet
+and schedule editor. It changes no behavior: commands, state rules, saving, password
+handling, the add flow and schedule validation all stay as they are.
+
+**Files:**
+- Modify: `apps/desktop/src/ui/theme.rs` (the accent token, the hero radius and the
+  hero type style), `ui/widgets.rs`, and every screen in `ui/`.
+- Create: `apps/desktop/src/ui/glyphs.rs`, which draws vector glyphs with egui's painter:
+  the Air 2 capsule with 0 to 3 mist arcs, the HVAC 2 box with vent slits, signal bars,
+  sent and heard chevrons, and a large empty-state diffuser.
+- Create: `apps/desktop/src/ui/hero.rs`, the diffusion hero card.
+- Create: `apps/desktop/src/ui/log_summary.rs`, which turns log entries into sentences.
+  It's pure and tested.
+- Create: `apps/desktop/src/ui/timeline.rs`, with the "Today" strip and the week grid.
+  The geometry is pure and tested.
+
+**Interfaces:**
+- `log_summary::sentence(entry: &LogEntry, label: &str) -> String`. It covers TURN_ON
+  enable 1/0, SET_LEVEL 1/2/3, update_status, the acknowledgements (Added, Credentials
+  saved, BATTERY_MODE, PLUGIN_MODE), device_connected, UPDATE_PROFILE, SYNC_TIME,
+  SAVE_MQTT and WIFI_CONNECT (never their payloads), SECRET_COMMAND/RESET, broker events
+  and failures. Anything else falls back to the action name. It reads only the masked
+  `entry.text`.
+- `timeline::windows_for_day(profile: &Profile, weekday: u8) -> Vec<(f32, f32)>`, giving
+  fractions of the day.
+- `timeline::now_fraction(local_minutes: u32) -> f32`.
+- `glyphs::{air2, hvac2, signal_bars, chevron, empty_diffuser}(painter, rect, color, …)`.
+- `hero::show(ui, &DeviceSnapshot, &mut sink)`. It replaces the Status and Controls boxes
+  for power and intensity.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `log_sentences`: a table of masked entries and the sentences they give. It must include
+    a SAVE_MQTT entry whose sentence contains no "password" value.
+  - `day_windows`: an entry 21:30–22:30 on that weekday gives (0.8958, 0.9375); another
+    weekday gives none; always-on fills the day.
+  - `accent_is_indigo`: light `#5856D6`, dark `#5E5CE6`.
+  - `display_name_never_shows_a_raw_id`: an unnamed Air 2 shows "Air 2" and an unnamed
+    HVAC shows "HVAC 2". An unknown model shows "Diffuser" plus the last 4 characters of
+    its ID.
+  - Screen tests for these:
+    - the hero shows "Diffusing" or "Off" with the intensity words;
+    - the hero shows "Sending…" in orange while a command is on its way;
+    - the sidebar's second line reads like "Diffusing at Medium";
+    - the log is hidden by default.
+
+- [ ] **Step 2: Run them to verify they fail.** `cargo test -p scent-desktop`. Expected:
+  compile errors.
+
+- [ ] **Step 3: Implement the polish** as the spec section describes: the hero, the
+  sidebar tiles and footer, the centered 640 pt column, the Details, Connection and Schedule
+  groups, the log sentences with rows that expand to the masked JSON, the Today strip and
+  the editor's week grid, the empty states, and the indigo accent.
+
+- [ ] **Step 4: Render and look.** Extend `render_screens` with these renders:
+  - the main window in light and dark, with the hero diffusing at Medium and one command
+    on its way;
+  - an "Off" diffuser;
+  - the log shown, with one row expanded;
+  - the empty state;
+  - a Found Nearby selection;
+  - the add sheet;
+  - the schedule editor with the week grid;
+  - the Today strip.
+
+  View every PNG and judge it against both spec sections. Then remove one thing that
+  doesn't earn its place, and say what it was.
+
+- [ ] **Step 5: Run the tests and lints.** `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, and
+  once `bunx turbo run build test lint fmt:check`. Expected: all pass.
+
+- [ ] **Step 6: Commit.**
+
+```bash
+git add apps/desktop
+git commit -m "Desktop: design polish (diffusion hero, indigo accent, glyphs, log sentences, timelines)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 11: Acceptance with the owner, and docs
 
 **Files:**
