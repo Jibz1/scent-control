@@ -23,8 +23,8 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use btleplug::api::{
-    Central, CentralState, Characteristic, Manager as _, Peripheral as _, PeripheralProperties,
-    RetrievePeripheralsOptions, ScanFilter, ValueNotification, WriteType,
+    Central, CentralEvent, CentralState, Characteristic, Manager as _, Peripheral as _,
+    PeripheralProperties, RetrievePeripheralsOptions, ScanFilter, ValueNotification, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use futures::stream::{Stream, StreamExt};
@@ -56,6 +56,11 @@ const IDLE_AFTER: Duration = Duration::from_secs(10);
 
 /// How long one read, or the writes of one command, may take on an open link.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait for CoreBluetooth to confirm a disconnect. It confirms only through
+/// the callback that says the peripheral disconnected, and sends none when the
+/// peripheral was not connected, so the wait must end on its own.
+const DISCONNECT_LIMIT: Duration = Duration::from_secs(3);
 
 /// How often to look again for a diffuser while scanning for it.
 const LOOKUP_POLL: Duration = Duration::from_millis(200);
@@ -145,6 +150,18 @@ fn what_for(cmd: &Command) -> String {
     format!("Bluetooth send {}", cmd.action(Via::Bluetooth))
 }
 
+/// What setting up the adapter failed with. macOS refuses once the user has said no to
+/// the permission prompt, and only System Settings can undo that.
+fn unavailable(error: &btleplug::Error) -> String {
+    match error {
+        btleplug::Error::PermissionDenied => "macOS has not allowed Scent Control to use \
+             Bluetooth. Allow it in System Settings, Privacy & Security, Bluetooth, then try \
+             again."
+            .to_owned(),
+        other => format!("Bluetooth isn't available: {other}"),
+    }
+}
+
 /// The characteristics of a diffuser that we use.
 #[derive(Debug)]
 struct Chars {
@@ -178,7 +195,8 @@ impl Chars {
 }
 
 /// How a request ended: `Ok` when it was done, `Err` with what went wrong. The reply
-/// resolves with a receive error, not an answer, only if the worker stopped first.
+/// resolves with a receive error, not an answer, only if the worker stopped first or
+/// the task that held the request panicked.
 pub type Reply = oneshot::Receiver<Result<(), String>>;
 
 /// A reply that is already answered.
@@ -259,12 +277,14 @@ impl BleHandle {
     /// Scans for `secs` seconds, then sends `Event::Scanned` with the Scentiment
     /// diffusers known by then. A diffuser seen earlier that has since gone out of
     /// range can still be in the list: connecting to it fails with a clear message.
+    #[must_use = "a refusal is reported only through the Reply"]
     pub fn scan(&self, secs: u64) -> Reply {
         self.queue("Bluetooth scan", Task::Scan { secs })
     }
 
     /// Reads the diffuser's info string and sends it as `Event::BleInfo`. `ble_id` is
     /// what an earlier scan or info event reported.
+    #[must_use = "a refusal is reported only through the Reply"]
     pub fn read_info(&self, ble_id: &str) -> Reply {
         self.link("Bluetooth read info", ble_id, Op::ReadInfo)
     }
@@ -273,12 +293,14 @@ impl BleHandle {
     /// reply is `Ok` once the last write has been acknowledged. The link then stays
     /// open for at least [`LISTEN_AFTER_SEND`], and the notifications that come in
     /// while it is open are sent as `Event::BleNotification`.
+    #[must_use = "a refusal is reported only through the Reply"]
     pub fn send(&self, ble_id: &str, cmd: Command) -> Reply {
         self.link(&what_for(&cmd), ble_id, Op::Send(cmd))
     }
 
     /// Reads `0xFEF3`, which holds the last state the diffuser reported, and sends it
     /// as `Event::BleNotification`.
+    #[must_use = "a refusal is reported only through the Reply"]
     pub fn read_status(&self, ble_id: &str) -> Reply {
         self.link("Bluetooth read status", ble_id, Op::ReadStatus)
     }
@@ -473,12 +495,11 @@ impl Shared {
     /// about it: Bluetooth is off, macOS has not allowed this app to use it, or there
     /// is no adapter.
     async fn adapter(&self) -> Result<Adapter, String> {
-        let unavailable = |error: btleplug::Error| format!("Bluetooth isn't available: {error}");
         let adapter = self
             .adapter_cell
             .get_or_try_init(|| async {
-                let manager = Manager::new().await.map_err(unavailable)?;
-                let adapters = manager.adapters().await.map_err(unavailable)?;
+                let manager = Manager::new().await.map_err(|e| unavailable(&e))?;
+                let adapters = manager.adapters().await.map_err(|e| unavailable(&e))?;
                 adapters
                     .into_iter()
                     .next()
@@ -551,9 +572,14 @@ impl Shared {
     /// Finds the peripheral with this ID before `deadline`.
     ///
     /// CoreBluetooth hands out a peripheral only once this process knows it, and
-    /// forgets it again when it disconnects. So: the peripherals already known first,
-    /// then the ones CoreBluetooth remembers from earlier (by ID, with no scan), and
-    /// last a scan that runs until the diffuser advertises.
+    /// forgets it again when it disconnects. So: the ones CoreBluetooth remembers (by
+    /// ID, with no scan) first, then the peripherals already known, and last a scan
+    /// that runs until the diffuser advertises.
+    ///
+    /// Remembered ones come first because a disconnect takes the peripheral out of
+    /// CoreBluetooth's list at once but out of btleplug's own list only a moment later.
+    /// In that gap the known list holds a dead handle; the retrieval is answered after
+    /// the disconnect has been processed, so it never does.
     async fn find(
         &self,
         adapter: &Adapter,
@@ -565,10 +591,6 @@ impl Shared {
             format!("Couldn't look for the diffuser over Bluetooth: {error}")
         };
 
-        if let Some(found) = known(adapter, &wanted).await.map_err(lookup_failed)? {
-            return Ok(found);
-        }
-
         let options = RetrievePeripheralsOptions {
             identifiers: Some(vec![wanted.clone()]),
             services: None,
@@ -576,6 +598,10 @@ impl Shared {
         if let Ok(remembered) = adapter.retrieve_peripherals(options).await
             && let Some(found) = remembered.into_iter().find(|p| p.id() == wanted)
         {
+            return Ok(found);
+        }
+
+        if let Some(found) = known(adapter, &wanted).await.map_err(lookup_failed)? {
             return Ok(found);
         }
 
@@ -601,6 +627,18 @@ async fn known(adapter: &Adapter, wanted: &PeripheralId) -> btleplug::Result<Opt
     Ok(peripherals.into_iter().find(|p| p.id() == *wanted))
 }
 
+/// Runs `work`, and gives up on it after `limit`: `None` then.
+async fn give_up_after<F: Future>(limit: Duration, work: F) -> Option<F::Output> {
+    tokio::time::timeout(limit, work).await.ok()
+}
+
+/// Disconnects, for as long as CoreBluetooth takes up to [`DISCONNECT_LIMIT`]. The
+/// disconnect is a courtesy that nothing depends on, so it neither fails nor hangs: an
+/// unconfirmed one would otherwise hold a link's task, and every job behind it, forever.
+async fn disconnect_quietly(peripheral: &Peripheral) {
+    let _ = give_up_after(DISCONNECT_LIMIT, peripheral.disconnect()).await;
+}
+
 /// Runs a Bluetooth step that must finish before `deadline`. The error says what the
 /// step was.
 async fn within<T, E: Display>(
@@ -611,14 +649,12 @@ async fn within<T, E: Display>(
     match tokio::time::timeout_at(deadline, work).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(format!("Bluetooth failed while {activity}: {error}")),
-        Err(_) => Err(format!(
-            "Timed out after {} s while {activity}.",
-            CONNECT_TIMEOUT.as_secs()
-        )),
+        Err(_) => Err(format!("Timed out while {activity}.")),
     }
 }
 
 type Notes = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
+type Events = Pin<Box<dyn Stream<Item = CentralEvent> + Send>>;
 
 /// An open link to a diffuser.
 struct Open {
@@ -626,7 +662,64 @@ struct Open {
     chars: Chars,
     /// Everything the diffuser notifies while the link is open.
     notes: Notes,
+    /// What the adapter reports from the moment the link was made. Every subscriber
+    /// gets every event, so this is how the link learns that the diffuser dropped it.
+    events: Events,
     timer: LinkTimer,
+}
+
+/// What an open link has to tell us.
+#[derive(Debug, PartialEq)]
+enum Heard {
+    Note(ValueNotification),
+    /// The diffuser dropped the link, or a stream ended and with it the means to hear.
+    Gone,
+}
+
+/// Waits until the diffuser notifies, or its link is gone. Events about other
+/// peripherals, and other events about this one, are skipped.
+async fn next_heard(notes: &mut Notes, events: &mut Events, me: &PeripheralId) -> Heard {
+    loop {
+        tokio::select! {
+            note = notes.next() => return note.map_or(Heard::Gone, Heard::Note),
+            event = events.next() => match event {
+                Some(CentralEvent::DeviceDisconnected(gone)) if gone == *me => {
+                    return Heard::Gone;
+                }
+                Some(_) => {}
+                None => return Heard::Gone,
+            },
+        }
+    }
+}
+
+/// [`next_heard`] for the link in `open`; never ready when there is no link.
+async fn next_heard_on(open: &mut Option<Open>, me: &PeripheralId) -> Heard {
+    match open {
+        Some(open) => next_heard(&mut open.notes, &mut open.events, me).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Why a link could not be opened.
+#[derive(Debug, PartialEq)]
+enum OpenError {
+    /// Not found, or it would not connect in time. Another app holding the diffuser is
+    /// the usual cause.
+    Unreachable(String),
+    /// Connected, but it is not a diffuser we can talk to.
+    NotADiffuser(String),
+}
+
+impl OpenError {
+    /// The text for the user. Only an unreachable diffuser gets the hint about the
+    /// other app; for a device that isn't a diffuser it would be wrong.
+    fn message(self) -> String {
+        match self {
+            OpenError::Unreachable(error) => format!("{error} {CONNECT_HINT}"),
+            OpenError::NotADiffuser(error) => error,
+        }
+    }
 }
 
 impl Open {
@@ -679,8 +772,12 @@ impl Open {
     }
 
     async fn close(self) {
-        // Fails if the diffuser is already gone, which is just as good.
-        let _ = self.peripheral.disconnect().await;
+        // Disconnecting a peripheral that is not connected is never confirmed, so only
+        // ask when it is connected: this is always answered, and tells a link that the
+        // diffuser dropped from one that is still up.
+        if self.is_alive().await {
+            disconnect_quietly(&self.peripheral).await;
+        }
     }
 }
 
@@ -691,7 +788,7 @@ async fn connect(shared: &Shared, id: Uuid) -> Result<Open, String> {
     let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
     open_link(shared, &adapter, id, deadline)
         .await
-        .map_err(|error| format!("{error} {CONNECT_HINT}"))
+        .map_err(OpenError::message)
 }
 
 async fn open_link(
@@ -699,18 +796,25 @@ async fn open_link(
     adapter: &Adapter,
     id: Uuid,
     deadline: tokio::time::Instant,
-) -> Result<Open, String> {
-    let peripheral = shared.find(adapter, id, deadline).await?;
+) -> Result<Open, OpenError> {
+    let peripheral = shared
+        .find(adapter, id, deadline)
+        .await
+        .map_err(OpenError::Unreachable)?;
+    let events = adapter.events().await.map_err(|error| {
+        OpenError::Unreachable(format!("Bluetooth failed while listening: {error}"))
+    })?;
     match handshake(&peripheral, deadline).await {
         Ok((chars, notes)) => Ok(Open {
             peripheral,
             chars,
             notes,
+            events,
             timer: LinkTimer::new(Instant::now()),
         }),
         Err(error) => {
             // Also cancels a connection that is still being made.
-            let _ = peripheral.disconnect().await;
+            disconnect_quietly(&peripheral).await;
             Err(error)
         }
     }
@@ -720,26 +824,29 @@ async fn open_link(
 async fn handshake(
     peripheral: &Peripheral,
     deadline: tokio::time::Instant,
-) -> Result<(Chars, Notes), String> {
-    within(deadline, "connecting", peripheral.connect()).await?;
+) -> Result<(Chars, Notes), OpenError> {
+    within(deadline, "connecting", peripheral.connect())
+        .await
+        .map_err(OpenError::Unreachable)?;
     within(
         deadline,
         "reading the services",
         peripheral.discover_services(),
     )
-    .await?;
-    let chars = Chars::find(&peripheral.characteristics())?;
+    .await
+    .map_err(OpenError::Unreachable)?;
+    let chars = Chars::find(&peripheral.characteristics()).map_err(OpenError::NotADiffuser)?;
     // Listen before subscribing, so that the first notification is not missed.
-    let notes = peripheral
-        .notifications()
-        .await
-        .map_err(|error| format!("Bluetooth failed while listening: {error}"))?;
+    let notes = peripheral.notifications().await.map_err(|error| {
+        OpenError::Unreachable(format!("Bluetooth failed while listening: {error}"))
+    })?;
     within(
         deadline,
         "turning on notifications",
         peripheral.subscribe(&chars.notify),
     )
-    .await?;
+    .await
+    .map_err(OpenError::Unreachable)?;
     Ok((chars, notes))
 }
 
@@ -754,14 +861,6 @@ async fn ensure_open<'a>(
         _ => connect(shared, id).await?,
     };
     Ok(slot.insert(open))
-}
-
-/// The next notification on an open link; never ready when there is no link.
-async fn next_note(open: &mut Option<Open>) -> Option<ValueNotification> {
-    match open {
-        Some(open) => open.notes.next().await,
-        None => std::future::pending().await,
-    }
 }
 
 /// The task that owns one diffuser's connection. It takes that diffuser's jobs one at
@@ -843,7 +942,11 @@ impl Link {
                 return jobs.try_recv().ok();
             };
             let due = tokio::time::Instant::from_std(open.timer.deadline());
+            let me = PeripheralId::from(self.id);
+            // Biased, so that once the worker is told to end no job can start a new
+            // connection.
             tokio::select! {
+                biased;
                 () = self.shared.stopped() => {
                     self.close().await;
                     return None;
@@ -854,10 +957,11 @@ impl Link {
                     }
                     return job;
                 }
-                note = next_note(&mut self.open) => match note {
-                    Some(note) => self.forward(&note),
-                    // The peripheral went away.
-                    None => self.close().await,
+                heard = next_heard_on(&mut self.open, &me) => match heard {
+                    Heard::Note(note) => self.forward(&note),
+                    // The diffuser dropped the link (a restart, say). CoreBluetooth has
+                    // let go of it, so closing finds it disconnected and asks for nothing.
+                    Heard::Gone => self.close().await,
                 },
                 () = tokio::time::sleep_until(due) => {
                     let idle = self.open.as_ref().is_some_and(|open| open.timer.should_disconnect(Instant::now()));
@@ -895,7 +999,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    use btleplug::api::{CharPropFlags, Characteristic, PeripheralProperties};
+    use btleplug::api::{CentralEvent, CharPropFlags, Characteristic, PeripheralProperties};
     use btleplug::platform::PeripheralId;
     use scent_core::{Command, Level, Secret};
     use tokio::sync::{mpsc, oneshot};
@@ -1223,10 +1327,125 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert!(
-                timed_out.contains("Timed out") && timed_out.contains("reading its services"),
-                "{timed_out}"
-            );
+            // It states no number: the time allowed depends on the deadline it was given.
+            assert_eq!(timed_out, "Timed out while reading its services.");
         });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_never_finishes_is_given_up_on_at_the_limit() {
+        let started = tokio::time::Instant::now();
+        let outcome = give_up_after(Duration::from_secs(3), std::future::pending::<()>()).await;
+        assert_eq!(outcome, None);
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_finishes_is_not_cut_short() {
+        let started = tokio::time::Instant::now();
+        let outcome = give_up_after(Duration::from_secs(3), async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            5
+        })
+        .await;
+        assert_eq!(outcome, Some(5));
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_disconnect_is_waited_for_3_s_at_most() {
+        assert_eq!(DISCONNECT_LIMIT, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn only_errors_a_busy_diffuser_can_cause_carry_the_hint() {
+        let hinted = OpenError::Unreachable("Timed out while connecting.".into()).message();
+        assert!(
+            hinted.starts_with("Timed out while connecting. "),
+            "{hinted}"
+        );
+        assert!(hinted.contains("Scentiment app"), "{hinted}");
+
+        // "Close the Scentiment app" is no help when the device is not a diffuser.
+        let plain = OpenError::NotADiffuser("The device has no characteristic.".into()).message();
+        assert_eq!(plain, "The device has no characteristic.");
+    }
+
+    #[test]
+    fn a_refused_permission_says_where_to_allow_it() {
+        let denied = unavailable(&btleplug::Error::PermissionDenied);
+        assert!(
+            denied.contains("System Settings") && denied.contains("Privacy & Security"),
+            "{denied}"
+        );
+        let other = unavailable(&btleplug::Error::NoAdapterAvailable);
+        assert!(other.starts_with("Bluetooth isn't available"), "{other}");
+        assert!(!other.contains("System Settings"), "{other}");
+    }
+
+    fn me() -> PeripheralId {
+        PeripheralId::from(Uuid::from_u128(1))
+    }
+
+    fn note(value: &[u8]) -> ValueNotification {
+        ValueNotification {
+            uuid: STATUS_CHAR,
+            service_uuid: SERVICE,
+            value: value.to_vec(),
+        }
+    }
+
+    /// Streams that say `items` and then go quiet, like a link with nothing more to say.
+    fn then_quiet<T: Send + 'static>(items: Vec<T>) -> Pin<Box<dyn Stream<Item = T> + Send>> {
+        Box::pin(futures::stream::iter(items).chain(futures::stream::pending()))
+    }
+
+    fn ended<T: Send + 'static>() -> Pin<Box<dyn Stream<Item = T> + Send>> {
+        Box::pin(futures::stream::empty())
+    }
+
+    #[tokio::test]
+    async fn a_notification_is_heard() {
+        let mut notes = then_quiet(vec![note(b"led:50")]);
+        let mut events = then_quiet(vec![]);
+        let heard = next_heard(&mut notes, &mut events, &me()).await;
+        assert_eq!(heard, Heard::Note(note(b"led:50")));
+    }
+
+    #[tokio::test]
+    async fn the_diffusers_own_disconnect_is_heard_and_other_events_are_not() {
+        let other = PeripheralId::from(Uuid::from_u128(2));
+        let mut notes = then_quiet(vec![]);
+        let mut events = then_quiet(vec![
+            CentralEvent::DeviceUpdated(me()),
+            CentralEvent::DeviceDisconnected(other.clone()),
+            CentralEvent::DeviceDisconnected(me()),
+        ]);
+        assert_eq!(
+            next_heard(&mut notes, &mut events, &me()).await,
+            Heard::Gone
+        );
+
+        // Somebody else's disconnect is skipped, and a notification still comes through.
+        let mut notes = then_quiet(vec![note(b"S:0")]);
+        let mut events = then_quiet(vec![CentralEvent::DeviceDisconnected(other)]);
+        assert_eq!(
+            next_heard(&mut notes, &mut events, &me()).await,
+            Heard::Note(note(b"S:0"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_ends_means_the_link_is_gone() {
+        let mut events = then_quiet(vec![]);
+        assert_eq!(
+            next_heard(&mut ended(), &mut events, &me()).await,
+            Heard::Gone
+        );
+        let mut notes = then_quiet(vec![]);
+        assert_eq!(
+            next_heard(&mut notes, &mut ended(), &me()).await,
+            Heard::Gone
+        );
     }
 }
