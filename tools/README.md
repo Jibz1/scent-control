@@ -46,7 +46,9 @@ A tool started by Claude (or another app without that declaration) gets killed.
 - **Through `./bt`:** `./bt <script> …` runs the script inside `macos/ScentTools.app`,
   a minimal wrapper whose Info.plist declares Bluetooth use. macOS asks once to allow
   "ScentTools". Output is shown when the command finishes. `./bt` has no keyboard
-  input, so it can't run commands that prompt for a password.
+  input, so it can't run commands that prompt for a password. It also doesn't see
+  your shell's environment variables, so it loads `tools/.env.local` (gitignored),
+  e.g. `SCENT_BROKER_PASSWORD=…`.
 
 ## Usage
 
@@ -60,7 +62,7 @@ A tool started by Claude (or another app without that declaration) gets killed.
 .venv/bin/python session.py make-test-schedule --start-in 3 --duration 4 > ../captures/sched.json
 ./bt session.py profile air2 ../captures/sched.json --timezone -4
 ./bt session.py restart air2              # soft restart only
-SCENT_BROKER_PASSWORD=… ./bt session.py save-mqtt air2 --broker wss://<domain>/mqtt --username scent-test
+./bt session.py save-mqtt air2 --broker wss://<domain>/mqtt --username scent-test   # password from .env.local
 .venv/bin/python session.py wifi air2     # from Terminal.app: prompts for the WiFi name and password
 ```
 

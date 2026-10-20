@@ -2,4 +2,7 @@
 # Runs a tools/ script with this app as the responsible process, so macOS can ask
 # for Bluetooth permission. Started through tools/bt, never directly.
 cd "$(dirname "$0")/../../../.." || exit 1
+# Environment variables from the shell don't reach an app started with `open`;
+# secrets such as SCENT_BROKER_PASSWORD come from the gitignored .env.local instead.
+if [ -f .env.local ]; then set -a; . ./.env.local; set +a; fi
 exec ./.venv/bin/python "$@"
