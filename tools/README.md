@@ -68,3 +68,17 @@ A tool started by Claude (or another app without that declaration) gets killed.
 
 Every session writes `../captures/session-<alias>-<timestamp>.jsonl`, with secrets
 masked.
+
+### Test broker
+
+`broker.py` needs no Bluetooth, so run it directly. It only connects over encrypted
+`wss://` or `mqtts://`. The password comes from `SCENT_BROKER_PASSWORD`, from
+`.env.local`, or from a prompt.
+
+```bash
+B=wss://<domain>/mqtt
+.venv/bin/python broker.py watch --url $B --username scent-test
+.venv/bin/python broker.py publish --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId> --json '{"action":"PING","payload":{"userid":"route-test-1"}}'
+.venv/bin/python broker.py sync-time --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId>
+.venv/bin/python broker.py publish-profile --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId> --file ../captures/sched.json --timezone -4
+```
