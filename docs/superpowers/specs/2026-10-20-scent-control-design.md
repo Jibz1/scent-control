@@ -441,6 +441,8 @@ way the Phase 0 test bench does, and the bench shows that's already useful.
 - **macOS only.** No Tauri, and no web view.
 - Both transports: Bluetooth first when in range, WiFi otherwise (goal 7).
 - Default intensity 1.
+- Apple design language: the macOS Human Interface Guidelines (see "Design language"
+  below).
 
 ### Designer's calls (patterned on github.com/michaelshimeles/bible-rs)
 
@@ -478,6 +480,86 @@ way the Phase 0 test bench does, and the bench shows that's already useful.
   `rustup update`.
 - **Local state:** known diffusers, their aliases and the last known readings live in
   `~/Library/Application Support/ScentControl/`. It holds no secrets.
+
+### Design language: Apple's macOS guidelines (owner, 2026-10-20)
+
+The desktop app follows Apple's Human Interface Guidelines for macOS, so it reads as a
+Mac app rather than a generic egui window. egui draws its own widgets, so we match the
+look with a theme and a few custom widgets.
+
+- **Appearance:**
+  - The app follows the system's light or dark setting (`ThemePreference::System`).
+  - The title bar is unified with the content: full-size content view, title hidden
+    and transparent, with the traffic lights over the sidebar.
+- **Color:** Apple's system colors, each with a light and a dark value.
+
+  | Role | Light | Dark |
+  |---|---|---|
+  | Accent (systemBlue) | `#007AFF` | `#0A84FF` |
+  | Answering (systemGreen) | `#34C759` | `#30D158` |
+  | Waiting, pending (systemOrange) | `#FF9500` | `#FF9F0A` |
+  | Error, login refused (systemRed) | `#FF3B30` | `#FF453A` |
+  | Unknown, silent (systemGray) | `#8E8E93` | `#98989D` |
+  | Label | `#000000` at 85% | `#FFFFFF` at 85% |
+  | Secondary label | `#000000` at 50% | `#FFFFFF` at 55% |
+  | Separator | `#000000` at 10% | `#FFFFFF` at 10% |
+  | Window background | `#ECECEC` | `#323232` |
+  | Sidebar (approximates the material) | `#E3E3E6` | `#2B2B2D` |
+  | Grouped box | `#FFFFFF` | `#2C2C2E` |
+
+  Stale readings use the secondary label color. Pending values use orange. Color is
+  never the only signal: a status always has words too.
+- **Type:**
+  - SF Pro, the Mac's system font, loaded at run time from
+    `/System/Library/Fonts/SFNS.ttf`, with regular (`wght` 400) and semibold (`wght`
+    590) instances through epaint's variation coordinates.
+  - SF Mono (`SFNSMono.ttf`) for the log.
+  - Never copy Apple's fonts into the repo or the bundle. If a font file is missing,
+    fall back to egui's default fonts.
+  - Sizes follow macOS text styles:
+    - Title 1, 22 pt, for the diffuser's name;
+    - Headline, 13 pt semibold, for section headings;
+    - Body, 13 pt;
+    - Subheadline, 11 pt secondary, for ages, sources and sidebar section headings.
+- **Layout:** a split view.
+  - **Sidebar (source list):**
+    - sections "Diffusers" and "Found Nearby";
+    - each row has an 8 pt status dot, the name, and the model in secondary text;
+    - the selected row is an inset rounded rectangle (6 pt) in the accent color with
+      white text.
+  - **Detail pane:** grouped boxes, as in System Settings: rounded 10 pt boxes of
+    label–value rows with hairline separators.
+    - "Status": power, intensity, power source, WiFi signal, each with its age and
+      source in secondary text.
+    - "Controls".
+    - The expected-state line as a footnote.
+  - **Spacing:** 8 pt grid, 20 pt content margins.
+- **Controls:**
+  - a switch for power;
+  - segmented controls for intensity (Low, Medium, High) and Send Over (Auto, WiFi,
+    Bluetooth);
+  - rounded push buttons (6 pt), with the default action filled in the accent color.
+  - The custom widgets report their role and value to accessibility (AccessKit).
+- **Settings:**
+  - a separate "Settings" window, opened with ⌘, and from a gear button in the toolbar;
+  - its broker fields are in a grouped box;
+  - Save is the default button.
+  - If egui can't open a second window here, use a sheet attached to the top of the
+    main window instead.
+- **Notices:** an inline notice at the top of the detail pane, rounded 8 pt with a 12%
+  tint of its color, for login refused, a damaged save file, or no password saved. No
+  web-style banners.
+- **Log:** the activity log is a bottom pane, shown and hidden from the toolbar ("Show
+  Log" / "Hide Log"), in SF Mono 11 pt.
+- **Capitalization (HIG):**
+  - Title case for buttons, segmented-control items, menu items, window titles and
+    section headings: "Scan for Diffusers", "Read Status", "Send Over", "Found Nearby".
+  - Sentence case for row labels, switches, descriptions and status text: "Answering",
+    "sent, waiting for the diffuser".
+- **Motion:** only where a person's action causes it: the switch, the segmented
+  selection, and the log pane opening. No decorative animation.
+- **Icons:** none drawn from SF Symbols, since egui can't use them. Status dots and
+  words carry the meaning.
 
 ### What desktop v1 does: the test bench, as a real app
 

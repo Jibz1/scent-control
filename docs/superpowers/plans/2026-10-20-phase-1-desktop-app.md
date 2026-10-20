@@ -620,6 +620,102 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
+### Task 9a: Apple design language (owner, 2026-10-20)
+
+The owner asked for Apple design language in the desktop app. The binding rules are the
+spec section "Design language: Apple's macOS guidelines (owner, 2026-10-20)" in
+`docs/superpowers/specs/2026-10-20-scent-control-design.md`. It covers color, type,
+layout, controls, settings, notices, the log, capitalization and motion. Read it first;
+its values are exact. This task restyles the Task 9 screens to match. It changes no
+behavior: every command, state rule and wording rule from Task 9 stays, apart from
+capitalization, which follows the spec section.
+
+**Files:**
+- Create: `apps/desktop/src/ui/theme.rs`. It holds the palette for light and dark, the
+  text styles, the spacing, and font loading.
+- Create: `apps/desktop/src/ui/widgets.rs`. It holds the switch, segmented control,
+  grouped box and row, status dot, notice, and push buttons in default and plain styles.
+- Modify:
+  - `apps/desktop/src/main.rs`: viewport chrome.
+  - `apps/desktop/src/app.rs`.
+  - `apps/desktop/src/ui/*.rs`: the screens.
+  - `apps/desktop/Cargo.toml`: the snapshot dev-dependency only.
+- Test: `ui/theme.rs` and `ui/widgets.rs` unit tests, plus the snapshot renderer below.
+
+**Interfaces:**
+- Produces:
+  - `theme::Palette` with `Palette::for_dark(dark: bool) -> Palette`. Its fields are
+    `accent`, `green`, `orange`, `red`, `gray`, `label`, `secondary_label`, `separator`,
+    `window`, `sidebar` and `grouped`, as `egui::Color32`.
+  - `theme::install(ctx: &egui::Context, fonts_dir: &Path)`. It sets `ThemePreference::System`,
+    the fonts, the text styles and the visuals for both appearances.
+  - `theme::font_definitions(fonts_dir: &Path) -> egui::FontDefinitions`. It falls back to
+    egui's defaults when `SFNS.ttf` or `SFNSMono.ttf` is missing.
+  - `theme::status_color(&Palette, Online) -> Color32`: Answering is green, waiting is
+    orange, everything else is gray.
+  - Widgets that Task 10's sheets will reuse: `switch(ui, &mut bool, label)`,
+    `segmented(ui, &mut T, &[(T, &str)])`, `grouped(ui, title, |ui| …)`,
+    `row(ui, label, |ui| …)`, `notice(ui, kind, text)`, `default_button(ui, text)` and
+    `plain_button(ui, text)`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `palette_matches_the_spec`: every value in the spec's color table, for both
+    appearances. Alpha values: label 85%, secondary 50% light and 55% dark, separator 10%.
+  - `status_colors_follow_online`: Answering is green; waiting is orange; unknown and
+    silent are gray.
+  - `fonts_fall_back_when_missing`: `font_definitions` on an empty temporary directory
+    returns egui's default families, with no SF entries, and doesn't panic.
+  - `semibold_uses_weight_590`: the semibold SF font data carries `wght` 590 and the
+    regular carries 400. Read this from the `FontTweak` coords your code builds, through a
+    pure helper.
+  - `segmented_selects_the_clicked_segment`: drive the segmented control with
+    `egui_kittest`, if you add it, or test a pure `segment_at` helper.
+
+- [ ] **Step 2: Run them to verify they fail.** Run `cargo test -p scent-desktop theme widgets`.
+  Expected: compile errors.
+
+- [ ] **Step 3: Implement the theme, the widgets and the window chrome, then restyle every
+  Task 9 screen.**
+  - Chrome: the viewport uses `with_fullsize_content_view(true)`, `with_title_shown(false)` and
+    `with_titlebar_shown(false)`, with a minimum size of about 900×600 pt. Leave room for
+    the traffic lights at the top of the sidebar.
+  - Settings: a separate window, from `show_viewport_immediate`, opened with ⌘, and from a
+    toolbar gear button. If that doesn't work with eframe 0.36's glow backend on macOS,
+    use a sheet anchored to the top of the main window. Ledger which one you used.
+  - Render code: screens take the state and collect `UiCommand`s, or take a sink, so
+    they can be drawn without a live `Hub`.
+
+- [ ] **Step 4: Snapshot renders, so the look can be seen without a screen.** Add
+  `egui_kittest` at the exact version that matches egui 0.36.2, as a dev-dependency only,
+  with the features that render to an image.
+  - Add an `#[ignore]` test, `render_screens`, that draws these from synthetic state
+    (`TESTDEVICE01` "Air 2", Answering, with fresh readings, one pending intensity and one
+    stale reading; `TESTDEVICE02` "HVAC 2", silent; one Found Nearby hit; a short log):
+    - the main window in light and dark, with the first device selected;
+    - the Settings window, or sheet;
+    - a notice;
+  - It writes each render to `target/snapshots/<name>.png`. It never creates a Hub, a
+    btleplug Manager or a network connection.
+  - Run it with `cargo test -p scent-desktop render_screens -- --ignored`, then view every
+    PNG yourself with the Read tool. Compare each against the spec section and fix what
+    doesn't match.
+
+- [ ] **Step 5: Run the tests and lints.** Run `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`, and
+  once `bunx turbo run build test lint fmt:check`. Expected: all pass. The ignored
+  snapshot test doesn't run by default.
+
+- [ ] **Step 6: Commit.**
+
+```bash
+git add apps/desktop Cargo.lock
+git commit -m "Desktop: Apple design language (system colors, SF Pro, source list, grouped boxes)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 10: Add-a-diffuser flow and schedule editor
 
 **Files:**
