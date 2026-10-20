@@ -2,16 +2,23 @@
 //! sizes in `theme`. Task 10's sheets reuse them:
 //!
 //! - [`switch`]: on or off, such as power.
-//! - [`segmented`]: one of a few choices, such as the intensity.
+//! - [`segmented`]: one of a few choices, such as the intensity; it hands back a
+//!   [`Choice`].
 //! - [`grouped`] and [`row`]: a rounded box of label–value rows with hairlines
-//!   between them, as in System Settings.
+//!   between them, as in System Settings. [`grouped_with`] adds something at the end of
+//!   the box's heading, such as Read Status; [`value_with_note`] is a row's value with
+//!   its age and source under it.
 //! - [`status_dot`]: the 8 pt dot that says whether a diffuser answers.
-//! - [`notice`] and [`notice_with`]: a tinted notice at the top of a pane.
+//! - [`notice`] and [`notice_with`]: a tinted notice at the top of a pane, by
+//!   [`NoticeKind`].
 //! - [`default_button`], [`plain_button`] and [`toolbar_button`]: push buttons. The
 //!   default one, filled in the accent color, is the one Return presses.
+//!   [`gear_button`] is the toolbar's way to Settings.
 //! - [`checkbox`]: for a choice that isn't a setting, such as a filter.
 //! - [`secondary`] and [`footnote`]: Subheadline text in the secondary label color, the
-//!   second under a grouped box; [`one_line`] lays text out on one line.
+//!   second under a grouped box, lined up with its rows at [`BOX_PADDING_X`].
+//! - [`one_line`] lays text out on one line, cut short to a width; [`hairline`] is the
+//!   width of a one-pixel line.
 //!
 //! Each reports its role, label and value to accessibility. Text in them follows the
 //! capitalization rules: title case on buttons and segments, sentence case on labels.

@@ -135,6 +135,17 @@ pub fn online_text(online: Online) -> &'static str {
     }
 }
 
+/// The broker's state in a few words, for the toolbar. The whole of it, with the reason,
+/// is [`broker_text`]: in the toolbar's tooltip, and in Settings.
+pub fn broker_summary(broker: &BrokerState) -> &'static str {
+    match broker {
+        BrokerState::Connecting => "Connecting to the broker…",
+        BrokerState::Connected => "Connected to the broker",
+        BrokerState::LoginRefused(_) => "Broker login refused",
+        BrokerState::Disconnected(_) => "Not connected to the broker",
+    }
+}
+
 pub fn broker_text(broker: &BrokerState) -> String {
     match broker {
         BrokerState::Connecting => "Connecting to the broker…".to_owned(),
@@ -326,6 +337,28 @@ mod tests {
         );
         assert_eq!(online_text(Online::Offline), "Not answering pings");
         assert_eq!(online_text(Online::Unknown), "Not pinged yet");
+    }
+
+    #[test]
+    fn the_toolbar_says_the_broker_state_in_short() {
+        assert_eq!(
+            broker_summary(&BrokerState::Connected),
+            "Connected to the broker"
+        );
+        assert_eq!(
+            broker_summary(&BrokerState::Connecting),
+            "Connecting to the broker…"
+        );
+        assert_eq!(
+            broker_summary(&BrokerState::LoginRefused("Not authorized.".into())),
+            "Broker login refused"
+        );
+        assert_eq!(
+            broker_summary(&BrokerState::Disconnected(
+                "No broker password saved.".into()
+            )),
+            "Not connected to the broker"
+        );
     }
 
     #[test]

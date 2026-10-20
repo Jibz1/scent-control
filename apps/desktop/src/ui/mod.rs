@@ -27,11 +27,12 @@ use eframe::egui::{
 
 use self::device_list::DeviceList;
 use self::device_panel::DevicePanel;
-use self::format::broker_text;
+use self::format::{broker_summary, broker_text};
 use self::log_view::LogView;
 use self::settings::{SettingsWindow, Submitted};
 use self::theme::{
-    GRID, MARGIN, Palette, SIDEBAR_TOP_INSET, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, broker_color,
+    GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_TOP_INSET, SIDEBAR_WIDTH,
+    TOOLBAR_HEIGHT, broker_color,
 };
 use self::widgets::{
     NoticeKind, gear_button, hairline, notice_with, plain_button, status_dot, toolbar_button,
@@ -137,7 +138,7 @@ impl Screens {
         });
         let sidebar = egui::Panel::left("sidebar")
             .default_size(SIDEBAR_WIDTH)
-            .size_range(200.0..=360.0)
+            .size_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
             .show_separator_line(false)
             .frame(sidebar)
             .show(ui, |ui| {
@@ -221,12 +222,18 @@ impl Screens {
             if toolbar_button(ui, log).clicked() {
                 self.log.toggle();
             }
+            // The state in short; the whole sentence, with the reason, is in the tooltip
+            // and is what accessibility reads.
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let text = broker_text(&state.broker);
                 status_dot(ui, broker_color(&palette, &state.broker), &text);
-                ui.add(
-                    egui::Label::new(RichText::new(text).color(palette.secondary_label)).truncate(),
-                );
+                let summary =
+                    RichText::new(broker_summary(&state.broker)).color(palette.secondary_label);
+                let summary = ui
+                    .add(egui::Label::new(summary).truncate())
+                    .on_hover_text(&text);
+                ui.ctx()
+                    .accesskit_node_builder(summary.id, |node| node.set_value(text));
             });
         });
     }

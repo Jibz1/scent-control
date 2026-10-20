@@ -142,3 +142,15 @@ fn the_log_pane_keeps_its_height_with_nothing_in_it() {
     let height = log.expect("the log pane is shown").size().y;
     assert!((height - log_view::OPEN_HEIGHT).abs() < 1.0, "{height}");
 }
+
+#[test]
+fn the_toolbar_shows_the_broker_state_in_short_and_reads_it_in_full() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = state();
+    state.broker = BrokerState::LoginRefused("Not authorized.".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    // The dot and the words both read the whole sentence, reason and all.
+    let full = "Broker login refused: Not authorized.";
+    assert_eq!(harness.get_all_by_value(full).count(), 2);
+}

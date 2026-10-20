@@ -2,11 +2,12 @@
 //! status dot, name and model, then what the Bluetooth scan found under "Found Nearby",
 //! and the scan button at the bottom.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, Rect, RichText, Sense, Spinner, TextStyle, WidgetInfo, WidgetType, pos2,
-    vec2,
+    self, Align2, Color32, Galley, Pos2, Rect, RichText, Sense, Spinner, TextStyle, WidgetInfo,
+    WidgetType, pos2, vec2,
 };
 use scent_core::Online;
 
@@ -67,19 +68,93 @@ fn model_line(device: &DeviceView) -> String {
     }
 }
 
-/// The second line of a diffuser's row: its model, then whether it answers, in words,
-/// so that the status dot's color is never the only signal.
-fn row_detail(device: &DeviceView, online: Online) -> String {
-    let (model, words) = (model_line(device), online_text(online));
-    format!("{model}{}", words_after(&model, words))
+/// Whether a diffuser answers, in words short enough for the sidebar: "Waiting" for
+/// "Pinged, waiting for an answer". The detail pane and the row's tooltip have the whole
+/// wording.
+fn sidebar_words(online: Online) -> &'static str {
+    match online {
+        Online::Waiting => "Waiting",
+        other => online_text(other),
+    }
 }
 
-/// The words that follow the model on a row's second line, or stand alone without one.
-fn words_after(model: &str, words: &str) -> String {
-    if model.is_empty() {
-        words.to_owned()
-    } else {
-        format!(" · {words}")
+/// What a diffuser's row says on its second line: its model, then whether it answers,
+/// in words, so that the status dot's color is never the only signal.
+fn row_parts(device: &DeviceView, online: Online) -> (String, &'static str) {
+    (model_line(device), sidebar_words(online))
+}
+
+/// The second line in full, as [`second_line`] lays it out when there is room.
+#[cfg(test)]
+fn row_detail(device: &DeviceView, online: Online) -> String {
+    match row_parts(device, online) {
+        (model, words) if model.is_empty() => words.to_owned(),
+        (model, words) => format!("{model}{SEPARATOR}{words}"),
+    }
+}
+
+/// Between the model and the words on a row's second line.
+const SEPARATOR: &str = " · ";
+
+/// The least room worth giving the model, cut short: a few letters and "…". With less,
+/// it is left out.
+const MIN_MODEL_WIDTH: f32 = 3.0 * GRID;
+
+/// How wide a row's text may be in a row `row_width` wide: past the dot, with a margin
+/// on the right.
+fn row_text_width(row_width: f32) -> f32 {
+    row_width - TEXT_INSET - GRID
+}
+
+/// A row's second line, laid out to fit.
+struct SecondLine {
+    /// The model, cut short with "…" if need be, and what follows it; none when there is
+    /// no model or no room for it.
+    model: Option<Arc<Galley>>,
+    separator: Option<Arc<Galley>>,
+    words: Arc<Galley>,
+}
+
+impl SecondLine {
+    #[cfg(test)]
+    fn width(&self) -> f32 {
+        [&self.model, &self.separator, &Some(self.words.clone())]
+            .into_iter()
+            .flatten()
+            .map(|galley| galley.size().x)
+            .sum()
+    }
+
+    fn height(&self) -> f32 {
+        self.words.size().y
+    }
+
+    fn paint(self, painter: &egui::Painter, at: Pos2, color: Color32) {
+        let mut x = at.x;
+        for galley in [self.model, self.separator, Some(self.words)]
+            .into_iter()
+            .flatten()
+        {
+            let width = galley.size().x;
+            painter.galley(pos2(x, at.y), galley, color);
+            x += width;
+        }
+    }
+}
+
+/// A row's second line, the model and the words of [`row_parts`], laid out in `width`:
+/// the model is cut short first, or left out, so that the words fit; they are cut only
+/// if they can't fit alone.
+fn second_line(ui: &egui::Ui, (model, words): (&str, &str), width: f32) -> SecondLine {
+    let words = one_line(ui, words, subheadline(), width);
+    let separator = one_line(ui, SEPARATOR, subheadline(), f32::INFINITY);
+    let room = width - words.size().x - separator.size().x;
+    let model = (!model.is_empty() && room >= MIN_MODEL_WIDTH)
+        .then(|| one_line(ui, model, subheadline(), room));
+    SecondLine {
+        separator: model.is_some().then_some(separator),
+        model,
+        words,
     }
 }
 
@@ -197,7 +272,8 @@ fn note(ui: &mut egui::Ui, text: &str) {
 
 /// A diffuser's row: the status dot and the name, and under it in secondary text the
 /// model and whether it answers, in words ([`row_detail`]). The chosen row is an inset
-/// rounded rectangle in the accent color with white text.
+/// rounded rectangle in the accent color with white text. The tooltip and the
+/// accessibility label have the words in full.
 fn device_row(
     ui: &mut egui::Ui,
     device: &DeviceView,
@@ -207,10 +283,15 @@ fn device_row(
     let palette = Palette::of(ui);
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, DEVICE_ROW_HEIGHT), Sense::click());
+    // The whole wording, which the row's second line may shorten.
     let words = online_text(online);
-    let model = model_line(device);
     response.widget_info(|| {
-        let label = format!("{}, {}", device.label, row_detail(device, online));
+        let model = model_line(device);
+        let label = [device.label.as_str(), model.as_str(), words]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
         WidgetInfo::selected(WidgetType::SelectableLabel, true, chosen, label)
     });
     if ui.is_rect_visible(rect) {
@@ -221,18 +302,11 @@ fn device_row(
         } else {
             (palette.label, palette.secondary_label)
         };
-        let text_width = rect.width() - TEXT_INSET - GRID;
+        let text_width = row_text_width(rect.width());
         let name = one_line(ui, &device.label, TextStyle::Body, text_width);
-        // The second line is the row's detail; the words in it are never cut short, the
-        // model is if the two don't fit.
-        let words = one_line(ui, words_after(&model, words), subheadline(), f32::INFINITY);
-        let model = one_line(
-            ui,
-            &model,
-            subheadline(),
-            (text_width - words.size().x).max(0.0),
-        );
-        let lines = name.size().y + words.size().y;
+        let (model, short) = row_parts(device, online);
+        let detail = second_line(ui, (&model, short), text_width);
+        let lines = name.size().y + detail.height();
         let top = rect.center().y - lines / 2.0;
         let name_at = pos2(rect.left() + TEXT_INSET, top);
         let dot = pos2(rect.left() + DOT_CENTER, name_at.y + name.size().y / 2.0);
@@ -243,11 +317,9 @@ fn device_row(
         painter.circle_filled(dot, 4.0, status_color(&palette, online));
         let detail_at = pos2(name_at.x, top + name.size().y);
         painter.galley(name_at, name, text);
-        let model_width = model.size().x;
-        painter.galley(detail_at, model, secondary);
-        painter.galley(detail_at + vec2(model_width, 0.0), words, secondary);
+        detail.paint(painter, detail_at, secondary);
     }
-    response
+    response.on_hover_text(words)
 }
 
 /// A row of what the scan found: the name, and its signal in secondary text.
@@ -282,6 +354,9 @@ mod tests {
     use egui_kittest::kittest::Queryable as _;
     use scent_core::DeviceInfo;
 
+    use std::path::Path;
+
+    use super::super::theme::{self, SIDEBAR_MIN_WIDTH};
     use super::*;
 
     const ONE: &str = "TESTDEVICE01";
@@ -317,6 +392,53 @@ mod tests {
             row_detail(&named, Online::Offline),
             "TESTDEVICE01 · Not answering pings"
         );
+    }
+
+    #[test]
+    fn the_sidebar_says_waiting_in_one_word() {
+        assert_eq!(
+            row_detail(&with_model("Diffuser Air 2"), Online::Waiting),
+            "Diffuser Air 2 · Waiting"
+        );
+    }
+
+    #[test]
+    fn at_the_narrowest_sidebar_the_model_is_cut_and_the_words_are_not() {
+        // The width a row's text has when the sidebar is as narrow as it goes.
+        let width = row_text_width(SIDEBAR_MIN_WIDTH - 2.0 * GRID);
+        let mut frames = 0;
+        let mut harness = Harness::new_ui_state(
+            |ui, lines: &mut Vec<(Option<bool>, String, bool, f32)>| {
+                // The app's text styles, in egui's fonts: the first frame installs them.
+                frames += 1;
+                if frames == 1 {
+                    theme::install(ui.ctx(), Path::new("/nonexistent"));
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                lines.clear();
+                for online in [Online::Waiting, Online::Offline, Online::Unknown] {
+                    let line = second_line(ui, ("Diffuser HVAC 2", sidebar_words(online)), width);
+                    lines.push((
+                        line.model.as_ref().map(|model| model.elided),
+                        line.words.text().to_owned(),
+                        line.words.elided,
+                        line.width(),
+                    ));
+                }
+            },
+            Vec::new(),
+        );
+        harness.run();
+        let lines = harness.state();
+        assert_eq!(lines[0].1, "Waiting");
+        assert_eq!(lines[1].1, "Not answering pings");
+        for (_, words, elided, used) in lines {
+            assert!(!elided, "{words:?} was cut short");
+            assert!(*used <= width + 0.5, "{used} > {width}");
+        }
+        // The longest words leave the model too little room: it is cut, or left out.
+        assert_ne!(lines[1].0, Some(false));
     }
 
     #[test]

@@ -63,8 +63,11 @@ pub const MARGIN: f32 = 20.0;
 pub const TOOLBAR_HEIGHT: f32 = 28.0;
 /// The room at the top of the sidebar for the traffic lights, which sit over it.
 pub const SIDEBAR_TOP_INSET: f32 = 40.0;
-/// The width of the sidebar when the window first opens.
+/// The width of the sidebar when the window first opens, and how narrow and wide the
+/// person can drag it.
 pub const SIDEBAR_WIDTH: f32 = 260.0;
+pub const SIDEBAR_MIN_WIDTH: f32 = 200.0;
+pub const SIDEBAR_MAX_WIDTH: f32 = 360.0;
 
 /// Corner radii: grouped boxes, notices, and controls (push buttons, the sidebar's
 /// selection, segmented controls).

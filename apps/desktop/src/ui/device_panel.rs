@@ -156,6 +156,44 @@ struct Asked {
     at: Instant,
 }
 
+/// The job a failure is about, from the name the hub gives it: "Bluetooth TURN_ON",
+/// "TURN_ON" (when both routes failed), "WiFi PING", "read status", "Schedule".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Job<'a> {
+    /// A command, by its action.
+    Command(&'a str),
+    /// A job that sends nothing the controls set: a read or a schedule.
+    Other,
+    /// A name the panel doesn't know, such as "Hub".
+    Unknown,
+}
+
+/// The actions the hub can name in a failure, by the commands the app sends.
+const ACTIONS: [&str; 10] = [
+    "TURN_ON",
+    "SET_LEVEL",
+    "PING",
+    "GET_STATUS",
+    "SYNC_TIME",
+    "SAVE_MQTT",
+    "WIFI_CONNECT",
+    "SECRET_COMMAND",
+    "RESET",
+    "UPDATE_PROFILE",
+];
+
+fn failed_job(what: &str) -> Job<'_> {
+    let name = ["Bluetooth ", "WiFi "]
+        .into_iter()
+        .find_map(|via| what.strip_prefix(via))
+        .unwrap_or(what);
+    match name {
+        "read status" | "Schedule" => Job::Other,
+        action if ACTIONS.contains(&action) => Job::Command(action),
+        _ => Job::Unknown,
+    }
+}
+
 #[derive(Default)]
 pub struct DevicePanel {
     /// The "Send Over" choice for each diffuser. Auto until it is changed.
@@ -193,20 +231,24 @@ impl DevicePanel {
                 ..
             } => {
                 self.sending.remove(device_id);
-                // A failure ends what its command was for, if its name says; a failed
-                // read or schedule leaves the controls alone.
-                let action = what.rsplit(' ').next().unwrap_or(what);
-                let was_for = |cmd: Command| action == cmd.action(Via::Wifi);
+                // A failure ends what its command was for. One for another job (a read,
+                // a schedule, a ping) leaves the controls alone; one that names no job
+                // the panel knows, such as the hub losing the diffuser's queue, ends both.
+                let failed = failed_job(what);
                 self.forget_asked(device_id, |asked| {
-                    if asked
+                    let power = asked
                         .power
-                        .is_some_and(|on| was_for(Command::TurnOn { on }))
-                    {
-                        asked.power = None;
-                    }
+                        .map(|on| Command::TurnOn { on }.action(Via::Wifi));
                     let level = asked.intensity.and_then(Level::new);
-                    if level.is_some_and(|level| was_for(Command::SetLevel(level))) {
-                        asked.intensity = None;
+                    let level = level.map(|level| Command::SetLevel(level).action(Via::Wifi));
+                    match failed {
+                        Job::Command(name) if power == Some(name) => asked.power = None,
+                        Job::Command(name) if level == Some(name) => asked.intensity = None,
+                        Job::Command(_) | Job::Other => {}
+                        Job::Unknown => {
+                            asked.power = None;
+                            asked.intensity = None;
+                        }
                     }
                 });
             }
@@ -619,6 +661,84 @@ mod tests {
         assert_eq!(panel.asked(ID).unwrap().intensity, Some(2));
         panel.on_event(&failed("Bluetooth SET_LEVEL"));
         assert!(panel.asked(ID).is_none());
+    }
+
+    #[test]
+    fn a_failure_that_names_no_command_ends_both() {
+        let held = || Asked {
+            power: Some(true),
+            intensity: Some(2),
+            at: Instant::now(),
+        };
+        let failed = |what: &str| Event::Failed {
+            device_id: Some(ID.to_owned()),
+            what: what.to_owned(),
+            error: "The hub lost its jobs.".to_owned(),
+            at: 0,
+        };
+        // The hub's own failure, when a diffuser's queue stopped and took its jobs.
+        let mut panel = DevicePanel::default();
+        panel.asked.insert(ID.to_owned(), held());
+        panel.on_event(&failed("Hub"));
+        assert!(panel.asked(ID).is_none());
+        // Any other name the panel doesn't know.
+        panel.asked.insert(ID.to_owned(), held());
+        panel.on_event(&failed("Something new"));
+        assert!(panel.asked(ID).is_none());
+        // A failed ping, read or schedule is about something else.
+        panel.asked.insert(ID.to_owned(), held());
+        for other in [
+            "WiFi PING",
+            "Bluetooth read status",
+            "read status",
+            "Schedule",
+        ] {
+            panel.on_event(&failed(other));
+        }
+        let asked = panel.asked(ID).unwrap();
+        assert_eq!((asked.power, asked.intensity), (Some(true), Some(2)));
+    }
+
+    #[test]
+    fn every_command_the_hub_can_name_is_known() {
+        let profile = Profile {
+            always_on: AlwaysOn {
+                enable: false,
+                level: Level::new(1).unwrap(),
+            },
+            entries: vec![],
+            timezone_hours: 0.0,
+            flag: ScheduleFlag::Replace,
+        };
+        let secret = || scent_core::Secret::new(String::new());
+        let commands = [
+            Command::TurnOn { on: true },
+            Command::SetLevel(Level::new(2).unwrap()),
+            Command::Ping { userid: None },
+            Command::GetStatus,
+            Command::SyncTime { server_time: 0 },
+            Command::SaveMqtt {
+                broker: String::new(),
+                username: String::new(),
+                password: secret(),
+            },
+            Command::WifiConnect {
+                ssid: String::new(),
+                password: secret(),
+            },
+            Command::SoftRestart,
+            Command::UpdateProfile(profile),
+        ];
+        for cmd in &commands {
+            for via in [Via::Bluetooth, Via::Wifi] {
+                let action = cmd.action(via);
+                assert_eq!(failed_job(action), Job::Command(action));
+                let named = format!("{} {action}", super::super::format::via_name(via));
+                assert_eq!(failed_job(&named), Job::Command(action));
+            }
+        }
+        assert_eq!(failed_job("Bluetooth read status"), Job::Other);
+        assert_eq!(failed_job("Hub"), Job::Unknown);
     }
 
     #[test]
