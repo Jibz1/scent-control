@@ -16,6 +16,15 @@ mod app;
 #[allow(dead_code)]
 mod state;
 
+// The hub (Task 8) is what starts the MQTT worker and reads the broker password.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod mqtt;
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod secrets;
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 mod store;

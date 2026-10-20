@@ -16,3 +16,6 @@ scent-core = { path = "../../packages/scent-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = "=7.0.0"
+rumqttc = { version = "=0.25.1", default-features = false, features = ["websocket", "use-rustls"] }
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "sync", "time"] }
+keyring = "=4.2.0"

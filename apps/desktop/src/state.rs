@@ -467,7 +467,8 @@ impl AppState {
     }
 }
 
-fn unix_now() -> i64 {
+/// Seconds since 1970 now; the time the workers stamp their events with.
+pub fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {
