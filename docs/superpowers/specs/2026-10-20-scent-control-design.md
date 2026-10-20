@@ -37,9 +37,10 @@ eventually be open source and support other brands.
    private to their home.
 6. **Testers (owner).** iPhone builds go out through TestFlight, Android builds as
    an APK.
-7. **Bluetooth fallback (designer's call).** When a diffuser is offline from the
-   server but the phone is next to it, the app can control it directly over
-   Bluetooth.
+7. **Both Bluetooth and WiFi (owner, 2026-10-20).** Like Scentiment's own app,
+   the app talks to a diffuser over Bluetooth whenever the phone is in range and the
+   link connects. Otherwise it goes through the server over WiFi. This replaces the
+   earlier designer's call of Bluetooth only as a fallback.
 
 ### Definition of done for v1 (designer's call)
 
@@ -256,10 +257,14 @@ Phase 0.
   state. Store the latest state per device and stream changes to the app. The raw
   oil value is 0–100. The app shows Empty/Low/Medium/High with the same thresholds
   as Scentiment's app.
-- **Fallback over Bluetooth:** when the server marks a device offline and the phone
-  can see it, the app offers direct control. The app drops the Bluetooth connection
-  soon after, since a held connection blocks others and drains battery-powered
-  models.
+- **Bluetooth first when nearby, WiFi otherwise (owner, 2026-10-20).** When the
+  phone can reach the diffuser over Bluetooth, the app sends commands that way.
+  Bluetooth also has the fullest command support: intensity and replies are
+  immediate, per Phase 0. Otherwise commands go through the server and broker. The
+  app still drops idle Bluetooth connections soon after use, because a held
+  connection blocks others, drains battery models, and seemed to delay WiFi
+  commands in Phase 0. Anything changed over Bluetooth is reported to the server, so
+  the stored state stays current.
 
 ### 6.6 Desired state (from CLAUDE.md, adapted)
 

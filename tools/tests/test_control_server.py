@@ -50,3 +50,31 @@ def test_parse_device_message_reads_status_array_given_as_an_object():
     raw = b'{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-66}}'
     m = parse_device_message("scentiment-mqtt-prod/user/route-test-1", raw)
     assert m["valid_json"] and m["status"]["power"] == 1 and m["status"]["intensity"] == 2 and m["payload"]["rssi"] == -66
+
+def test_parse_status_output_takes_the_last_json_line():
+    from control_server import parse_status_output
+    out = 'connected to air2 (mtu 256)\n{"alias": "air2", "deviceId": "TESTDEVICE01", "status": {"power": 0}}\nlog: /tmp/x.jsonl\n'
+    assert parse_status_output(out)["status"] == {"power": 0}
+    with pytest.raises(ValueError):
+        parse_status_output("error: could not connect\n")
+
+def test_ble_status_event_carries_status_for_the_page():
+    from control_server import ble_status_event
+    event = ble_status_event({"alias": "air2", "deviceId": "TESTDEVICE01", "status": {"power": 1, "intensity": 2, "charging": 2, "battery": 200}, "info": {}})
+    assert (event["deviceId"], event["action"], event["direction"], event["topic"]) == ("TESTDEVICE01", "ble_status", "from_device", "bluetooth")
+    assert event["status"]["power"] == 1 and event["via"] == "bluetooth"
+
+def test_events_from_session_log_turns_a_bluetooth_session_into_events():
+    import json as _json
+    from control_server import events_from_session_log
+    lines = [
+        _json.dumps({"ts": "2026-10-20T14:50:00.000+00:00", "dir": "note", "channel": "", "text": "connected to air2, mtu 256"}),
+        _json.dumps({"ts": "2026-10-20T14:50:01.000+00:00", "dir": "rx", "channel": "ble-notify", "text": "level:3", "parsed": {"raw": "level:3", "kind": "value", "intensity": 3}}),
+        _json.dumps({"ts": "2026-10-20T14:50:01.000+00:00", "dir": "tx", "channel": "ble", "text": '{"action":"SET_LEVEL","payload":{"intensity":3}}-|'}),
+        _json.dumps({"ts": "2026-10-20T14:50:02.000+00:00", "dir": "rx", "channel": "ble-notify", "text": "led:50", "parsed": {"raw": "led:50", "kind": "value", "led": 50}}),
+    ]
+    events = events_from_session_log(lines, "TESTDEVICE01")
+    assert [(e["direction"], e["action"]) for e in events] == [("from_device", "level:3"), ("to_device", "SET_LEVEL"), ("from_device", "led:50")]
+    assert all(e["via"] == "bluetooth" and e["deviceId"] == "TESTDEVICE01" for e in events)
+    assert events[0]["status"] == {"raw": "level:3", "kind": "value", "intensity": 3}
+    assert events[1]["payload"] == {"intensity": 3}

@@ -14,3 +14,11 @@ def test_make_test_schedule_prints_profile(capsys):
     profile = json.loads(capsys.readouterr().out)
     entries = profile["profile"]["schedule"]
     assert entries[0]["isFactory"] is True and entries[1]["workingState"]["level"] == 3
+
+def test_status_report_combines_info_and_status():
+    from session import status_report
+    from scentiment_ble import parse_info, parse_notification
+    report = status_report("air2", parse_info("01|Diffuser|Black|TESTDEVICE01|2.30|true|3"), parse_notification(b"S:1,L:3,C:2,Bat:200"))
+    assert report["deviceId"] == "TESTDEVICE01" and report["alias"] == "air2"
+    assert report["status"] == {"power": 1, "intensity": 3, "charging": 2, "battery": 200}
+    assert report["info"]["wifi_status"] == 3

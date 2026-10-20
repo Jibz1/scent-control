@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import queue
 import re
+import subprocess
 import sys
 import threading
 from collections import deque
@@ -25,6 +26,7 @@ from safety import RefusedCommand, check_allowed
 from scentiment_ble import parse_notification
 
 PAGE = Path(__file__).parent / "control.html"
+BT = Path(__file__).parent / "bt"
 TOPIC_PREFIX = "scentiment-mqtt-prod/"
 DEVICE_TOPIC = TOPIC_PREFIX + "device/"
 DEVICE_ID = re.compile(r"[0-9A-Z]{12}")
@@ -75,6 +77,54 @@ def build_publish(body: dict) -> tuple[str, dict]:
     check_allowed(action, payload)
     envelope = {"action": action} if payload is None else {"action": action, "payload": payload}
     return DEVICE_TOPIC + device_id, envelope
+
+
+def parse_status_output(stdout: str) -> dict:
+    """The last JSON line printed by `session.py status`."""
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            return json.loads(line)
+    raise ValueError("the Bluetooth read printed no status")
+
+
+def ble_status_event(report: dict) -> dict:
+    return {
+        "topic": "bluetooth",
+        "raw": json.dumps(report),
+        "action": "ble_status",
+        "deviceId": report.get("deviceId"),
+        "payload": report,
+        "status": report.get("status") or {},
+        "valid_json": True,
+        "direction": "from_device",
+        "via": "bluetooth",
+    }
+
+
+def events_from_session_log(lines: list[str], device_id: str) -> list[dict]:
+    """Conversation events from a `session.py` capture log (one Bluetooth session)."""
+    events = []
+    for line in lines:
+        record = _loads(line)
+        if not isinstance(record, dict) or record.get("dir") not in ("tx", "rx"):
+            continue
+        ts = dt.datetime.fromisoformat(record["ts"]).astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+        text = record.get("text", "")
+        event = {"topic": "bluetooth", "raw": text, "deviceId": device_id, "payload": None, "status": None,
+                 "valid_json": True, "via": "bluetooth", "ts": ts}
+        if record["dir"] == "tx":
+            body = _loads(text[:-2] if text.endswith("-|") else text)
+            body = body if isinstance(body, dict) else {}
+            event.update(direction="to_device", action=body.get("action"), payload=body.get("payload"))
+        else:
+            parsed = record.get("parsed") or {}
+            kind = parsed.get("kind")
+            event.update(direction="from_device", action=text if kind in ("value", "unknown", None) else "status")
+            if kind in ("status_text", "status_array", "value"):
+                event["status"] = parsed
+        events.append(event)
+    return events
 
 
 def _loads(text: str) -> object:
@@ -129,16 +179,53 @@ class Hub:
                 topic, envelope = build_publish({"deviceId": device_id, "action": action, "payload": payload})
                 self.publish(topic, envelope)
 
+    def read_over_bluetooth(self, device_id: str) -> dict:
+        """Run `bt session.py status <alias>` (Bluetooth needs the ScentTools wrapper) and record the result."""
+        alias = self.devices.get(device_id, {}).get("alias")
+        if not alias:
+            raise ValueError(f"no tools/devices.toml alias for {device_id}, so its Bluetooth address is unknown")
+        result = subprocess.run([str(BT), "session.py", "status", alias], capture_output=True, text=True, timeout=90)
+        try:
+            report = parse_status_output(result.stdout)
+        except ValueError:
+            detail = (result.stderr.strip().splitlines() or ["no output"])[-1]
+            raise ValueError(f"Bluetooth read of {alias} failed: {detail}") from None
+        event = ble_status_event(report)
+        event["ts"] = dt.datetime.now().isoformat(timespec="seconds")
+        self.log.rx(event["raw"], {k: v for k, v in event.items() if k != "raw"}, "ble-status-read")
+        self.ingest(event)
+        return report
+
+    def send_over_bluetooth(self, device_id: str, action: str, payload: dict | None) -> int:
+        """Send one command with `bt session.py send` and add the session's messages to the conversation."""
+        build_publish({"deviceId": device_id, "action": action, "payload": payload})  # same checks as WiFi
+        alias = self.devices.get(device_id, {}).get("alias")
+        if not alias:
+            raise ValueError(f"no tools/devices.toml alias for {device_id}, so its Bluetooth address is unknown")
+        args = [str(BT), "session.py", "send", alias, action] + ([json.dumps(payload)] if payload is not None else []) + ["--listen", "6"]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=90)
+        log_line = next((l for l in reversed(result.stdout.splitlines()) if l.startswith("log: ")), None)
+        if not log_line:
+            detail = (result.stderr.strip().splitlines() or ["no output"])[-1]
+            raise ValueError(f"Bluetooth send to {alias} failed: {detail}")
+        events = events_from_session_log(Path(log_line[5:]).read_text().splitlines(), device_id)
+        for event in events:
+            self.ingest(event)
+        return len(events)
+
     def _on_message(self, _client, _userdata, message) -> None:
         event = parse_device_message(message.topic, message.payload)
         event["ts"] = dt.datetime.now().isoformat(timespec="seconds")
         self.log.rx(event["raw"], {k: v for k, v in event.items() if k != "raw"}, f"mqtt:{message.topic}")
+        self.ingest(event)
+
+    def ingest(self, event: dict) -> None:
         with self.lock:
             device_id = event.get("deviceId")
             if device_id and DEVICE_ID.fullmatch(device_id):
                 device = self.devices.setdefault(device_id, {"deviceId": device_id, "label": device_id})
                 if event["direction"] == "from_device":
-                    device["lastSeen"] = event["ts"]
+                    device["bleSeen" if event.get("via") == "bluetooth" else "lastSeen"] = event["ts"]
                     if event["action"] == "device_connected" and event["payload"]:
                         device["info"] = event["payload"]
                     if event["status"]:
@@ -172,6 +259,22 @@ def make_handler(hub: Hub):
                 self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if self.path == "/api/ble-read":
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                    report = hub.read_over_bluetooth(str(body.get("deviceId") or ""))
+                except (ValueError, subprocess.TimeoutExpired) as err:
+                    return self._json(502, {"error": str(err)})
+                return self._json(200, {"status": report["status"]})
+            if self.path == "/api/ble-send":
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                    count = hub.send_over_bluetooth(str(body.get("deviceId") or ""), body.get("action"), body.get("payload"))
+                except RefusedCommand as err:
+                    return self._json(403, {"refused": str(err)})
+                except (ValueError, TypeError, OSError, subprocess.TimeoutExpired) as err:
+                    return self._json(502, {"error": str(err)})
+                return self._json(200, {"ok": True, "events": count})
             if self.path != "/api/publish":
                 return self._json(404, {"error": "not found"})
             try:

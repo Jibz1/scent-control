@@ -72,7 +72,9 @@ input, select { border: 1px solid var(--line); background: var(--surface); borde
 .readout dd { margin: 0; font-weight: 600; }
 .readout small { display: block; font-weight: 400; color: var(--amber); font-size: 0.72rem; }
 .offline { margin: 0; padding: 0.4rem 0.6rem; border-radius: 6px; background: var(--amber-wash); font-size: 0.82rem; }
-.offline[hidden] { display: none; }
+.offline[hidden], .busy[hidden] { display: none; }
+.busy { margin: 0; color: var(--teal); font-size: 0.85rem; }
+button:disabled { opacity: 0.5; cursor: progress; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .row > .name { width: 5.5rem; color: var(--ink-soft); font-size: 0.85rem; }
 .swatch { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); }
@@ -173,7 +175,7 @@ const COLORS = [
   ["Blue", [0, 0, 255]], ["Cyan", [50, 209, 254]], ["Red", [255, 0, 0]], ["Green", [0, 255, 0]],
   ["Warm 1", [255, 151, 60]], ["Warm 2", [255, 175, 90]], ["Warm 3", [255, 190, 110]],
 ];
-const state = { devices: {}, routeId: "route-test-1", selected: null, entries: [], events: [], sent: {} };
+const state = { devices: {}, routeId: "route-test-1", selected: null, entries: [], events: [], sent: {}, transport: {}, busy: {} };
 const $ = (id) => document.getElementById(id);
 
 function label(deviceId) {
@@ -183,13 +185,43 @@ function time(ts) { return ts ? ts.slice(11, 19) : ""; }
 // Local time as "YYYY-MM-DDTHH:MM:SS", the same format the helper uses.
 function localIso() { return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19); }
 
+// "auto" works like Scentiment's app: Bluetooth when it can reach the diffuser, WiFi otherwise.
+function transportOf(id) { return state.transport[id] || "auto"; }
+
+async function post(path, body) {
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return [response, await response.json().catch(() => ({}))];
+}
+
+// Bluetooth calls take several seconds (connect, send, listen), so the card is locked meanwhile.
+async function withBusy(deviceId, label, work) {
+  state.busy[deviceId] = label;
+  if (cards[deviceId]) updateDevice(deviceId);
+  try { return await work(); } finally {
+    delete state.busy[deviceId];
+    if (cards[deviceId]) updateDevice(deviceId);
+  }
+}
+
+async function readOverBluetooth(deviceId) {
+  const [response, body] = await withBusy(deviceId, "Reading over Bluetooth…", () => post("/api/ble-read", { deviceId }));
+  if (!response.ok) return addNote("error", deviceId, "Bluetooth read", body.error || `HTTP ${response.status}`);
+  if (!Object.keys(body.status || {}).length) {
+    addNote("error", deviceId, "Bluetooth read", "The diffuser's last Bluetooth message wasn't a status. It reports one after an on/off or intensity change.");
+  }
+}
+
 async function publish(deviceId, action, payload) {
-  const response = await fetch("/api/publish", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deviceId, action, payload }),
-  });
-  const body = await response.json().catch(() => ({}));
+  const transport = transportOf(deviceId);
+  if (transport !== "wifi" && state.busy[deviceId]) return;
+  let [response, body] = transport === "wifi" ? await post("/api/publish", { deviceId, action, payload })
+    : await withBusy(deviceId, "Sending over Bluetooth…", () => post("/api/ble-send", { deviceId, action, payload }));
+  if (transport === "auto" && response.status === 502) {
+    const onBroker = state.devices[deviceId] && state.devices[deviceId].lastSeen;
+    addNote("error", deviceId, action, onBroker ? "Bluetooth couldn't reach the diffuser, so this went over WiFi." : `Bluetooth couldn't reach the diffuser, and it isn't on the test broker: ${body.error}`);
+    if (!onBroker) return;
+    [response, body] = await post("/api/publish", { deviceId, action, payload });
+  }
   if (!response.ok) {
     return addNote(body.refused ? "refused" : "error", deviceId, action, body.refused || body.error || `HTTP ${response.status}`);
   }
@@ -200,6 +232,8 @@ async function publish(deviceId, action, payload) {
   sent.at = localIso();
   if (cards[deviceId]) updateDevice(deviceId);
 }
+
+function heard(d) { return [d.lastSeen, d.bleSeen].filter(Boolean).sort().pop(); }
 
 function reading(confirmed, sentValue, sentAt, lastSeen, format) {
   if (sentValue != null && (!lastSeen || lastSeen < sentAt)) {
@@ -239,15 +273,22 @@ function updateDevice(id) {
   const el = cards[id];
   const sent = state.sent[id] || {};
   el.className = "device" + (state.selected === id ? " selected" : "");
+  const last = heard(d);
   el.querySelector(".offline").hidden = !!d.lastSeen;
   el.querySelector(".meta").innerHTML = `${escape(info.model || "")} ${info.fw ? "firmware " + escape(info.fw) : ""}<br>
-    ${d.lastSeen ? "last heard " + time(d.lastSeen) : "not heard from yet"}`;
+    ${d.lastSeen ? "WiFi " + time(d.lastSeen) : "not on the test broker"}${d.bleSeen ? ", Bluetooth " + time(d.bleSeen) : ""}`;
+  const transport = transportOf(id);
+  for (const b of el.querySelectorAll("[data-transport]")) b.setAttribute("aria-pressed", String(b.dataset.transport === transport));
+  const busy = state.busy[id];
+  el.querySelector(".busy").textContent = busy || "";
+  el.querySelector(".busy").hidden = !busy;
+  for (const b of el.querySelectorAll("button")) b.disabled = !!busy;
   el.querySelector(".readout").innerHTML = `
-    <div><dt>Power</dt><dd>${reading(s.power, sent.power, sent.at, d.lastSeen, (v) => (v ? "On" : "Off"))}</dd></div>
-    <div><dt>Intensity</dt><dd>${reading(s.intensity, sent.intensity, sent.at, d.lastSeen, (v) => v || "–")}</dd></div>
+    <div><dt>Power</dt><dd>${reading(s.power, sent.power, sent.at, last, (v) => (v ? "On" : "Off"))}</dd></div>
+    <div><dt>Intensity</dt><dd>${reading(s.intensity, sent.intensity, sent.at, last, (v) => v || "–")}</dd></div>
     <div><dt>Power source</dt><dd>${powerSource(s)}</dd></div>
     <div><dt>WiFi signal</dt><dd>${d.rssi == null ? "?" : d.rssi + " dBm"}</dd></div>`;
-  const shown = sent.intensity != null && (!d.lastSeen || d.lastSeen < sent.at) ? sent.intensity : s.intensity;
+  const shown = sent.intensity != null && (!last || last < sent.at) ? sent.intensity : s.intensity;
   for (const b of el.querySelectorAll("[data-level]")) b.setAttribute("aria-pressed", String(shown === Number(b.dataset.level)));
 }
 
@@ -259,8 +300,13 @@ function renderDevice(id) {
       <h3>${escape(d.label)}</h3>
       <div class="meta"></div>
     </header>
-    <p class="offline">Not heard from on the test broker. Commands go nowhere until this diffuser is pointed here with <code>session.py save-mqtt</code>.</p>
+    <p class="offline">Not heard from on the test broker, so WiFi commands go nowhere. Bluetooth works while this Mac is nearby.</p>
+    <p class="busy" hidden></p>
     <dl class="readout"></dl>
+    <div class="row"><span class="name">Send over</span>
+      <button type="button" data-transport="auto" title="Bluetooth when the diffuser is in range, otherwise WiFi">Auto</button>
+      <button type="button" data-transport="wifi">WiFi</button>
+      <button type="button" data-transport="bluetooth">Bluetooth</button></div>
     <div class="row"><span class="name">Power</span>
       <button type="button" data-act="on">Turn on</button>
       <button type="button" data-act="off">Turn off</button></div>
@@ -271,6 +317,7 @@ function renderDevice(id) {
       <button type="button" data-act="light-off">Off</button>
       ${COLORS.map(([name, rgb], i) => `<button type="button" class="swatch" data-color="${i}" aria-label="${name}" title="${name}" style="background: rgb(${rgb.join(",")})"></button>`).join("")}</div>
     <div class="row"><span class="name">Tools</span>
+      <button type="button" data-act="ble-read">Read over Bluetooth</button>
       <button type="button" data-act="ping">Ping</button>
       <button type="button" data-act="status">Ask for status</button>
       <button type="button" data-act="sync">Sync clock</button>
@@ -282,7 +329,9 @@ function renderDevice(id) {
 
 function onDeviceClick(id, button) {
   if (!button) return;
-  const { act, level, color } = button.dataset;
+  const { act, level, color, transport } = button.dataset;
+  if (transport) { state.transport[id] = transport; return updateDevice(id); }
+  if (act === "ble-read") return readOverBluetooth(id);
   if (level) return publish(id, "SET_LEVEL", { intensity: Number(level) });
   if (color) {
     const [r, g, b] = COLORS[Number(color)][1];
@@ -410,7 +459,7 @@ function renderLog(fresh) {
     const li = document.createElement("li");
     const kind = e.kind || (e.direction === "to_device" ? "to" : "from");
     li.className = `msg ${kind}` + (fresh && i === list.length - 1 ? " fresh" : "");
-    const who = kind === "from" ? label(e.deviceId) : `You to ${label(e.deviceId)}`;
+    const who = (kind === "from" ? label(e.deviceId) : `You to ${label(e.deviceId)}`) + (e.via === "bluetooth" ? " over Bluetooth" : "");
     const body = e.note ? `<p class="note">${escape(e.note)}</p>`
       : `<pre>${escape(e.payload ? JSON.stringify(e.payload) : e.raw)}</pre>${e.valid_json === false ? `<p class="note">The diffuser sent invalid JSON; shown as repaired.</p>` : ""}`;
     li.innerHTML = `<div class="who"><span class="action">${escape(e.action || "message")}</span><span>${escape(who)}</span><span>${time(e.ts)}</span>${e.topic ? `<span>${escape(e.topic.replace("scentiment-mqtt-prod/", ""))}</span>` : ""}</div>${body}`;

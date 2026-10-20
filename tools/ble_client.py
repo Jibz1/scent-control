@@ -71,6 +71,13 @@ class DiffuserLink:
         self.log.rx(text, {"kind": "info"}, "ble-info")
         return parse_info(text)
 
+    async def read_status(self) -> dict:
+        """Read 0xFEF3 directly (e.g. "S:0,L:1,C:2,Bat:200"), as Scentiment's app does when nearby."""
+        text = bytes(await self.client.read_gatt_char(NOTIFY_UUID)).decode("utf-8", errors="replace")
+        parsed = parse_notification(text.encode("utf-8"))
+        self.log.rx(text, parsed, "ble-status-read")
+        return parsed
+
     async def send(self, action: str, payload: dict | None = None) -> None:
         check_allowed(action, payload)
         frame = encode_command(action, payload)

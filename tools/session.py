@@ -15,7 +15,7 @@ from ble_client import ConnectError, DiffuserLink
 from capture import CaptureLog, captures_dir, stamp
 from devices import resolve
 from safety import RefusedCommand, check_allowed
-from scentiment_ble import build_profile, trial_schedule_entry
+from scentiment_ble import DeviceInfo, build_profile, trial_schedule_entry
 
 DEFAULT_FACTORY = {
     "index": 1,
@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         return p
 
     device_command("info", "read the 0xFEF4 device info", 0)
+    device_command("status", "read info and status over Bluetooth, print one JSON line", 0)
     device_command("listen", "print notifications", 30).add_argument("--seconds", type=float, default=None, help="alias for --listen")
     send = device_command("send", "send one allowed action", 10)
     send.add_argument("action")
@@ -100,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _command(args: argparse.Namespace) -> tuple[str | None, dict | None]:
     """The action and payload a subcommand sends (secrets filled in later)."""
-    if args.command in ("info", "listen"):
+    if args.command in ("info", "listen", "status"):
         return None, None
     if args.command == "send":
         return args.action, json.loads(args.payload) if args.payload else None
@@ -134,10 +135,25 @@ async def _run(entry, log: CaptureLog, command: str, action: str | None, payload
     async with DiffuserLink(entry, log) as link:
         if command == "info":
             print(json.dumps(asdict(await link.read_info()), indent=2))
+        if command == "status":
+            info = await link.read_info()
+            print(json.dumps(status_report(entry.alias, info, await link.read_status())))
         if action:
             await link.send(action, payload)
         if listen:
             await link.listen(listen)
+
+
+STATUS_FIELDS = ("power", "intensity", "charging", "battery")
+
+
+def status_report(alias: str, info: DeviceInfo, status: dict) -> dict:
+    return {
+        "alias": alias,
+        "deviceId": info.device_id,
+        "info": asdict(info),
+        "status": {k: status[k] for k in STATUS_FIELDS if k in status},
+    }
 
 
 def _make_test_schedule(args: argparse.Namespace) -> int:
