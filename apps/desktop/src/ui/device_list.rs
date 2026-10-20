@@ -1,20 +1,36 @@
-//! The diffuser list on the left: each known diffuser with its model and whether it
-//! answers, then the Bluetooth scan and what it found.
+//! The sidebar, a source list: the known diffusers under "Diffusers", each with its
+//! status dot, name and model, then what the Bluetooth scan found under "Found Nearby",
+//! and the scan button at the bottom.
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::text::{LayoutJob, TextFormat};
-use eframe::egui::{self, Align, FontId, Layout, RichText, WidgetText};
+use eframe::egui::{
+    self, Align2, Color32, FontSelection, Rect, RichText, Sense, Spinner, TextStyle, TextWrapMode,
+    WidgetInfo, WidgetText, WidgetType, pos2, vec2,
+};
 use scent_core::Online;
 
-use super::format::{model_text, online_text, scan_signal};
-use super::online_color;
+use super::format::{online_text, scan_signal};
+use super::theme::{CONTROL_RADIUS, GRID, Palette, status_color, subheadline};
+use super::widgets::plain_button;
 use crate::hub::{SCAN_FAILED, UiCommand};
 use crate::state::{AppState, DeviceView, Event, ScanHit};
 
 /// How long "Scanning…" stays up if no answer ever comes. The hub gives up on a scan
 /// itself after 30 s.
 const SCAN_GIVE_UP: Duration = Duration::from_secs(35);
+
+/// A diffuser's row: its name over its model.
+const DEVICE_ROW_HEIGHT: f32 = 40.0;
+
+/// A row of what the scan found: one line.
+const HIT_ROW_HEIGHT: f32 = 24.0;
+
+/// Where a row's text starts, past the status dot.
+const TEXT_INSET: f32 = 26.0;
+
+/// Where the status dot's center is, from the row's left edge.
+const DOT_INSET: f32 = 13.0;
 
 #[derive(Default)]
 pub struct DeviceList {
@@ -40,6 +56,16 @@ pub fn unknown_hits(state: &AppState) -> Vec<&ScanHit> {
         .collect()
 }
 
+/// The model a diffuser told us, for the second line of its row. Without one, its ID
+/// when it goes by another name.
+fn model_line(device: &DeviceView) -> String {
+    match &device.info {
+        Some(info) if !info.model_name.is_empty() => info.model_name.clone(),
+        _ if device.label != device.id => device.id.clone(),
+        _ => String::new(),
+    }
+}
+
 impl DeviceList {
     pub fn on_event(&mut self, event: &Event) {
         match event {
@@ -57,8 +83,8 @@ impl DeviceList {
             .is_some_and(|since| since.elapsed() < SCAN_GIVE_UP)
     }
 
-    /// Shows the list and returns what was asked for. `selected` is the diffuser that
-    /// is open, and changes when another is clicked.
+    /// Shows the list in the sidebar and returns what was asked for. `selected` is the
+    /// diffuser that is open, and changes when another is clicked.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -67,87 +93,171 @@ impl DeviceList {
         now: i64,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
-        ui.heading("Diffusers");
-        if state.devices.is_empty() {
-            ui.weak("No diffusers yet. Scan to find the ones in Bluetooth range.");
-        }
-        // Justified, so that each row is as wide as the list and its text sits at the left.
-        ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
-            for device in state.devices.values() {
-                let online = state.online(&device.id, now);
-                let chosen = selected.as_deref() == Some(device.id.as_str());
-                let row = WidgetText::from(row_text(ui, device, online));
-                if ui.selectable_label(chosen, row).clicked() {
-                    *selected = Some(device.id.clone());
-                }
-            }
-        });
+        let scanning = self.is_scanning();
+        // The scan button along the bottom, so the lists above have the rest.
+        egui::Panel::bottom("sidebar_actions")
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 12)))
+            .show_separator_line(false)
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let scan =
+                        ui.add_enabled_ui(!scanning, |ui| plain_button(ui, "Scan for Diffusers"));
+                    if scan.inner.clicked() {
+                        self.scanning = Some(Instant::now());
+                        commands.push(UiCommand::Scan);
+                    }
+                    if scanning {
+                        let color = Palette::of(ui).secondary_label;
+                        ui.add(Spinner::new().size(14.0).color(color));
+                    }
+                });
+            });
 
-        ui.separator();
-        ui.horizontal(|ui| {
-            let scanning = self.is_scanning();
-            if ui
-                .add_enabled(!scanning, egui::Button::new("Scan for diffusers"))
-                .clicked()
-            {
-                self.scanning = Some(Instant::now());
-                commands.push(UiCommand::Scan);
-            }
-            if scanning {
-                ui.spinner();
-                ui.weak("Scanning…");
-            }
-        });
-        self.found_nearby(ui, state);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                section_heading(ui, "Diffusers");
+                if state.devices.is_empty() {
+                    note(
+                        ui,
+                        "No diffusers yet. Scan to find the ones in Bluetooth range.",
+                    );
+                }
+                for device in state.devices.values() {
+                    let online = state.online(&device.id, now);
+                    let chosen = selected.as_deref() == Some(device.id.as_str());
+                    if device_row(ui, device, online, chosen).clicked() {
+                        *selected = Some(device.id.clone());
+                    }
+                }
+                ui.add_space(2.0 * GRID);
+                section_heading(ui, "Found Nearby");
+                self.found_nearby(ui, state, scanning);
+            });
         commands
     }
 
-    fn found_nearby(&self, ui: &mut egui::Ui, state: &AppState) {
+    fn found_nearby(&self, ui: &mut egui::Ui, state: &AppState, scanning: bool) {
         let hits = unknown_hits(state);
+        if scanning {
+            note(ui, "Scanning…");
+        }
         if hits.is_empty() {
-            if self.scanned && !self.is_scanning() {
-                ui.weak("No new diffusers found nearby.");
+            if self.scanned && !scanning {
+                note(ui, "No new diffusers found nearby.");
             }
             return;
         }
-        ui.add_space(8.0);
-        ui.label(RichText::new("Found nearby").strong());
         for hit in hits {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(&hit.name);
-                ui.weak(scan_signal(hit.rssi));
-            });
+            hit_row(ui, hit);
         }
     }
 }
 
-/// A row: the diffuser's name, its model, and whether it answers, in that color.
-fn row_text(ui: &egui::Ui, device: &DeviceView, online: Online) -> LayoutJob {
-    let format = |size: f32, color| TextFormat {
-        font_id: FontId::proportional(size),
-        color,
-        ..TextFormat::default()
-    };
-    let mut job = LayoutJob::default();
-    job.append(
-        &device.label,
-        0.0,
-        format(15.0, ui.visuals().strong_text_color()),
-    );
-    let model = model_text(device.info.as_ref());
-    if !model.is_empty() {
-        job.append(
-            &format!("\n{model}"),
-            0.0,
-            format(12.0, ui.visuals().weak_text_color()),
-        );
+/// A section heading in the sidebar: Subheadline, in the secondary label color.
+fn section_heading(ui: &mut egui::Ui, title: &str) {
+    let color = Palette::of(ui).secondary_label;
+    ui.horizontal(|ui| {
+        ui.add_space(DOT_INSET - 4.0);
+        ui.label(RichText::new(title).text_style(subheadline()).color(color));
+    });
+    ui.add_space(2.0);
+}
+
+/// Secondary text in the sidebar, lined up with the rows' text.
+fn note(ui: &mut egui::Ui, text: &str) {
+    let color = Palette::of(ui).secondary_label;
+    ui.horizontal(|ui| {
+        ui.add_space(TEXT_INSET);
+        ui.add(egui::Label::new(RichText::new(text).text_style(subheadline()).color(color)).wrap());
+    });
+}
+
+/// Lays `text` out on one line in `style`, cut short with "…" past `width`.
+fn one_line(
+    ui: &egui::Ui,
+    text: &str,
+    style: TextStyle,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    WidgetText::from(text).into_galley(
+        ui,
+        Some(TextWrapMode::Truncate),
+        width,
+        FontSelection::Style(style),
+    )
+}
+
+/// A diffuser's row: the status dot, the name, and the model under it in secondary
+/// text. The chosen row is an inset rounded rectangle in the accent color with white
+/// text. Whether it answers is in words in the tooltip and to accessibility.
+fn device_row(
+    ui: &mut egui::Ui,
+    device: &DeviceView,
+    online: Online,
+    chosen: bool,
+) -> egui::Response {
+    let palette = Palette::of(ui);
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, DEVICE_ROW_HEIGHT), Sense::click());
+    let words = online_text(online);
+    let model = model_line(device);
+    response.widget_info(|| {
+        let label = [device.label.as_str(), model.as_str(), words]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        WidgetInfo::selected(WidgetType::SelectableLabel, true, chosen, label)
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let (text, secondary) = if chosen {
+            painter.rect_filled(rect, CONTROL_RADIUS, palette.accent);
+            (Color32::WHITE, Color32::from_white_alpha(204))
+        } else {
+            (palette.label, palette.secondary_label)
+        };
+        let text_width = rect.width() - TEXT_INSET - 8.0;
+        let name = one_line(ui, &device.label, TextStyle::Body, text_width);
+        let model = one_line(ui, &model, subheadline(), text_width);
+        let lines = name.size().y + model.size().y;
+        let top = rect.center().y - lines / 2.0;
+        let name_at = pos2(rect.left() + TEXT_INSET, top);
+        let dot = pos2(rect.left() + DOT_INSET, name_at.y + name.size().y / 2.0);
+        // On the accent color the dot gets a white edge, so that it stands apart.
+        if chosen {
+            painter.circle_filled(dot, 5.0, Color32::WHITE);
+        }
+        painter.circle_filled(dot, 4.0, status_color(&palette, online));
+        painter.galley(name_at, name.clone(), text);
+        painter.galley(pos2(name_at.x, top + name.size().y), model, secondary);
     }
-    job.append(
-        &format!("\n{}", online_text(online)),
-        0.0,
-        format(12.0, online_color(ui, online)),
+    response.on_hover_text(words)
+}
+
+/// A row of what the scan found: the name, and its signal in secondary text.
+fn hit_row(ui: &mut egui::Ui, hit: &ScanHit) {
+    let palette = Palette::of(ui);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, HIT_ROW_HEIGHT), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let signal = one_line(ui, &scan_signal(hit.rssi), subheadline(), width);
+    let name_width = rect.width() - TEXT_INSET - signal.size().x - 16.0;
+    let name = one_line(ui, &hit.name, TextStyle::Body, name_width);
+    let text = Rect::from_min_max(
+        pos2(rect.left() + TEXT_INSET, rect.top()),
+        pos2(rect.right() - 8.0, rect.bottom()),
     );
-    job
+    let painter = ui.painter();
+    let name_at = Align2::LEFT_CENTER.align_size_within_rect(name.size(), text);
+    painter.galley(name_at.min, name, palette.label);
+    let signal_at = Align2::RIGHT_CENTER.align_size_within_rect(signal.size(), text);
+    painter.galley(signal_at.min, signal, palette.secondary_label);
 }
 
 #[cfg(test)]

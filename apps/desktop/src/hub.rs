@@ -47,7 +47,9 @@ const PING_EVERY: Duration = Duration::from_secs(PING_EVERY_S.unsigned_abs());
 /// goes out soon after it is.
 const RECHECK_BROKER: Duration = Duration::from_secs(1);
 
-const NO_BROKER_PASSWORD: &str = "No broker password saved. Add it in Settings (if you already did, the Keychain couldn't be read).";
+/// Why the broker isn't connected when no password is saved. The screens show it as a
+/// notice, with a way to Settings.
+pub const NO_BROKER_PASSWORD: &str = "No broker password saved. Add it in Settings (if you already did, the Keychain couldn't be read).";
 
 const BLUETOOTH_STOPPED: &str = "Bluetooth stopped before it answered.";
 

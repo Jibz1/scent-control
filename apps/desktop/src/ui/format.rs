@@ -75,13 +75,14 @@ pub fn on_off(power: i64) -> String {
     text.to_owned()
 }
 
-/// The intensity with its name, "2 (medium)". 0 is "–": the diffuser is off.
+/// The intensity by the name the segmented control gives it, "Medium". 0 is "–": the
+/// diffuser is off. A level with no name is its number.
 pub fn intensity(level: i64) -> String {
     match level {
         0 => "–".to_owned(),
-        1 => "1 (low)".to_owned(),
-        2 => "2 (medium)".to_owned(),
-        3 => "3 (high)".to_owned(),
+        1 => "Low".to_owned(),
+        2 => "Medium".to_owned(),
+        3 => "High".to_owned(),
         other => other.to_string(),
     }
 }
@@ -274,9 +275,10 @@ mod tests {
     #[test]
     fn values_have_the_benchs_words() {
         assert_eq!((on_off(1), on_off(0)), ("On".to_owned(), "Off".to_owned()));
-        assert_eq!(intensity(1), "1 (low)");
-        assert_eq!(intensity(2), "2 (medium)");
-        assert_eq!(intensity(3), "3 (high)");
+        // As the segmented control names them.
+        assert_eq!(intensity(1), "Low");
+        assert_eq!(intensity(2), "Medium");
+        assert_eq!(intensity(3), "High");
         assert_eq!(
             (intensity(0), intensity(9)),
             ("–".to_owned(), "9".to_owned())

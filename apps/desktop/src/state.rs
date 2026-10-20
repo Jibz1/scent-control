@@ -382,7 +382,8 @@ impl AppState {
             });
         }
         // Our own commands come back to us too (we hear everything under the
-        // prefix). They are logged above and tell us nothing about the diffuser.
+        // prefix). They are logged above, except the ping round, and tell us nothing
+        // about the diffuser.
         if direction != Direction::FromDevice {
             return;
         }

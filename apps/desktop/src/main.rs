@@ -42,10 +42,16 @@ use app::ScentApp;
 
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
+    // The content runs under a transparent title bar with no title, so the traffic
+    // lights sit over the sidebar, as in a Mac app's split view.
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Scent Control")
-            .with_inner_size([1100.0, 720.0]),
+            .with_inner_size(ui::theme::WINDOW_SIZE)
+            .with_min_inner_size(ui::theme::MIN_WINDOW_SIZE)
+            .with_fullsize_content_view(true)
+            .with_title_shown(false)
+            .with_titlebar_shown(false),
         ..Default::default()
     };
     eframe::run_native(

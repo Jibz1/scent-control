@@ -1,11 +1,18 @@
-//! The log: the conversation with the diffusers, newest last.
+//! The log: the conversation with the diffusers, newest last, in a pane along the
+//! bottom of the detail pane that the toolbar shows and hides. Each entry is one line
+//! in SF Mono 11 pt, and only the lines in view are laid out.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::{
+    self, Align, Color32, FontSelection, Layout, Margin, RichText, Sense, TextStyle, TextWrapMode,
+    WidgetInfo, WidgetText, WidgetType, pos2, vec2,
+};
 use scent_core::{Direction, Via};
 
 use super::clock::{clock_hms, local_utc_offset_secs};
 use super::format::via_name;
-use super::{amber, subtle_fill};
+use super::theme::{Palette, headline, subheadline};
+use super::widgets::checkbox;
 use crate::state::{AppState, LogEntry};
 
 /// How many lines the log shows. The state keeps more (see `state::LOG_CAP`).
@@ -16,7 +23,13 @@ const SHOWN: usize = 300;
 const ECHO_WITHIN_S: u64 = 5;
 
 /// Height of the log when it is open, before the person drags it.
-const OPEN_HEIGHT: f32 = 220.0;
+const OPEN_HEIGHT: f32 = 160.0;
+
+/// The height of a line of the log.
+const LINE_HEIGHT: f32 = 20.0;
+
+/// The space before a line's text.
+const LINE_INSET: f32 = 8.0;
 
 /// Whether this entry is a command to a diffuser on the broker: one we sent over WiFi,
 /// or a copy of a command that someone published to its topic.
@@ -47,16 +60,33 @@ fn is_echo_of(send: &LogEntry, other: &LogEntry) -> bool {
 /// and once as heard. Only the copy is hidden, never a command we sent: each send
 /// hides the closest copy of it (see [`is_echo_of`]), and a send the broker never
 /// echoed, or a command that someone else published, stays. Everything is kept in order.
+///
+/// This runs every frame, so only WiFi sends look for a copy, and only among the WiFi
+/// commands we didn't send that are within [`ECHO_WITHIN_S`] of them.
 pub fn collapse_echoes<'a>(entries: impl IntoIterator<Item = &'a LogEntry>) -> Vec<&'a LogEntry> {
     let entries: Vec<&LogEntry> = entries.into_iter().collect();
+    // The entries that may be copies, by time and then by place in the log.
+    let mut copies: Vec<(i64, usize)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !entry.sent && is_wifi_command(entry))
+        .map(|(i, entry)| (entry.at, i))
+        .collect();
+    copies.sort_unstable();
+    let window = ECHO_WITHIN_S as i64;
     let mut hidden = vec![false; entries.len()];
-    for send in &entries {
-        let echo = entries
+    for send in entries
+        .iter()
+        .filter(|entry| entry.sent && is_wifi_command(entry))
+    {
+        let first = copies.partition_point(|&(at, _)| at < send.at.saturating_sub(window));
+        // The closest copy, and of two as close the earlier one in the log.
+        let echo = copies[first..]
             .iter()
-            .enumerate()
-            .filter(|&(i, other)| !hidden[i] && is_echo_of(send, other))
-            .min_by_key(|(_, other)| other.at.abs_diff(send.at))
-            .map(|(i, _)| i);
+            .take_while(|&&(at, _)| at <= send.at.saturating_add(window))
+            .filter(|&&(_, i)| !hidden[i] && is_echo_of(send, entries[i]))
+            .min_by_key(|&&(at, i)| (at.abs_diff(send.at), i))
+            .map(|&(_, i)| i);
         if let Some(i) = echo {
             hidden[i] = true;
         }
@@ -133,78 +163,142 @@ impl Default for LogView {
 }
 
 impl LogView {
-    /// The log along the bottom of the window. Add it before the panels beside it.
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState, selected: Option<&str>, now: i64) {
-        // Separate ids, so that the height the person dragged to is kept apart from
-        // the one-line height when it is shut.
-        let panel = if self.open {
-            egui::Panel::bottom("log_open")
-                .resizable(true)
-                .default_size(OPEN_HEIGHT)
-                .min_size(80.0)
-        } else {
-            egui::Panel::bottom("log_shut").resizable(false)
-        };
-        panel.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Conversation").strong());
-                let label = if self.open { "Hide" } else { "Show" };
-                if ui.button(label).clicked() {
-                    self.open = !self.open;
-                }
-                if self.open {
-                    ui.checkbox(&mut self.only_selected, "only the selected diffuser");
-                }
-            });
-            if self.open {
-                ui.separator();
-                self.lines(ui, state, selected, now);
-            }
-        });
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
-    fn lines(&self, ui: &mut egui::Ui, state: &AppState, selected: Option<&str>, now: i64) {
-        let only = self.only_selected.then_some(selected).flatten();
-        let wanted = state
-            .log
-            .iter()
-            .filter(|entry| only.is_none_or(|id| entry.device_id.as_deref() == Some(id)));
-        let lines = collapse_echoes(wanted);
-        if lines.is_empty() {
-            ui.weak("Nothing yet. Commands you send and everything the diffusers say appear here.");
-            return;
-        }
-        let offset = local_utc_offset_secs(now);
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for entry in &lines[lines.len().saturating_sub(SHOWN)..] {
-                    line(ui, entry, state, offset);
-                }
+    /// Shows the log if it is hidden, and hides it if it is shown.
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+    }
+
+    /// The log pane along the bottom. Add it before the central panel above it. It
+    /// slides open and shut when [`toggle`](Self::toggle)d.
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState, selected: Option<&str>, now: i64) {
+        let palette = Palette::of(ui);
+        let frame = egui::Frame::new()
+            .fill(palette.grouped)
+            .inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 8,
+                bottom: 0,
+            });
+        let only_selected = &mut self.only_selected;
+        egui::Panel::bottom("log")
+            .resizable(true)
+            .default_size(OPEN_HEIGHT)
+            .min_size(80.0)
+            .frame(frame)
+            .show_collapsible(ui, &mut self.open, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Conversation").text_style(headline()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        checkbox(ui, only_selected, "Only the selected diffuser");
+                    });
+                });
+                ui.add_space(4.0);
+                let only = (*only_selected).then_some(selected).flatten();
+                lines(ui, state, only, now);
             });
     }
 }
 
+/// The lines of the log, of one diffuser if `only` names one. Only the lines in view
+/// are laid out.
+fn lines(ui: &mut egui::Ui, state: &AppState, only: Option<&str>, now: i64) {
+    let wanted = state
+        .log
+        .iter()
+        .filter(|entry| only.is_none_or(|id| entry.device_id.as_deref() == Some(id)));
+    let lines = collapse_echoes(wanted);
+    if lines.is_empty() {
+        let color = Palette::of(ui).secondary_label;
+        ui.label(
+            RichText::new(
+                "Nothing yet. Commands you send and everything the diffusers say appear here.",
+            )
+            .text_style(subheadline())
+            .color(color),
+        );
+        return;
+    }
+    let lines = &lines[lines.len().saturating_sub(SHOWN)..];
+    let offset = local_utc_offset_secs(now);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show_rows(ui, LINE_HEIGHT, lines.len(), |ui, shown| {
+            for entry in &lines[shown] {
+                line(ui, entry, state, offset);
+            }
+        });
+}
+
+/// One entry on one line: the time, the action, who it is about, and the text, cut
+/// short to fit. The whole text is in the tooltip when it was cut, and Copy in the
+/// line's context menu puts it on the clipboard, since the lines are drawn, not
+/// selectable text.
 fn line(ui: &mut egui::Ui, entry: &LogEntry, state: &AppState, offset: i64) {
+    let palette = Palette::of(ui);
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, LINE_HEIGHT), Sense::click());
+    response.context_menu(|ui| {
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(entry.text.clone());
+        }
+    });
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
     let fill = match kind(entry) {
-        Kind::Sent => subtle_fill(ui),
-        Kind::Problem => amber(ui).gamma_multiply(0.18),
+        Kind::Sent => Palette::tint(palette.label, 5),
+        Kind::Problem => Palette::tint(palette.orange, 12),
         Kind::Heard => Color32::TRANSPARENT,
     };
-    egui::Frame::new()
-        .fill(fill)
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(clock_hms(entry.at, offset)).weak().small());
-                ui.label(RichText::new(&entry.action).strong());
-                ui.label(RichText::new(who(entry, &subject(entry, state))).weak());
-            });
-            ui.label(RichText::new(&entry.text).monospace().small());
+    ui.painter().rect_filled(rect, 4, fill);
+
+    let font = TextStyle::Monospace.resolve(ui.style());
+    let mut job = LayoutJob::default();
+    let mut add = |text: &str, color: Color32| {
+        let format = TextFormat {
+            font_id: font.clone(),
+            color,
+            ..TextFormat::default()
+        };
+        job.append(text, 0.0, format);
+    };
+    let (clock, who) = (
+        clock_hms(entry.at, offset),
+        who(entry, &subject(entry, state)),
+    );
+    add(&clock, palette.secondary_label);
+    add("  ", palette.label);
+    add(&entry.action, palette.label);
+    add("  ", palette.label);
+    add(&who, palette.secondary_label);
+    add("  ", palette.label);
+    add(&entry.text, palette.label);
+    response.widget_info(|| {
+        let line = format!("{clock} {} {who} {}", entry.action, entry.text);
+        WidgetInfo::labeled(WidgetType::Label, true, line)
+    });
+    let galley = WidgetText::from(job).into_galley(
+        ui,
+        Some(TextWrapMode::Truncate),
+        rect.width() - 2.0 * LINE_INSET,
+        FontSelection::Style(TextStyle::Monospace),
+    );
+    let top = rect.center().y - galley.size().y / 2.0;
+    let elided = galley.elided;
+    ui.painter()
+        .galley(pos2(rect.left() + LINE_INSET, top), galley, palette.label);
+    if elided {
+        response.on_hover_ui(|ui| {
+            ui.label(RichText::new(&entry.text).text_style(TextStyle::Monospace));
         });
+    }
 }
 
 #[cfg(test)]

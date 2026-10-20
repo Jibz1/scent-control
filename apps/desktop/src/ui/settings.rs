@@ -1,24 +1,46 @@
-//! The settings sheet: where the broker is, who we are on it, and its password.
+//! The Settings window: where the broker is, who we are on it, and its password. It is a
+//! window of its own, opened with ⌘, or the toolbar's gear button, with the broker
+//! fields in a grouped box and Save as the default button.
 //!
 //! The password is typed into a masked field, goes to the Keychain through the app,
-//! and is not kept here: the sheet hands it over as a [`Secret`] and empties the field.
+//! and is not kept here: the window hands it over as a [`Secret`] and empties the field.
 
 use eframe::egui::text_edit::TextEditState;
-use eframe::egui::{self, Id, Key, RichText};
+use eframe::egui::{
+    self, Id, Key, KeyboardShortcut, Modifiers, Pos2, RichText, ViewportBuilder, ViewportClass,
+    ViewportCommand, ViewportId, pos2,
+};
 use scent_core::Secret;
 
 use super::format::broker_text;
-use super::red;
+use super::theme::{GRID, MARGIN, Palette, broker_color, subheadline};
+use super::widgets::{default_button, grouped, plain_button, row, status_dot};
 use crate::mqtt::{BrokerSettings, BrokerUrl};
 use crate::state::BrokerState;
 
-const WIDTH: f32 = 420.0;
+/// The window's width, and its height before it has measured what it holds.
+pub const WIDTH: f32 = 560.0;
+const FIRST_HEIGHT: f32 = 360.0;
+
+/// The width of the text fields.
+const FIELD_WIDTH: f32 = 340.0;
+
+/// How far below the top of the main window the Settings window opens.
+const BELOW_TOP: f32 = 90.0;
 
 /// What the person saved.
 pub struct Submitted {
     pub settings: BrokerSettings,
     /// The password typed this time. `None` leaves the saved one as it is.
     pub password: Option<Secret>,
+}
+
+/// What the person did in the window this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Save,
+    /// Cancel, Escape, ⌘W or the window's close button.
+    Cancel,
 }
 
 /// The settings as typed, or why they can't be used. Trims the fields.
@@ -39,22 +61,30 @@ fn validate(url: &str, username: &str, route_id: &str) -> Result<BrokerSettings,
 }
 
 #[derive(Default)]
-pub struct SettingsSheet {
+pub struct SettingsWindow {
     open: bool,
     url: String,
     username: String,
     route_id: String,
-    /// What is typed in the masked field. Emptied when the sheet closes or saves.
+    /// What is typed in the masked field. Emptied when the window closes or saves.
     password: String,
     error: Option<String>,
+    /// Where the window opens: over the main window, worked out when it is first shown.
+    position: Option<Pos2>,
+    /// How tall the window was drawn last time, so that it fits what it holds.
+    height: Option<f32>,
 }
 
-impl SettingsSheet {
+impl SettingsWindow {
     fn password_id() -> Id {
         Id::new("settings_broker_password")
     }
 
-    /// Opens the sheet with the current settings in it and the password field empty.
+    fn viewport_id() -> ViewportId {
+        ViewportId::from_hash_of("settings_window")
+    }
+
+    /// Opens the window with the current settings in it and the password field empty.
     pub fn open(&mut self, current: &BrokerSettings) {
         self.url.clone_from(&current.url);
         self.username.clone_from(&current.username);
@@ -64,13 +94,25 @@ impl SettingsSheet {
         self.open = true;
     }
 
-    /// Shuts the sheet after a save that worked.
+    /// Opens the window, or brings it to the front if it is open already, with what is
+    /// typed in it kept.
+    pub fn open_or_raise(&mut self, ctx: &egui::Context, current: &BrokerSettings) {
+        if self.open {
+            ctx.send_viewport_cmd_to(Self::viewport_id(), ViewportCommand::Focus);
+        } else {
+            self.open(current);
+        }
+    }
+
+    /// Shuts the window after a save that worked, or when the person cancels.
     pub fn close(&mut self, ctx: &egui::Context) {
         self.forget_password(ctx);
         self.open = false;
+        self.position = None;
+        self.height = None;
     }
 
-    /// Keeps the sheet open to show what went wrong with the save.
+    /// Keeps the window open to show what went wrong with the save.
     pub fn fail(&mut self, error: String) {
         self.error = Some(error);
     }
@@ -81,75 +123,156 @@ impl SettingsSheet {
         TextEditState::default().store(ctx, Self::password_id());
     }
 
-    /// Shows the sheet when it is open. Returns the settings when Save was pressed and
-    /// they are valid; the sheet stays open until the app says how saving went
+    /// Shows the window when it is open. Returns the settings when Save was pressed and
+    /// they are valid; the window stays open until the app says how saving went
     /// ([`close`](Self::close) or [`fail`](Self::fail)).
+    ///
+    /// The window is a viewport of its own. Where egui can't open one (a test's
+    /// context), it is drawn inside the main window instead.
     pub fn show(&mut self, ctx: &egui::Context, broker: &BrokerState) -> Option<Submitted> {
         if !self.open {
             return None;
         }
-        let mut save = false;
-        let mut cancel = false;
-        let modal = egui::Modal::new(Id::new("settings_sheet")).show(ctx, |ui| {
-            ui.set_width(WIDTH);
-            ui.heading("Broker settings");
-            ui.add_space(6.0);
-            let mut enter = false;
-            egui::Grid::new("settings_fields")
-                .num_columns(2)
-                .spacing([12.0, 8.0])
-                .show(ui, |ui| {
-                    ui.label("Broker address");
-                    enter |= field(ui, egui::TextEdit::singleline(&mut self.url));
-                    ui.end_row();
-                    ui.label("Username");
-                    enter |= field(ui, egui::TextEdit::singleline(&mut self.username));
-                    ui.end_row();
-                    ui.label("Route ID");
-                    enter |= field(ui, egui::TextEdit::singleline(&mut self.route_id));
-                    ui.end_row();
-                    ui.label("Password");
-                    let password = egui::TextEdit::singleline(&mut self.password)
-                        .id(Self::password_id())
-                        .password(true)
-                        .hint_text("Saved in the Keychain");
-                    enter |= field(ui, password);
-                    ui.end_row();
-                });
-            ui.add_space(4.0);
-            ui.weak("Leave the password empty to keep the one saved in the Keychain.");
-            ui.add_space(4.0);
-            ui.label(broker_text(broker));
-            if let Some(error) = &self.error {
-                let color = red(ui);
-                ui.label(RichText::new(error).color(color));
+        if self.position.is_none() {
+            self.position = ctx
+                .input(|input| input.viewport().outer_rect)
+                .map(|main| pos2(main.center().x - WIDTH / 2.0, main.top() + BELOW_TOP));
+        }
+        let mut builder = ViewportBuilder::default()
+            .with_title("Settings")
+            .with_inner_size([WIDTH, self.height.unwrap_or(FIRST_HEIGHT)])
+            .with_resizable(false)
+            .with_minimize_button(false)
+            .with_maximize_button(false);
+        if let Some(position) = self.position {
+            builder = builder.with_position(position);
+        }
+        let action = ctx.show_viewport_immediate(Self::viewport_id(), builder, |ui, class| {
+            let closing = ui.input(|input| input.viewport().close_requested());
+            let action = if class == ViewportClass::EmbeddedWindow {
+                self.contents(ui, broker)
+            } else {
+                self.window(ui, broker)
+            };
+            if closing {
+                Some(Action::Cancel)
+            } else {
+                action
             }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() || enter {
-                    save = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
-            });
         });
-        if cancel || modal.should_close() {
-            self.close(ctx);
-            return None;
-        }
-        if !save {
-            return None;
-        }
-        match self.submit(ctx) {
-            Ok(submitted) => {
-                self.error = None;
-                Some(submitted)
-            }
-            Err(error) => {
-                self.error = Some(error);
+        match action? {
+            Action::Cancel => {
+                self.close(ctx);
                 None
             }
+            Action::Save => match self.submit(ctx) {
+                Ok(submitted) => {
+                    self.error = None;
+                    Some(submitted)
+                }
+                Err(error) => {
+                    self.error = Some(error);
+                    None
+                }
+            },
+        }
+    }
+
+    /// The whole of the window: its background and margins, and what it holds. Notes
+    /// how tall that is, for the window to fit it from the next frame.
+    pub fn window(&mut self, ui: &mut egui::Ui, broker: &BrokerState) -> Option<Action> {
+        let frame = egui::Frame::new()
+            .fill(Palette::of(ui).window)
+            .inner_margin(MARGIN);
+        egui::CentralPanel::default()
+            .frame(frame)
+            .show(ui, |ui| {
+                let action = self.contents(ui, broker);
+                self.height = Some((ui.min_rect().height() + 2.0 * MARGIN).ceil());
+                action
+            })
+            .inner
+    }
+
+    /// How tall the window wants to be, once it has been drawn.
+    #[cfg(test)]
+    pub fn fitted_height(&self) -> Option<f32> {
+        self.height
+    }
+
+    #[cfg(test)]
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// What the window holds: the broker fields in a grouped box, the connection's
+    /// state, what went wrong, and Cancel and Save. Returns what the person did.
+    pub fn contents(&mut self, ui: &mut egui::Ui, broker: &BrokerState) -> Option<Action> {
+        let palette = Palette::of(ui);
+        let mut enter = false;
+        grouped(ui, "Broker", |ui| {
+            row(ui, "Broker address", |ui| {
+                enter |= field(ui, egui::TextEdit::singleline(&mut self.url));
+            });
+            row(ui, "Username", |ui| {
+                enter |= field(ui, egui::TextEdit::singleline(&mut self.username));
+            });
+            row(ui, "Route ID", |ui| {
+                enter |= field(ui, egui::TextEdit::singleline(&mut self.route_id));
+            });
+            row(ui, "Password", |ui| {
+                let password = egui::TextEdit::singleline(&mut self.password)
+                    .id(Self::password_id())
+                    .password(true)
+                    .hint_text("Saved in the Keychain");
+                enter |= field(ui, password);
+            });
+        });
+        ui.add_space(GRID / 2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new("Leave the password empty to keep the one saved in the Keychain.")
+                    .text_style(subheadline())
+                    .color(palette.secondary_label),
+            );
+        });
+        ui.add_space(GRID);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let text = broker_text(broker);
+            status_dot(ui, broker_color(&palette, broker), &text);
+            ui.label(RichText::new(text).color(palette.label));
+        });
+        if let Some(error) = &self.error {
+            ui.add_space(GRID / 2.0);
+            ui.label(RichText::new(error).color(palette.red));
+        }
+        ui.add_space(2.0 * GRID);
+        let (mut save, mut cancel) = (enter, false);
+        // Cancel and Save at the right, Save last.
+        egui::Sides::new().show(
+            ui,
+            |_| {},
+            |ui| {
+                save |= default_button(ui, "Save").clicked();
+                cancel |= plain_button(ui, "Cancel").clicked();
+            },
+        );
+        // Escape and ⌘W cancel; Return saves when no field or button has the focus (in a
+        // field it saves already; on a button it presses that button).
+        let close_window = KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
+        cancel |= ui.input_mut(|input| {
+            input.key_pressed(Key::Escape) || input.consume_shortcut(&close_window)
+        });
+        let nothing_focused = ui.memory(|memory| memory.focused().is_none());
+        save |= nothing_focused && ui.input(|input| input.key_pressed(Key::Enter));
+        if cancel {
+            Some(Action::Cancel)
+        } else if save {
+            Some(Action::Save)
+        } else {
+            None
         }
     }
 
@@ -166,9 +289,9 @@ impl SettingsSheet {
     }
 }
 
-/// A one-line text box that fills the column. True when Enter was pressed in it.
+/// A one-line text box of the fields' width. True when Enter was pressed in it.
 fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> bool {
-    let response = ui.add(edit.desired_width(f32::INFINITY));
+    let response = ui.add(edit.desired_width(FIELD_WIDTH));
     response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
 }
 
@@ -215,25 +338,25 @@ mod tests {
         );
     }
 
-    fn open_sheet() -> SettingsSheet {
-        let mut sheet = SettingsSheet::default();
-        sheet.open(&BrokerSettings::default());
-        sheet
+    fn open_window() -> SettingsWindow {
+        let mut window = SettingsWindow::default();
+        window.open(&BrokerSettings::default());
+        window
     }
 
     #[test]
     fn saving_hands_over_the_password_and_empties_the_field() {
         let ctx = egui::Context::default();
-        let mut sheet = open_sheet();
-        sheet.password = "hunter2".to_owned();
-        let submitted = sheet.submit(&ctx).unwrap();
+        let mut window = open_window();
+        window.password = "hunter2".to_owned();
+        let submitted = window.submit(&ctx).unwrap();
         assert_eq!(submitted.settings, BrokerSettings::default());
         assert_eq!(submitted.password.unwrap().expose(), "hunter2");
-        // Not in the sheet any more, in any field.
-        assert!(sheet.password.is_empty());
+        // Not in the window any more, in any field.
+        assert!(window.password.is_empty());
         let everywhere = format!(
             "{} {} {} {:?}",
-            sheet.url, sheet.username, sheet.route_id, sheet.error
+            window.url, window.username, window.route_id, window.error
         );
         assert!(!everywhere.contains("hunter2"), "{everywhere}");
     }
@@ -241,42 +364,42 @@ mod tests {
     #[test]
     fn saving_with_nothing_typed_leaves_the_saved_password_alone() {
         let ctx = egui::Context::default();
-        let mut sheet = open_sheet();
-        let submitted = sheet.submit(&ctx).unwrap();
+        let mut window = open_window();
+        let submitted = window.submit(&ctx).unwrap();
         assert!(submitted.password.is_none());
-        assert!(sheet.password.is_empty());
+        assert!(window.password.is_empty());
     }
 
     #[test]
     fn settings_that_do_not_validate_say_why_and_keep_what_was_typed() {
         let ctx = egui::Context::default();
-        let mut sheet = open_sheet();
-        sheet.url = "ws://broker.example/mqtt".to_owned();
-        sheet.password = "hunter2".to_owned();
-        let error = sheet.submit(&ctx).err().expect("not valid");
+        let mut window = open_window();
+        window.url = "ws://broker.example/mqtt".to_owned();
+        window.password = "hunter2".to_owned();
+        let error = window.submit(&ctx).err().expect("not valid");
         assert!(error.contains("broker address"), "{error}");
         // Nothing was saved, so the password does not need typing again.
-        assert_eq!(sheet.password, "hunter2");
+        assert_eq!(window.password, "hunter2");
     }
 
     #[test]
-    fn opening_the_sheet_loads_the_settings_and_empties_the_password() {
-        let mut sheet = SettingsSheet {
+    fn opening_the_window_loads_the_settings_and_empties_the_password() {
+        let mut window = SettingsWindow {
             password: "left over".to_owned(),
             error: Some("old".to_owned()),
-            ..SettingsSheet::default()
+            ..SettingsWindow::default()
         };
         let settings = BrokerSettings {
             url: "wss://broker.example/mqtt".into(),
             username: "someone".into(),
             route_id: "route-1".into(),
         };
-        sheet.open(&settings);
-        assert!(sheet.open);
+        window.open(&settings);
+        assert!(window.open);
         assert_eq!(
-            (&sheet.url[..], &sheet.username[..], &sheet.route_id[..]),
+            (&window.url[..], &window.username[..], &window.route_id[..]),
             ("wss://broker.example/mqtt", "someone", "route-1")
         );
-        assert!(sheet.password.is_empty() && sheet.error.is_none());
+        assert!(window.password.is_empty() && window.error.is_none());
     }
 }

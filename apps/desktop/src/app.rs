@@ -3,12 +3,14 @@
 //!
 //! The state is shared with the hub, which only reads it. The lock is held to fold
 //! events in and to copy the state out; the screens draw and the store writes from the
-//! copies.
+//! copies. Only this thread changes the state, so the screens' copy is taken when it
+//! changes, not every frame: a frame draws from the copy and locks nothing.
 //!
 //! The saved file is written only when what it holds has changed (new readings, a new
 //! name, other broker settings), not for every ping and reply: a write is a full
 //! flush to disk, and it is done here, on the thread that draws.
 
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,6 +25,7 @@ use crate::store::{Loaded, Store};
 use crate::transport::lock;
 use crate::ui::Screens;
 use crate::ui::settings::Submitted;
+use crate::ui::theme;
 
 /// The least time between two saves of `desktop.json`.
 const SAVE_EVERY: Duration = Duration::from_secs(10);
@@ -32,6 +35,8 @@ const REDRAW_EVERY: Duration = Duration::from_secs(1);
 
 pub struct ScentApp {
     state: Arc<Mutex<AppState>>,
+    /// The screens' copy of the state, as it was after it last changed.
+    view: AppState,
     events: Receiver<Event>,
     hub: Hub,
     store: Store,
@@ -49,6 +54,7 @@ pub struct ScentApp {
 
 impl ScentApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::install(&cc.egui_ctx, Path::new(theme::SYSTEM_FONTS));
         let store = Store {
             dir: Store::default_dir(),
         };
@@ -63,6 +69,7 @@ impl ScentApp {
             .is_none()
             .then(|| Store::contents(&state, &broker).ok())
             .flatten();
+        let view = state.clone();
         let state = Arc::new(Mutex::new(state));
         let ctx = cc.egui_ctx.clone();
         let (hub, events) = Hub::start(broker.clone(), password, Arc::clone(&state), move || {
@@ -70,6 +77,7 @@ impl ScentApp {
         });
         ScentApp {
             state,
+            view,
             events,
             hub,
             store,
@@ -90,16 +98,24 @@ impl ScentApp {
         for event in &events {
             self.screens.on_event(event);
         }
+        self.change_state(|state| {
+            for event in events {
+                state.apply(event);
+            }
+        });
+    }
+
+    /// Changes the shared state, and the screens' copy of it to match.
+    fn change_state(&mut self, change: impl FnOnce(&mut AppState)) {
         let mut state = lock(&self.state);
-        for event in events {
-            state.apply(event);
-        }
+        change(&mut state);
+        self.view.clone_from(&state);
     }
 
     /// Stores the password, the settings and the new connection, in that order, then
-    /// tells the sheet how it went. If the Keychain won't take a typed password,
-    /// nothing is changed: the settings are not saved and the connection that works is
-    /// left alone. The password is not kept, so the sheet says to type it again.
+    /// tells the Settings window how it went. If the Keychain won't take a typed
+    /// password, nothing is changed: the settings are not saved and the connection that
+    /// works is left alone. The password is not kept, so the window says to type it again.
     fn apply_settings(&mut self, ctx: &egui::Context, submitted: Submitted) {
         let Submitted { settings, password } = submitted;
         if let Some(password) = &password
@@ -116,7 +132,7 @@ impl ScentApp {
         // With nothing typed, the saved password: it may belong to other settings now.
         let password = password.or_else(|| broker_password(&settings));
         // The hub doesn't announce a connection attempt, so say so here.
-        lock(&self.state).broker = BrokerState::Connecting;
+        self.change_state(|state| state.broker = BrokerState::Connecting);
         self.hub.submit(UiCommand::Reconnect { settings, password });
         self.screens.settings.close(ctx);
     }
@@ -169,9 +185,8 @@ impl eframe::App for ScentApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         let now = unix_now();
-        let view = lock(&self.state).clone();
 
-        let requests = self.screens.show(ui, &view, &self.broker, now);
+        let requests = self.screens.show(ui, &self.view, &self.broker, now);
         for command in requests.commands {
             self.hub.submit(command);
         }

@@ -1,17 +1,21 @@
 //! The open diffuser: whether it answers, what it last reported, what its schedule
-//! says it should be doing, and the buttons that control it.
+//! says it should be doing, and the controls. As in System Settings, the readings and
+//! the controls are each a grouped box, "Status" and "Controls".
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use scent_core::{Command, Level, expected_state};
 
 use super::format::{
     expected_text, intensity, model_text, on_off, online_text, pending_text, power_source,
     reading_text, signal,
 };
-use super::{amber, banner, dot, online_color};
+use super::theme::{GRID, Palette, status_color, subheadline, title1};
+use super::widgets::{
+    NoticeKind, grouped, notice, plain_button, row, segmented, status_dot, switch, value_with_note,
+};
 use crate::hub::{UiCommand, on_our_broker};
 use crate::route::TransportPref;
 use crate::state::{AppState, DeviceView, Event, Field, Reading};
@@ -20,16 +24,23 @@ use crate::state::{AppState, DeviceView, Event, Field, Reading};
 /// well under this, and the hub gives up on one itself after 30 s.
 const SENDING_GIVE_UP: Duration = Duration::from_secs(40);
 
-/// The three intensities and what the buttons call them.
-const LEVELS: [(u8, &str); 3] = [(1, "Low"), (2, "Medium"), (3, "High")];
+/// The three intensities and what the segments call them.
+const LEVELS: [(Option<u8>, &str); 3] = [(Some(1), "Low"), (Some(2), "Medium"), (Some(3), "High")];
+
+/// The "Send Over" choices.
+const ROUTES: [(TransportPref, &str); 3] = [
+    (TransportPref::Auto, "Auto"),
+    (TransportPref::Wifi, "WiFi"),
+    (TransportPref::Bluetooth, "Bluetooth"),
+];
 
 /// How a line of the readings looks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Fresh,
-    /// Reported more than 300 s ago: greyed out.
+    /// Reported more than 300 s ago: in the secondary label color.
     Stale,
-    /// Sent, and the diffuser hasn't reported on it: amber.
+    /// Sent, and the diffuser hasn't reported on it: orange.
     Pending,
 }
 
@@ -38,6 +49,17 @@ pub struct ReadingRow {
     pub name: &'static str,
     pub text: String,
     pub tone: Tone,
+}
+
+impl ReadingRow {
+    /// The value, and what follows it: when and over what it was reported, or that it
+    /// was sent and is waited for. "not reported yet" has nothing after it.
+    pub fn parts(&self) -> (&str, Option<&str>) {
+        match self.text.split_once(" · ") {
+            Some((value, note)) => (value, Some(note)),
+            None => (&self.text, None),
+        }
+    }
 }
 
 fn reported(reading: Option<&Reading>, now: i64, format: impl Fn(i64) -> String) -> (String, Tone) {
@@ -110,24 +132,59 @@ fn shown_intensity(device: &DeviceView) -> Option<i64> {
     })
 }
 
+/// The power to show on the switch: the one we sent and is not yet reported, else the
+/// one reported, else off.
+fn shown_power(device: &DeviceView) -> bool {
+    device.pending_power().unwrap_or_else(|| {
+        device
+            .readings
+            .get(&Field::Power)
+            .is_some_and(|reading| reading.value != 0)
+    })
+}
+
+/// What the person just set with the switch or the intensity segments, for the
+/// controls to show until the hub says the command went out (the state then shows it as
+/// sent) or failed. Without it the switch would flip back for as long as a Bluetooth
+/// connection takes.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    power: Option<bool>,
+    intensity: Option<u8>,
+    at: Instant,
+}
+
 #[derive(Default)]
 pub struct DevicePanel {
-    /// The "Send over" choice for each diffuser. Auto until it is changed.
+    /// The "Send Over" choice for each diffuser. Auto until it is changed.
     prefs: HashMap<String, TransportPref>,
     /// The diffusers with a command on its way, and since when. A guess: the first
     /// `Sent` or `Failed` for a diffuser ends it, even if more commands are queued.
     sending: HashMap<String, Instant>,
+    asked: HashMap<String, Asked>,
 }
 
 impl DevicePanel {
     pub fn on_event(&mut self, event: &Event) {
         match event {
-            Event::Sent { device_id, .. }
-            | Event::Failed {
+            Event::Sent {
+                device_id,
+                power,
+                intensity,
+                ..
+            } => {
+                self.sending.remove(device_id);
+                if let Some(asked) = self.asked.get_mut(device_id) {
+                    asked.power = asked.power.filter(|_| power.is_none());
+                    asked.intensity = asked.intensity.filter(|_| intensity.is_none());
+                }
+            }
+            Event::Failed {
                 device_id: Some(device_id),
                 ..
             } => {
                 self.sending.remove(device_id);
+                self.asked.remove(device_id);
             }
             _ => {}
         }
@@ -139,7 +196,15 @@ impl DevicePanel {
             .is_some_and(|since| since.elapsed() < SENDING_GIVE_UP)
     }
 
-    /// Shows the diffuser and returns the commands the buttons asked for.
+    /// What the person set on this diffuser and is still on its way, if anything.
+    fn asked(&self, id: &str) -> Option<Asked> {
+        self.asked
+            .get(id)
+            .filter(|asked| asked.at.elapsed() < SENDING_GIVE_UP)
+            .copied()
+    }
+
+    /// Shows the diffuser and returns the commands the controls asked for.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -149,92 +214,103 @@ impl DevicePanel {
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         let mut pref = self.prefs.get(&device.id).copied().unwrap_or_default();
+        let palette = Palette::of(ui);
 
         header(ui, state, device, now);
         if !on_our_broker(device) {
-            let color = amber(ui);
-            banner(ui, color, |ui| {
-                ui.label(
-                    "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.",
-                );
-            });
+            notice(
+                ui,
+                NoticeKind::Warning,
+                "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.",
+            );
         }
-        ui.add_space(6.0);
-        readings(ui, device, now);
+        ui.add_space(GRID / 2.0);
+
+        grouped(ui, "Status", |ui| {
+            for reading in reading_rows(device, now) {
+                row(ui, reading.name, |ui| {
+                    let (value, note) = reading.parts();
+                    let color = match reading.tone {
+                        Tone::Fresh => palette.label,
+                        Tone::Stale => palette.secondary_label,
+                        Tone::Pending => palette.orange,
+                    };
+                    value_with_note(ui, RichText::new(value).color(color), note);
+                });
+            }
+        });
         if let Some(line) = expected_line(device, now) {
-            ui.add_space(4.0);
-            ui.weak(line);
+            footnote(ui, &line);
         }
-        ui.separator();
+        ui.add_space(GRID);
 
         let send = |cmd: Command, pref: TransportPref| UiCommand::Send {
             device_id: device.id.clone(),
             cmd,
             pref,
         };
-        egui::Grid::new("controls")
-            .num_columns(2)
-            .spacing([16.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Send over");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut pref, TransportPref::Auto, "Auto")
-                        .on_hover_text("Bluetooth when the diffuser is in range, otherwise WiFi");
-                    ui.selectable_value(&mut pref, TransportPref::Wifi, "WiFi");
-                    ui.selectable_value(&mut pref, TransportPref::Bluetooth, "Bluetooth");
-                });
-                ui.end_row();
-
-                ui.label("Power");
-                ui.horizontal(|ui| {
-                    if ui.button("Turn on").clicked() {
-                        commands.push(send(Command::TurnOn { on: true }, pref));
-                    }
-                    if ui.button("Turn off").clicked() {
-                        commands.push(send(Command::TurnOn { on: false }, pref));
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Intensity");
-                ui.horizontal(|ui| {
-                    let chosen = shown_intensity(device);
-                    for (number, name) in LEVELS {
-                        let on = chosen == Some(i64::from(number));
-                        if ui.selectable_label(on, name).clicked()
-                            && let Some(level) = Level::new(number)
-                        {
-                            commands.push(send(Command::SetLevel(level), pref));
-                        }
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Tools");
-                ui.horizontal(|ui| {
-                    let read = ui.button("Read status").on_hover_text(
-                        "Asks the diffuser for its state the way chosen above. Over Bluetooth this reads what it last reported.",
-                    );
-                    if read.clicked() {
-                        commands.push(UiCommand::ReadStatus {
-                            device_id: device.id.clone(),
-                            pref,
-                        });
-                    }
-                });
-                ui.end_row();
+        let asked = self.asked(&device.id);
+        let mut power = asked
+            .and_then(|asked| asked.power)
+            .unwrap_or_else(|| shown_power(device));
+        let mut level = asked
+            .and_then(|asked| asked.intensity)
+            .or_else(|| shown_intensity(device).and_then(|level| u8::try_from(level).ok()));
+        let mut now_asked = asked.unwrap_or(Asked {
+            power: None,
+            intensity: None,
+            at: Instant::now(),
+        });
+        grouped(ui, "Controls", |ui| {
+            row(ui, "Send Over", |ui| {
+                segmented(ui, &mut pref, &ROUTES)
+                    .response
+                    .on_hover_text("Auto: Bluetooth when the diffuser is in range, otherwise WiFi");
             });
+            row(ui, "Power", |ui| {
+                if switch(ui, &mut power, "Power").changed() {
+                    commands.push(send(Command::TurnOn { on: power }, pref));
+                    now_asked.power = Some(power);
+                }
+            });
+            row(ui, "Intensity", |ui| {
+                if let Some(Some(number)) = segmented(ui, &mut level, &LEVELS).clicked
+                    && let Some(chosen) = Level::new(number)
+                {
+                    commands.push(send(Command::SetLevel(chosen), pref));
+                    now_asked.intensity = Some(number);
+                }
+            });
+            row(ui, "Tools", |ui| {
+                let read = plain_button(ui, "Read Status").on_hover_text(
+                    "Asks the diffuser for its state the way chosen above. Over Bluetooth this reads what it last reported.",
+                );
+                if read.clicked() {
+                    commands.push(UiCommand::ReadStatus {
+                        device_id: device.id.clone(),
+                        pref,
+                    });
+                }
+            });
+        });
         // A read writes nothing and may say nothing, so only a send is waited for.
         if commands
             .iter()
             .any(|command| matches!(command, UiCommand::Send { .. }))
         {
             self.sending.insert(device.id.clone(), Instant::now());
+            now_asked.at = Instant::now();
+            self.asked.insert(device.id.clone(), now_asked);
         }
         if self.is_sending(&device.id) {
+            ui.add_space(GRID);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.weak("Sending…");
+                ui.label(
+                    RichText::new("Sending…")
+                        .text_style(subheadline())
+                        .color(palette.secondary_label),
+                );
             });
         }
 
@@ -243,13 +319,25 @@ impl DevicePanel {
     }
 }
 
-fn header(ui: &mut egui::Ui, state: &AppState, device: &DeviceView, now: i64) {
-    let online = state.online(&device.id, now);
-    ui.horizontal(|ui| {
-        ui.heading(&device.label);
-        dot(ui, online_color(ui, online));
-        ui.label(RichText::new(online_text(online)).color(online_color(ui, online)));
+/// Secondary text under a grouped box, such as the expected-state line.
+fn footnote(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(GRID / 2.0);
+    let color = Palette::of(ui).secondary_label;
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(12.0);
+        ui.label(RichText::new(text).text_style(subheadline()).color(color));
     });
+}
+
+/// The diffuser's name, whether it answers, and its model and ID.
+fn header(ui: &mut egui::Ui, state: &AppState, device: &DeviceView, now: i64) {
+    let palette = Palette::of(ui);
+    let online = state.online(&device.id, now);
+    ui.label(
+        RichText::new(&device.label)
+            .text_style(title1())
+            .color(palette.label),
+    );
     let model = model_text(device.info.as_ref());
     let meta = match (model.is_empty(), device.label == device.id) {
         (true, true) => String::new(),
@@ -257,31 +345,15 @@ fn header(ui: &mut egui::Ui, state: &AppState, device: &DeviceView, now: i64) {
         (false, true) => model,
         (false, false) => format!("{model} · {}", device.id),
     };
-    if !meta.is_empty() {
-        ui.weak(meta);
-    }
-}
-
-fn readings(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
-    egui::Grid::new("readings")
-        .num_columns(2)
-        .spacing([16.0, 6.0])
-        .show(ui, |ui| {
-            for row in reading_rows(device, now) {
-                ui.label(row.name);
-                let color: Option<Color32> = match row.tone {
-                    Tone::Fresh => None,
-                    Tone::Stale => Some(ui.visuals().weak_text_color()),
-                    Tone::Pending => Some(amber(ui)),
-                };
-                let text = RichText::new(row.text);
-                ui.label(match color {
-                    Some(color) => text.color(color),
-                    None => text,
-                });
-                ui.end_row();
-            }
-        });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let words = online_text(online);
+        status_dot(ui, status_color(&palette, online), words);
+        ui.label(RichText::new(words).color(palette.label));
+        if !meta.is_empty() {
+            ui.label(RichText::new(format!("· {meta}")).color(palette.secondary_label));
+        }
+    });
 }
 
 #[cfg(test)]
@@ -337,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn what_we_sent_shows_amber_until_the_diffuser_reports() {
+    fn what_we_sent_shows_orange_until_the_diffuser_reports() {
         let mut d = device();
         read(&mut d, Field::Power, 0, 60, Via::Wifi);
         read(&mut d, Field::Intensity, 1, 60, Via::Wifi);
@@ -354,7 +426,7 @@ mod tests {
         assert_eq!(row(&rows, "Power").tone, Tone::Pending);
         assert_eq!(
             row(&rows, "Intensity").text,
-            "3 (high) · sent, waiting for the diffuser"
+            "High · sent, waiting for the diffuser"
         );
         assert_eq!(shown_intensity(&d), Some(3));
 
@@ -422,6 +494,78 @@ mod tests {
             expected_line(&d, NOW).as_deref(),
             Some("Based on the schedule this app last sent, it should be off now.")
         );
+    }
+
+    #[test]
+    fn a_reading_splits_into_its_value_and_its_note() {
+        let reading = |text: &str| ReadingRow {
+            name: "Power",
+            text: text.to_owned(),
+            tone: Tone::Fresh,
+        };
+        assert_eq!(
+            reading("On · reported just now over WiFi").parts(),
+            ("On", Some("reported just now over WiFi"))
+        );
+        assert_eq!(
+            reading("High · sent, waiting for the diffuser").parts(),
+            ("High", Some("sent, waiting for the diffuser"))
+        );
+        assert_eq!(
+            reading("not reported yet").parts(),
+            ("not reported yet", None)
+        );
+    }
+
+    #[test]
+    fn what_the_person_set_shows_until_its_command_goes_out_or_fails() {
+        let mut panel = DevicePanel::default();
+        panel.asked.insert(
+            ID.to_owned(),
+            Asked {
+                power: Some(false),
+                intensity: Some(2),
+                at: Instant::now(),
+            },
+        );
+        // The power command went out, so the state shows it as sent from here on; the
+        // intensity is still on its way.
+        panel.on_event(&Event::Sent {
+            device_id: ID.to_owned(),
+            summary: String::new(),
+            via: Via::Wifi,
+            at: NOW,
+            power: Some(false),
+            intensity: None,
+            profile: None,
+        });
+        let asked = panel.asked(ID).unwrap();
+        assert_eq!((asked.power, asked.intensity), (None, Some(2)));
+        // Another diffuser's failure leaves it be; its own clears it.
+        let failed = |device: &str| Event::Failed {
+            device_id: Some(device.to_owned()),
+            what: "SET_LEVEL".to_owned(),
+            error: "No answer.".to_owned(),
+            at: 0,
+        };
+        panel.on_event(&failed("TESTDEVICE02"));
+        assert!(panel.asked(ID).is_some());
+        panel.on_event(&failed(ID));
+        assert!(panel.asked(ID).is_none());
+    }
+
+    #[test]
+    fn the_switch_shows_the_power_sent_then_the_power_reported() {
+        let mut d = device();
+        assert!(!shown_power(&d));
+        read(&mut d, Field::Power, 1, 60, Via::Wifi);
+        assert!(shown_power(&d));
+        d.sent = Some(Sent {
+            power: Some(false),
+            intensity: None,
+            at: NOW - 5,
+        });
+        assert!(!shown_power(&d));
     }
 
     #[test]
