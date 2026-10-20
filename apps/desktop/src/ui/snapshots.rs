@@ -1,7 +1,8 @@
 //! Renders the screens to `target/snapshots/*.png`, so that the look can be judged
 //! without a screen: the main window in light and dark with the first diffuser open,
-//! the Settings window, the notices, the Add Diffuser sheet as it asks for a network,
-//! waits and fails, and the Edit Schedule sheet with a valid schedule and a mistake. Uses the Mac's own fonts; the PNGs stay
+//! the Settings window, the notices, the Add Diffuser sheet as it opens, asks for a
+//! network, waits, is done, fails and asks for the network again, and the Edit Schedule sheet
+//! with a valid schedule and a mistake. Uses the Mac's own fonts; the PNGs stay
 //! under `target/` and are never committed. Run it with
 //! `cargo test -p scent-desktop render_screens -- --ignored`.
 
@@ -357,8 +358,22 @@ fn main_window_with(
 const ADDED: &str = "TESTDEVICE03";
 const ADDED_BLE: &str = "ble-7";
 
+/// Where the Add Diffuser sheet is in a render.
+enum AddRender {
+    /// Just opened from the diffuser found nearby: nothing asked for yet.
+    Ready,
+    /// The add is at `step`, having last worked on `reached`; `network` was given.
+    At {
+        step: AddStep,
+        reached: AddStep,
+        network: Option<&'static str>,
+    },
+    /// The add that gave this network failed, and Try Again asks for it again.
+    Retrying(&'static str),
+}
+
 /// The state while the diffuser found nearby is being added, at `step`.
-fn adding_state(step: AddStep, reached: AddStep) -> AppState {
+fn adding_state(step: AddStep, reached: AddStep, network: Option<&str>) -> AppState {
     let mut state = snapshot_state();
     let mut found = DeviceView::new(ADDED);
     found.ble_id = Some(ADDED_BLE.to_owned());
@@ -372,25 +387,42 @@ fn adding_state(step: AddStep, reached: AddStep) -> AppState {
         wifi_status: 0,
     });
     state.devices.insert(ADDED.to_owned(), found);
-    state.adding = Some(Adding {
+    let adding = Adding {
         ble_id: ADDED_BLE.to_owned(),
         label: "Air 2".to_owned(),
+        network: network.map(str::to_owned),
         step,
         reached: Some(reached),
-    });
+    };
+    state.adding.insert(ADDED_BLE.to_owned(), adding);
     state
 }
 
-/// The Add Diffuser sheet over the main window, at `step`.
-fn add_sheet(name: &str, dark: bool, step: AddStep, reached: AddStep, with_wifi: bool) {
-    let state = adding_state(step, reached);
+/// The Add Diffuser sheet over the main window, for the diffuser found nearby.
+fn add_sheet(name: &str, dark: bool, at: AddRender) {
+    let failed = || wait_outcome(0, 90, false);
+    let state = match &at {
+        AddRender::Ready => snapshot_state(),
+        AddRender::At {
+            step,
+            reached,
+            network,
+        } => adding_state(step.clone(), reached.clone(), *network),
+        AddRender::Retrying(network) => {
+            adding_state(failed(), AddStep::WaitConnected, Some(network))
+        }
+    };
     let size = theme::WINDOW_SIZE.into();
     let _ = main_window_with(name, dark, size, state, None, move |screens, _| {
         screens.add_sheet.open(Target {
             ble_id: ADDED_BLE.to_owned(),
             name: "Air 2".to_owned(),
         });
-        screens.add_sheet.as_submitted(with_wifi);
+        match at {
+            AddRender::Ready => {}
+            AddRender::At { .. } => screens.add_sheet.as_submitted(),
+            AddRender::Retrying(network) => screens.add_sheet.as_retrying(network),
+        }
     });
 }
 
@@ -487,28 +519,41 @@ fn render_screens() {
     // Adding the diffuser found nearby: it isn't on WiFi, so the sheet asks for the
     // network; then, with one given, it waits for the diffuser on the broker; and then
     // the wait has failed.
+    add_sheet("add_ready_light", false, AddRender::Ready);
     add_sheet(
         "add_need_wifi_light",
         false,
-        AddStep::NeedWifi,
-        AddStep::ReadInfo,
-        false,
+        AddRender::At {
+            step: AddStep::NeedWifi,
+            reached: AddStep::ReadInfo,
+            network: None,
+        },
     );
     for (name, dark) in [("add_waiting_light", false), ("add_waiting_dark", true)] {
-        add_sheet(
-            name,
-            dark,
-            AddStep::WaitConnected,
-            AddStep::WaitConnected,
-            true,
-        );
+        let waiting = AddRender::At {
+            step: AddStep::WaitConnected,
+            reached: AddStep::WaitConnected,
+            network: Some("ExampleWiFi"),
+        };
+        add_sheet(name, dark, waiting);
     }
+    let failed = AddRender::At {
+        step: wait_outcome(0, 90, false),
+        reached: AddStep::WaitConnected,
+        network: Some("ExampleWiFi"),
+    };
+    add_sheet("add_failed_light", false, failed);
+    let done = AddRender::At {
+        step: AddStep::Done(ADDED.to_owned()),
+        reached: AddStep::Ping,
+        network: Some("ExampleWiFi"),
+    };
+    add_sheet("add_done_light", false, done);
+    // Try Again after that: the network again, with its password to type.
     add_sheet(
-        "add_failed_light",
+        "add_retry_wifi_light",
         false,
-        wait_outcome(0, 90, false),
-        AddStep::WaitConnected,
-        true,
+        AddRender::Retrying("ExampleWiFi"),
     );
 
     // Two times and a test time starting in 3 minutes (11:33 at UTC-4); then a time

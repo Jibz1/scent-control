@@ -3,7 +3,8 @@
 //!
 //! It opens from a diffuser's "Add…" button under Found Nearby, or from the notice on a
 //! diffuser that hasn't been heard on our broker. When the diffuser isn't on WiFi yet,
-//! the hub stops and the sheet asks for the network. Its password is typed into a masked
+//! the hub stops and the sheet asks for the network; and when an add that gave one
+//! fails, Try Again asks for it again, filled in, with the password to type again. Its password is typed into a masked
 //! field and handed over as a [`Secret`] once; the field, and the copy of it the text
 //! box keeps for undoing, are emptied on Add, Cancel, Escape, ⌘W and when the window
 //! closes.
@@ -150,12 +151,14 @@ pub struct Target {
     pub name: String,
 }
 
-/// Where the sheet is, from the add the state follows.
+/// Where the sheet is, from the add the state follows for its diffuser.
 enum Phase<'a> {
     /// Nothing asked for yet in this sheet.
     Ready,
     Running(&'a Adding),
     NeedWifi(&'a Adding),
+    /// Try Again after an add that gave a network: the network again, before adding.
+    RetryWifi,
     Done(&'a Adding),
     Failed(&'a Adding, &'a str),
 }
@@ -180,8 +183,8 @@ pub struct AddSheet {
     /// Whether Add was pressed since the sheet opened. Until then an earlier add's
     /// outcome for this diffuser isn't shown, only one still under way.
     submitted: bool,
-    /// Whether the last Add gave a network.
-    with_wifi: bool,
+    /// Try Again was pressed after an add that gave a network: it is asked for again.
+    retry_wifi: bool,
 }
 
 impl AddSheet {
@@ -196,18 +199,32 @@ impl AddSheet {
         self.network = String::new();
         self.password = String::new();
         self.submitted = false;
-        self.with_wifi = false;
+        self.retry_wifi = false;
     }
 
     pub fn is_open(&self) -> bool {
         self.target.is_some()
     }
 
+    /// Whether the sheet is open for the diffuser at `ble_id`.
+    pub fn is_for(&self, ble_id: &str) -> bool {
+        self.target
+            .as_ref()
+            .is_some_and(|target| target.ble_id == ble_id)
+    }
+
     /// As though Add had been pressed, for the snapshots to show the add's progress.
     #[cfg(test)]
-    pub fn as_submitted(&mut self, with_wifi: bool) {
+    pub fn as_submitted(&mut self) {
         self.submitted = true;
-        self.with_wifi = with_wifi;
+    }
+
+    /// As though Try Again had been pressed after an add that gave `network`.
+    #[cfg(test)]
+    pub fn as_retrying(&mut self, network: &str) {
+        self.submitted = true;
+        self.retry_wifi = true;
+        network.clone_into(&mut self.network);
     }
 
     fn close(&mut self, ctx: &egui::Context) {
@@ -225,16 +242,13 @@ impl AddSheet {
 
     fn phase<'a>(&self, state: &'a AppState) -> Phase<'a> {
         let ble_id = self.target.as_ref().map(|target| target.ble_id.as_str());
-        let Some(adding) = state
-            .adding
-            .as_ref()
-            .filter(|adding| Some(adding.ble_id.as_str()) == ble_id)
-        else {
+        let Some(adding) = ble_id.and_then(|ble_id| state.adding.get(ble_id)) else {
             return Phase::Ready;
         };
         match &adding.step {
             step if step.is_running() => Phase::Running(adding),
             _ if !self.submitted => Phase::Ready,
+            _ if self.retry_wifi => Phase::RetryWifi,
             AddStep::NeedWifi => Phase::NeedWifi(adding),
             AddStep::Done(_) => Phase::Done(adding),
             AddStep::Failed(why) => Phase::Failed(adding, why),
@@ -271,14 +285,28 @@ impl AddSheet {
                 _ => None,
             };
         }
-        let wifi = matches!(phase, Phase::NeedWifi(_));
+        let wifi = matches!(phase, Phase::NeedWifi(_) | Phase::RetryWifi);
+        let given = match phase {
+            Phase::Failed(adding, _) => adding.network.clone(),
+            _ => None,
+        };
         match action? {
             Action::Close => {
                 self.close(ctx);
                 None
             }
             Action::Add => Some(self.submit(ctx, wifi)),
-            Action::TryAgain => Some(self.submit(ctx, false)),
+            // The network it was given may be what kept it off the broker: ask for it
+            // again, with its password to type again, before anything is sent.
+            Action::TryAgain => match given {
+                Some(network) => {
+                    self.network = network;
+                    self.forget_password(ctx);
+                    self.retry_wifi = true;
+                    None
+                }
+                None => Some(self.submit(ctx, false)),
+            },
         }
     }
 
@@ -287,7 +315,7 @@ impl AddSheet {
     fn can_add(&self, phase: &Phase<'_>) -> bool {
         match phase {
             Phase::Ready => true,
-            Phase::NeedWifi(_) => !self.network.trim().is_empty(),
+            Phase::NeedWifi(_) | Phase::RetryWifi => !self.network.trim().is_empty(),
             Phase::Running(_) | Phase::Done(_) | Phase::Failed(..) => false,
         }
     }
@@ -299,8 +327,8 @@ impl AddSheet {
         let typed = std::mem::take(&mut self.password);
         self.forget_password(ctx);
         let wifi = wifi.then(|| (self.network.trim().to_owned(), Secret::new(typed)));
-        self.with_wifi = wifi.is_some();
         self.submitted = true;
+        self.retry_wifi = false;
         let ble_id = self
             .target
             .as_ref()
@@ -330,7 +358,10 @@ impl AddSheet {
         );
         ui.add_space(2.0 * GRID);
 
-        let editable = matches!(phase, Phase::Ready | Phase::NeedWifi(_) | Phase::Failed(..));
+        let editable = matches!(
+            phase,
+            Phase::Ready | Phase::NeedWifi(_) | Phase::RetryWifi | Phase::Failed(..)
+        );
         let mut enter = false;
         ui.add_enabled_ui(editable, |ui| {
             grouped(ui, "", |ui| {
@@ -344,7 +375,12 @@ impl AddSheet {
         });
         footnote(ui, "What it is called in the list.");
 
-        if let Phase::NeedWifi(_) = phase {
+        let wifi_note = match phase {
+            Phase::NeedWifi(_) => Some("It isn't on WiFi yet."),
+            Phase::RetryWifi => Some("Check the network, and type its password again."),
+            _ => None,
+        };
+        if let Some(why) = wifi_note {
             ui.add_space(2.0 * GRID);
             grouped(ui, "WiFi", |ui| {
                 row(ui, "Network", |ui| {
@@ -363,18 +399,22 @@ impl AddSheet {
             });
             footnote(
                 ui,
-                "It isn't on WiFi yet. 2.4 GHz networks only. The password goes to the diffuser once and isn't kept.",
+                &format!(
+                    "{why} 2.4 GHz networks only. The password goes to the diffuser once and isn't kept."
+                ),
             );
         }
 
         let steps = match phase {
-            Phase::Ready => Vec::new(),
+            Phase::Ready | Phase::RetryWifi => Vec::new(),
             Phase::Running(adding)
             | Phase::NeedWifi(adding)
             | Phase::Done(adding)
-            | Phase::Failed(adding, _) => {
-                step_list(&adding.step, adding.reached.as_ref(), self.with_wifi)
-            }
+            | Phase::Failed(adding, _) => step_list(
+                &adding.step,
+                adding.reached.as_ref(),
+                adding.network.is_some(),
+            ),
         };
         if !steps.is_empty() {
             ui.add_space(2.0 * GRID);
@@ -385,6 +425,10 @@ impl AddSheet {
         if let Phase::Running(_) = phase {
             ui.add_space(GRID / 2.0);
             secondary(ui, "Closing this sheet doesn't stop the add.");
+        }
+        if let Phase::Done(_) = phase {
+            ui.add_space(GRID / 2.0);
+            secondary(ui, "It's on your broker, and will answer pings shortly.");
         }
         if let Phase::Failed(_, why) = phase {
             ui.add_space(2.0 * GRID);
@@ -626,13 +670,20 @@ mod tests {
 
     /// The state, following an add of the diffuser at `step`.
     fn adding_at(step: AddStep, reached: Option<AddStep>) -> AppState {
+        adding_with(step, reached, None)
+    }
+
+    /// As [`adding_at`], for an add that gave `network`.
+    fn adding_with(step: AddStep, reached: Option<AddStep>, network: Option<&str>) -> AppState {
+        let adding = Adding {
+            ble_id: BLE.to_owned(),
+            label: "Air 2".to_owned(),
+            network: network.map(str::to_owned),
+            step,
+            reached,
+        };
         AppState {
-            adding: Some(Adding {
-                ble_id: BLE.to_owned(),
-                label: "Air 2".to_owned(),
-                step,
-                reached,
-            }),
+            adding: [(BLE.to_owned(), adding)].into(),
             ..AppState::default()
         }
     }
@@ -786,6 +837,54 @@ mod tests {
     }
 
     #[test]
+    fn try_again_after_a_network_was_given_asks_for_it_again() {
+        // The wait failed: the advice is to check the WiFi password, so trying again
+        // starts from the network, filled in, with the password to type again.
+        let mut sheet = opened();
+        sheet.submitted = true;
+        let failed = AddStep::Failed("The diffuser didn't join your broker.".to_owned());
+        let state = adding_with(failed, Some(AddStep::WaitConnected), Some("ExampleWiFi"));
+        let mut harness = harness(sheet, state);
+        harness.get_by_label("Try Again").click();
+        harness.run_steps(2);
+        assert!(harness.state().sent.is_empty(), "nothing sent yet");
+        assert_eq!(harness.state().sheet.network, "ExampleWiFi");
+        let password = harness.get_by(|node| node.placeholder() == Some("WiFi password"));
+        password.focus();
+        password.type_text("hunter2");
+        harness.run_steps(2);
+        harness.get_by_label("Add").click();
+        harness.run_steps(2);
+        let [UiCommand::Add(request)] = &harness.state().sent[..] else {
+            panic!("one Add");
+        };
+        let (network, password) = request.wifi.as_ref().expect("the network");
+        assert_eq!(
+            (network.as_str(), password.expose()),
+            ("ExampleWiFi", "hunter2")
+        );
+        assert!(harness.state().sheet.password.is_empty());
+    }
+
+    #[test]
+    fn the_sheet_follows_only_its_own_diffusers_add() {
+        // Another diffuser is being added: this one is still to start.
+        let mut state = adding_at(AddStep::WaitConnected, Some(AddStep::WaitConnected));
+        let other = state.adding.remove(BLE).unwrap();
+        state.adding.insert(
+            "ble-other".to_owned(),
+            Adding {
+                ble_id: "ble-other".to_owned(),
+                ..other
+            },
+        );
+        let mut harness = harness(opened(), state);
+        harness.get_by_label("Add").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().sent.len(), 1);
+    }
+
+    #[test]
     fn when_it_is_done_done_closes_the_sheet() {
         let mut sheet = opened();
         sheet.submitted = true;
@@ -795,6 +894,7 @@ mod tests {
         );
         let mut harness = harness(sheet, state);
         assert!(harness.query_by_label("Cancel").is_none());
+        let _ = harness.get_by_label("It's on your broker, and will answer pings shortly.");
         harness.get_by_label("Done").click();
         harness.run_steps(2);
         assert!(!harness.state().sheet.is_open());

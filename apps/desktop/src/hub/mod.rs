@@ -34,7 +34,7 @@ use crate::route::{TransportPref, ble_known, route, why_no_route, wifi_available
 use crate::state::{AppState, DeviceView, Event, unix_now};
 use crate::transport::{Radios, Transport, lock};
 
-use self::add::{AddJob, Login};
+use self::add::{AddJob, Adds, Login};
 
 mod add;
 
@@ -258,6 +258,8 @@ struct Shared<T> {
     /// `route::ble_known`).
     ble_failed: Mutex<HashMap<String, i64>>,
     login: Mutex<Login>,
+    /// The diffusers being added, by Bluetooth ID: one add at a time for each.
+    adds: Adds,
 }
 
 impl<T: Transport> Shared<T> {
@@ -274,6 +276,7 @@ impl<T: Transport> Shared<T> {
             repaint,
             ble_failed: Mutex::new(HashMap::new()),
             login: Mutex::new(Login::default()),
+            adds: Adds::default(),
         }
     }
 
@@ -338,10 +341,10 @@ impl<T: Transport> Shared<T> {
                 break;
             };
             let result = match via {
-                Via::Bluetooth => {
-                    self.over_bluetooth(device_id, ble_id.as_deref(), work)
-                        .await
-                }
+                Via::Bluetooth => self
+                    .over_bluetooth(device_id, ble_id.as_deref(), work)
+                    .await
+                    .map_err(|error| error.to_string()),
                 Via::Wifi => self.transport.wifi_send(device_id, &work.cmd),
             };
             match result {
@@ -364,8 +367,9 @@ impl<T: Transport> Shared<T> {
         device_id: &str,
         ble_id: Option<&str>,
         work: &Work,
-    ) -> Result<(), String> {
-        let ble_id = ble_id.ok_or_else(|| "No Bluetooth ID for this diffuser.".to_owned())?;
+    ) -> Result<(), BleError> {
+        let no_id = || BleError::Failed("No Bluetooth ID for this diffuser.".to_owned());
+        let ble_id = ble_id.ok_or_else(no_id)?;
         let reply = if work.reads_status {
             self.transport.ble_read_status(ble_id)
         } else {
@@ -440,7 +444,7 @@ impl<T: Transport> Shared<T> {
 
     async fn scan(&self) {
         if let Err(error) = answer(self.transport.ble_scan(SCAN_SECS)).await {
-            self.failed(None, SCAN_FAILED.to_owned(), error);
+            self.failed(None, SCAN_FAILED.to_owned(), error.to_string());
         }
     }
 
@@ -479,12 +483,31 @@ impl<T: Transport> Shared<T> {
     }
 }
 
+/// Why a Bluetooth request didn't work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BleError {
+    /// No answer within [`BLUETOOTH_BACKSTOP`]: whether it went through is unknown.
+    Unanswered,
+    /// It failed, and why.
+    Failed(String),
+}
+
+impl std::fmt::Display for BleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BleError::Unanswered => f.write_str(BLUETOOTH_UNANSWERED),
+            BleError::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
 /// How a Bluetooth request ended. A reply that never comes means the worker is gone,
-/// and one that takes longer than [`BLUETOOTH_BACKSTOP`] counts as a failure.
-async fn answer(reply: Reply) -> Result<(), String> {
+/// and one that takes longer than [`BLUETOOTH_BACKSTOP`] is unanswered.
+async fn answer(reply: Reply) -> Result<(), BleError> {
     match tokio::time::timeout(BLUETOOTH_BACKSTOP, reply).await {
-        Ok(answered) => answered.unwrap_or_else(|_| Err(BLUETOOTH_STOPPED.to_owned())),
-        Err(_) => Err(BLUETOOTH_UNANSWERED.to_owned()),
+        Ok(Ok(answered)) => answered.map_err(BleError::Failed),
+        Ok(Err(_)) => Err(BleError::Failed(BLUETOOTH_STOPPED.to_owned())),
+        Err(_) => Err(BleError::Unanswered),
     }
 }
 
@@ -791,7 +814,8 @@ mod tests {
             device_id: id.into(),
             firmware: "2.30".into(),
             wifi_configured,
-            wifi_status: 0,
+            // Connected, when set up (see `add_flow::on_wifi`).
+            wifi_status: if wifi_configured { 3 } else { 0 },
         }
     }
 
@@ -1018,6 +1042,9 @@ mod tests {
         pub(super) infos: Mutex<HashMap<String, DeviceInfo>>,
         /// The app's state, where a read info lands as the screens would fold it in.
         pub(super) state: Mutex<Option<Arc<Mutex<AppState>>>>,
+        /// How long after the read the info lands there: a screen frame. At once when
+        /// `None`.
+        pub(super) info_lag: Mutex<Option<Duration>>,
         pub(super) route_id: Mutex<Option<String>>,
         pub(super) reconnects: Mutex<Vec<(String, bool)>>,
         /// Reply senders kept alive so that their replies stay unanswered.
@@ -1035,6 +1062,7 @@ mod tests {
                 ble_commands: Mutex::new(Vec::new()),
                 infos: Mutex::new(HashMap::new()),
                 state: Mutex::new(None),
+                info_lag: Mutex::new(None),
                 route_id: Mutex::new(None),
                 reconnects: Mutex::new(Vec::new()),
                 held: Mutex::new(Vec::new()),
@@ -1109,11 +1137,20 @@ mod tests {
             let info = lock(&self.infos).get(ble_id).cloned();
             let state = lock(&self.state).clone();
             if works && let (Some(info), Some(state)) = (info, state) {
-                lock(&state).apply(Event::BleInfo {
+                let read = Event::BleInfo {
                     ble_id: ble_id.to_owned(),
                     info,
                     at: unix_now(),
-                });
+                };
+                match *lock(&self.info_lag) {
+                    None => lock(&state).apply(read),
+                    Some(lag) => {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(lag).await;
+                            lock(&state).apply(read);
+                        });
+                    }
+                }
             }
             self.begin(format!("ble {ble_id} read info"))
         }
@@ -1189,6 +1226,12 @@ mod tests {
         /// What reading the info of the diffuser at `ble_id` gives.
         pub(super) fn info_for(self, ble_id: &str, info: DeviceInfo) -> Rig {
             lock(&self.fake().infos).insert(ble_id.to_owned(), info);
+            self
+        }
+
+        /// The read info reaches the state `lag` after it was read.
+        pub(super) fn info_after(self, lag: Duration) -> Rig {
+            *lock(&self.fake().info_lag) = Some(lag);
             self
         }
 
@@ -1607,6 +1650,33 @@ mod tests {
             lines[0].2
         );
         assert!(lines[0].2.contains("went over WiFi"), "{}", lines[0].2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reply_that_never_comes_is_unanswered_not_failed() {
+        // Still there, never answering.
+        let (_held, reply) = oneshot::channel::<Result<(), String>>();
+        let started = Instant::now();
+        assert_eq!(answer(reply).await, Err(BleError::Unanswered));
+        assert_eq!(started.elapsed(), secs(30));
+        assert_eq!(
+            BleError::Unanswered.to_string(),
+            "Bluetooth didn't answer in 30 s; it may still go through."
+        );
+
+        let (sender, reply) = oneshot::channel();
+        sender.send(Err("No answer.".to_owned())).unwrap();
+        assert_eq!(
+            answer(reply).await,
+            Err(BleError::Failed("No answer.".to_owned()))
+        );
+        // The worker went away: a failure, not an unknown.
+        let (sender, reply) = oneshot::channel::<Result<(), String>>();
+        drop(sender);
+        let Err(BleError::Failed(why)) = answer(reply).await else {
+            panic!("a failure");
+        };
+        assert!(why.contains("Bluetooth stopped"), "{why}");
     }
 
     #[tokio::test(start_paused = true)]

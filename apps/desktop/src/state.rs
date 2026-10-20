@@ -23,8 +23,11 @@ const WIFI_CONNECTED: u8 = 3;
 /// The log's label for a message with no `action`.
 const NO_ACTION: &str = "(no action)";
 
-/// What the log calls an add that failed.
+/// What the log calls an add's outcome.
 const ADD: &str = "Add";
+
+/// What the log says when a diffuser has been added.
+const ADDED: &str = "Added: it joined your broker.";
 
 /// What a diffuser says once it has taken `SAVE_MQTT`, over Bluetooth or as the `msg` of
 /// an acknowledgement on the broker. Matched in any case.
@@ -206,6 +209,8 @@ pub struct Adding {
     pub ble_id: String,
     /// What it is to be called once it is added; empty keeps its device ID.
     pub label: String,
+    /// The network it was given to join, if any: never its password.
+    pub network: Option<String>,
     /// Where it is, as the hub last said.
     pub step: AddStep,
     /// The last step the hub was working on, which is where a failure happened. `None`
@@ -315,8 +320,8 @@ pub struct AppState {
     pub broker: BrokerState,
     /// The conversation, oldest first, at most [`LOG_CAP`] entries.
     pub log: VecDeque<LogEntry>,
-    /// The add the screens started last. Not saved.
-    pub adding: Option<Adding>,
+    /// The adds the screens started, by Bluetooth ID. Not saved.
+    pub adding: BTreeMap<String, Adding>,
 }
 
 impl AppState {
@@ -389,54 +394,72 @@ impl AppState {
         }
     }
 
-    /// Starts following an add of the diffuser at `ble_id`, to be called `label`, in
-    /// place of any earlier one. The screens call it as they hand the add to the hub.
-    pub fn begin_add(&mut self, ble_id: &str, label: &str) {
-        self.adding = Some(Adding {
+    /// Starts following an add of the diffuser at `ble_id`, to be called `label`, given
+    /// `network` to join if any. The screens call it as they hand the add to the hub. An
+    /// add of it already under way is left as it is: the hub turns the new one down.
+    pub fn begin_add(&mut self, ble_id: &str, label: &str, network: Option<&str>) {
+        if self
+            .adding
+            .get(ble_id)
+            .is_some_and(|adding| adding.step.is_running())
+        {
+            return;
+        }
+        let adding = Adding {
             ble_id: ble_id.to_owned(),
             label: label.to_owned(),
+            network: network.map(str::to_owned),
             step: AddStep::ReadInfo,
             reached: None,
-        });
+        };
+        self.adding.insert(ble_id.to_owned(), adding);
     }
 
-    /// The hub says where the add of `ble_id` is. Only the add the screens follow
-    /// counts. Once it is done, the diffuser takes its name; a failure is logged, as
-    /// the sheet may have been closed.
+    /// The hub says where the add of `ble_id` is. Once it is done, the diffuser takes its
+    /// name. How each add ended is logged, as its sheet may have been closed: a failure
+    /// as one, and an add as heard on the broker, where it showed up.
     fn on_adding(&mut self, ble_id: &str, step: AddStep, now: i64) {
-        let Some(adding) = self
+        let adding = self
             .adding
-            .as_mut()
-            .filter(|adding| adding.ble_id == ble_id)
-        else {
-            return;
-        };
+            .entry(ble_id.to_owned())
+            .or_insert_with(|| Adding {
+                ble_id: ble_id.to_owned(),
+                label: String::new(),
+                network: None,
+                step: AddStep::ReadInfo,
+                reached: None,
+            });
         if step.is_running() {
             adding.reached = Some(step.clone());
         }
-        if let AddStep::Done(id) = &step
-            && !adding.label.is_empty()
-            && let Some(device) = self.devices.get_mut(id)
-        {
-            device.label.clone_from(&adding.label);
-        }
         adding.step = step.clone();
-        if let AddStep::Failed(why) = step {
-            let device_id = self
-                .devices
-                .values()
-                .find(|device| device.ble_id.as_deref() == Some(ble_id))
-                .map(|device| device.id.clone());
-            self.push_log(LogEntry {
-                at: now,
-                device_id,
-                via: None,
-                direction: Direction::ToDevice,
-                action: ADD.to_owned(),
-                text: why,
-                sent: false,
-            });
-        }
+        let label = adding.label.clone();
+        let (via, direction, text) = match step {
+            AddStep::Done(id) => {
+                if let Some(device) = self.devices.get_mut(&id)
+                    && !label.is_empty()
+                {
+                    device.label = label;
+                }
+                (Some(Via::Wifi), Direction::FromDevice, ADDED.to_owned())
+            }
+            AddStep::Failed(why) => (None, Direction::ToDevice, why),
+            _ => return,
+        };
+        let device_id = self
+            .devices
+            .values()
+            .find(|device| device.ble_id.as_deref() == Some(ble_id))
+            .map(|device| device.id.clone());
+        self.push_log(LogEntry {
+            at: now,
+            device_id,
+            via,
+            direction,
+            action: ADD.to_owned(),
+            text,
+            sent: false,
+        });
     }
 
     /// Whether the diffuser answers pings. Only WiFi counts: the pings go over WiFi,
@@ -1727,12 +1750,13 @@ mod tests {
     #[test]
     fn an_add_follows_its_steps_and_names_the_diffuser_when_done() {
         let mut s = AppState::default();
-        s.begin_add(BLE1, "Bedroom");
-        let current = s.adding.clone().unwrap();
+        s.begin_add(BLE1, "Bedroom", None);
+        let current = s.adding[BLE1].clone();
         assert_eq!(
             (current.ble_id.as_str(), current.label.as_str()),
             (BLE1, "Bedroom")
         );
+        assert_eq!(current.network, None);
         assert_eq!((current.step, current.reached), (AddStep::ReadInfo, None));
 
         s.apply_at(adding(BLE1, AddStep::ReadInfo), NOW);
@@ -1741,17 +1765,13 @@ mod tests {
         assert_eq!(s.devices[ID1].label, ID1);
         for step in [AddStep::SaveMqtt, AddStep::Restart, AddStep::WaitConnected] {
             s.apply_at(adding(BLE1, step.clone()), NOW);
-            let current = s.adding.as_ref().unwrap();
+            let current = &s.adding[BLE1];
             assert_eq!(current.step, step);
             assert_eq!(current.reached.as_ref(), Some(&step));
         }
-        // Another diffuser's progress is not this add's.
-        s.apply_at(adding("ble-other", AddStep::Failed("No.".into())), NOW);
-        assert_eq!(s.adding.as_ref().unwrap().step, AddStep::WaitConnected);
-
         s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
         assert_eq!(s.devices[ID1].label, "Bedroom");
-        let current = s.adding.as_ref().unwrap();
+        let current = &s.adding[BLE1];
         assert_eq!(current.step, AddStep::Done(ID1.to_owned()));
         assert_eq!(current.reached, Some(AddStep::WaitConnected));
     }
@@ -1759,7 +1779,7 @@ mod tests {
     #[test]
     fn an_add_with_no_name_keeps_the_device_id() {
         let mut s = known_air2();
-        s.begin_add(BLE1, "");
+        s.begin_add(BLE1, "", None);
         s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
         assert_eq!(s.devices[ID1].label, ID1);
     }
@@ -1768,10 +1788,10 @@ mod tests {
     fn a_failed_add_says_why_in_the_log_and_where_it_stopped() {
         let mut s = known_air2();
         let before = s.log.len();
-        s.begin_add(BLE1, "Bedroom");
+        s.begin_add(BLE1, "Bedroom", None);
         s.apply_at(adding(BLE1, AddStep::SaveMqtt), NOW);
         s.apply_at(adding(BLE1, AddStep::Failed("No answer.".into())), NOW);
-        let current = s.adding.as_ref().unwrap();
+        let current = &s.adding[BLE1];
         assert_eq!(current.step, AddStep::Failed("No answer.".into()));
         assert_eq!(current.reached, Some(AddStep::SaveMqtt));
         assert_eq!(s.devices[ID1].label, ID1);
@@ -1781,15 +1801,133 @@ mod tests {
         assert_eq!(logged[0].text, "No answer.");
         assert_eq!(logged[0].device_id.as_deref(), Some(ID1));
         assert_eq!(logged[0].via, None);
-        // Progress is not logged.
-        assert!(s.log.iter().skip(before).all(|entry| entry.action == "Add"));
         // A new add starts over.
-        s.begin_add(BLE1, "Kitchen");
-        let current = s.adding.as_ref().unwrap();
+        s.begin_add(BLE1, "Kitchen", Some("ExampleWiFi"));
+        let current = &s.adding[BLE1];
         assert_eq!(
             (current.step.clone(), current.reached.clone()),
             (AddStep::ReadInfo, None)
         );
+        assert_eq!(current.label, "Kitchen");
+        // It remembers the network it was given, though never its password.
+        assert_eq!(current.network.as_deref(), Some("ExampleWiFi"));
+    }
+
+    #[test]
+    fn two_adds_are_followed_side_by_side_and_both_logged() {
+        const BLE2: &str = "ble-peripheral-2";
+        let mut s = AppState::default();
+        s.begin_add(BLE1, "Bedroom", None);
+        s.begin_add(BLE2, "Hallway", None);
+        s.apply_at(ble_info(BLE1, ID1, 10), NOW);
+        s.apply_at(ble_info(BLE2, ID2, 11), NOW);
+        let before = s.log.len();
+        s.apply_at(adding(BLE1, AddStep::WaitConnected), NOW);
+        s.apply_at(adding(BLE2, AddStep::SaveMqtt), NOW);
+        s.apply_at(adding(BLE1, AddStep::Failed("No.".into())), NOW);
+        s.apply_at(adding(BLE2, AddStep::Done(ID2.to_owned())), NOW);
+
+        assert_eq!(s.adding[BLE1].step, AddStep::Failed("No.".into()));
+        assert_eq!(s.adding[BLE2].step, AddStep::Done(ID2.to_owned()));
+        // Each takes its own name, and only when it is done.
+        assert_eq!(s.devices[ID1].label, ID1);
+        assert_eq!(s.devices[ID2].label, "Hallway");
+        // Both outcomes are in the log: the failure as one, the add as heard on the
+        // broker, where it showed up.
+        let logged: Vec<_> = s.log.iter().skip(before).collect();
+        assert_eq!(logged.len(), 2, "{logged:?}");
+        assert!(logged.iter().all(|entry| entry.action == "Add"));
+        assert_eq!(
+            (logged[0].device_id.as_deref(), logged[0].via),
+            (Some(ID1), None)
+        );
+        assert_eq!(
+            (
+                logged[1].device_id.as_deref(),
+                logged[1].via,
+                logged[1].direction
+            ),
+            (Some(ID2), Some(Via::Wifi), Direction::FromDevice)
+        );
+        // Progress is not logged.
+        assert!(!logged.iter().any(|entry| entry.text.contains("SaveMqtt")));
+    }
+
+    #[test]
+    fn an_add_under_way_is_not_started_over() {
+        let mut s = known_air2();
+        s.begin_add(BLE1, "Bedroom", None);
+        s.apply_at(adding(BLE1, AddStep::WaitConnected), NOW);
+        s.begin_add(BLE1, "Kitchen", None);
+        let current = &s.adding[BLE1];
+        assert_eq!(current.step, AddStep::WaitConnected);
+        assert_eq!(current.label, "Bedroom");
+    }
+
+    #[test]
+    fn an_add_the_screens_did_not_start_is_still_followed() {
+        let mut s = known_air2();
+        s.apply_at(adding(BLE1, AddStep::Failed("No.".into())), NOW);
+        assert_eq!(s.adding[BLE1].step, AddStep::Failed("No.".into()));
+        assert_eq!(s.log.back().unwrap().action, "Add");
+    }
+
+    // A diffuser can repeat a command back over Bluetooth or the broker. When that is a
+    // WIFI_CONNECT or a SAVE_MQTT, the password in it never reaches the log or the state.
+    #[test]
+    fn echoed_wifi_and_broker_logins_are_masked() {
+        let echoes = [
+            Command::WifiConnect {
+                ssid: "ExampleWiFi".into(),
+                password: Secret::new("hunter2".into()),
+            },
+            Command::SaveMqtt {
+                broker: "wss://broker.example.test/mqtt".into(),
+                username: "scent-test".into(),
+                password: Secret::new("hunter2".into()),
+            },
+        ];
+        let mut s = known_air2();
+        for (n, echo) in (0..).zip(echoes) {
+            // Over Bluetooth, as the frame was written, and as a JSON string inside a
+            // notification.
+            s.apply_at(
+                Event::BleNotification {
+                    ble_id: BLE1.to_owned(),
+                    bytes: echo.ble_frame(),
+                    at: 100 + n,
+                },
+                NOW,
+            );
+            let quoted =
+                serde_json::to_string(&String::from_utf8(echo.mqtt_body()).unwrap()).unwrap();
+            s.apply_at(note(BLE1, &format!(r#"{{"data":{quoted}}}"#), 110 + n), NOW);
+            // On the broker: on the diffuser's topic, and in an acknowledgement from it.
+            s.apply_at(
+                Event::Mqtt {
+                    topic: DEVICE1_TOPIC.to_owned(),
+                    body: echo.mqtt_body(),
+                    at: 120 + n,
+                },
+                NOW,
+            );
+            let ack = serde_json::json!({
+                "action": "acknowledgement",
+                "payload": { "deviceId": ID1, "msg": String::from_utf8(echo.mqtt_body()).unwrap() },
+            });
+            s.apply_at(mqtt(USER_TOPIC, &ack.to_string(), 130 + n), NOW);
+        }
+        let everything = format!("{s:?}");
+        assert!(!everything.contains("hunter2"), "{everything}");
+        let masked = s
+            .log
+            .iter()
+            .filter(|entry| entry.text.contains("***"))
+            .count();
+        assert_eq!(masked, 8, "{:?}", s.log);
+        // The rest of what was echoed is kept.
+        assert!(s.log.iter().any(|entry| entry.text.contains("ExampleWiFi")));
+        assert!(s.log.iter().any(|entry| entry.text.contains("scent-test")));
     }
 
     // Local store
@@ -1823,7 +1961,7 @@ mod tests {
         s.apply_at(Event::BrokerConnected, NOW);
         s.apply_at(fixture_event(CONNECTED_AGAIN, 4_003), NOW);
         s.apply_at(note(BLE1, "Credentials saved", 4_004), NOW);
-        s.begin_add(BLE1, "Bedroom");
+        s.begin_add(BLE1, "Bedroom", Some("ExampleWiFi"));
 
         store.save(&s, &BrokerSettings::default()).unwrap();
         let loaded = store.load().state;
@@ -1851,7 +1989,7 @@ mod tests {
             ),
             (None, None, None)
         );
-        assert!(loaded.adding.is_none());
+        assert!(loaded.adding.is_empty());
         assert!(loaded.log.is_empty() && loaded.scan.is_empty());
         assert_eq!(loaded.broker, BrokerState::Connecting);
 

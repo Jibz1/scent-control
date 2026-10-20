@@ -299,6 +299,32 @@ pub fn max_times(firmware: Option<&str>) -> usize {
     table - 1
 }
 
+/// The note under the time zone: whether the offset typed (`offset`) is this Mac's own
+/// (`mac_hours` from UTC), and the Mac's when it isn't, as it isn't when the schedule
+/// was sent from another zone or before a change of daylight saving.
+pub fn zone_note(offset: &str, mac_hours: f64) -> String {
+    let same = parse_offset(offset).is_ok_and(|hours| (hours - mac_hours).abs() < 1e-9);
+    if same {
+        "The times are in this zone, which is this Mac's.".to_owned()
+    } else {
+        format!(
+            "The times are in this zone. This Mac is at {} now.",
+            utc_offset(mac_hours)
+        )
+    }
+}
+
+/// An offset from UTC as people write it: `UTC-4`, `UTC+5.5`, `UTC`.
+fn utc_offset(hours: f64) -> String {
+    if hours == 0.0 {
+        "UTC".to_owned()
+    } else if hours > 0.0 {
+        format!("UTC+{}", format_hours(hours))
+    } else {
+        format!("UTC{}", format_hours(hours))
+    }
+}
+
 /// Hours as people write them: `-4`, `5.5`.
 pub fn format_hours(hours: f64) -> String {
     if hours.fract() == 0.0 {
@@ -333,6 +359,8 @@ pub struct ScheduleEditor {
     test_problem: Option<String>,
     /// A time was just added: the times scroll to show it.
     added: bool,
+    /// This Mac's offset from UTC, in hours, when the sheet opened.
+    mac_hours: f64,
 }
 
 impl ScheduleEditor {
@@ -340,6 +368,7 @@ impl ScheduleEditor {
     /// empty one in this Mac's time zone.
     pub fn open(&mut self, device: &DeviceView, now: i64) {
         let mac = local_utc_offset_secs(now) as f64 / 3600.0;
+        self.mac_hours = mac;
         self.draft = device
             .sent_profile
             .as_ref()
@@ -555,7 +584,7 @@ impl ScheduleEditor {
         });
         match problems.and_then(|problems| problems.offset.as_deref()) {
             Some(text) => problem(ui, text),
-            None => footnote(ui, "The times are in this zone. It starts as this Mac's."),
+            None => footnote(ui, &zone_note(&draft.offset, self.mac_hours)),
         };
         ui.add_space(2.0 * GRID);
 
@@ -918,6 +947,26 @@ mod tests {
         let new = DraftEntry::new();
         assert_eq!((new.level, new.runs), (1, true));
         assert!(check(&draft(vec![new]), 99).is_ok());
+    }
+
+    #[test]
+    fn the_time_zone_note_names_the_macs_offset_when_it_differs() {
+        assert_eq!(
+            zone_note("-4", -4.0),
+            "The times are in this zone, which is this Mac's."
+        );
+        assert_eq!(
+            zone_note("-5", -4.0),
+            "The times are in this zone. This Mac is at UTC-4 now."
+        );
+        assert_eq!(
+            zone_note("-4", 5.5),
+            "The times are in this zone. This Mac is at UTC+5.5 now."
+        );
+        assert_eq!(
+            zone_note("+1", 0.0),
+            "The times are in this zone. This Mac is at UTC now."
+        );
     }
 
     #[test]

@@ -191,7 +191,10 @@ impl eframe::App for ScentApp {
             // The state follows the add from here, so that its name is given once it is
             // done, even if the sheet has been closed.
             if let UiCommand::Add(request) = &command {
-                self.change_state(|state| state.begin_add(&request.ble_id, &request.label));
+                let network = request.wifi.as_ref().map(|(network, _)| network.as_str());
+                self.change_state(|state| {
+                    state.begin_add(&request.ble_id, &request.label, network);
+                });
             }
             self.hub.submit(command);
         }

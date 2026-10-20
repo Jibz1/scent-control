@@ -4,8 +4,9 @@
 //! clock.
 //!
 //! The order (see `docs/findings.md`, "Phase 0 results"): read the info over Bluetooth;
-//! `SAVE_MQTT` with our broker; `WIFI_CONNECT` only when the diffuser isn't on WiFi and
-//! the person gave a network; a soft restart; then wait up to 90 s for the diffuser's
+//! `SAVE_MQTT` with our broker, then 25 s for its test login; `WIFI_CONNECT` when the
+//! person gave a network, which they are asked for when the diffuser isn't on WiFi; a
+//! soft restart; then wait up to 90 s from the restart for the diffuser's
 //! `device_connected` on our broker, and `PING` it with our route ID.
 
 use scent_core::{DeviceInfo, Secret};
@@ -13,9 +14,16 @@ use scent_core::{DeviceInfo, Secret};
 /// How long a diffuser has to show up on our broker after it was told to restart.
 pub const WAIT_CONNECTED_S: i64 = 90;
 
-/// How long to wait after `SAVE_MQTT` for the diffuser's "Credentials saved" before it
-/// is restarted anyway. It makes a test login with them within about 20 s.
+/// How long to wait after `SAVE_MQTT` before the restart, always. The diffuser makes a
+/// test login with the new credentials within about 20 s, and announces itself on the
+/// broker as it does; after an early restart that could pass for the restart having
+/// worked. Its "Credentials saved" doesn't cut the wait short.
 pub const CREDENTIALS_WAIT_S: u64 = 25;
+
+/// The WiFi statuses that mean connected, on firmware above [`STATUS_RULE_AFTER`]
+/// (`docs/findings.md`, "Device info").
+const CONNECTED_STATUSES: [u8; 2] = [2, 3];
+const STATUS_RULE_AFTER: [u32; 2] = [2, 0];
 
 /// Why an add stops before it starts: `SAVE_MQTT` hands the diffuser our broker login.
 pub const NO_BROKER_PASSWORD: &str = "Save the broker password in Settings first.";
@@ -76,7 +84,7 @@ pub fn next(
         return step.clone();
     };
     match step {
-        AddStep::ReadInfo if wifi_given || info.wifi_configured => AddStep::SaveMqtt,
+        AddStep::ReadInfo if wifi_given || on_wifi(info) => AddStep::SaveMqtt,
         AddStep::ReadInfo => AddStep::NeedWifi,
         AddStep::SaveMqtt if wifi_given => AddStep::WifiConnect,
         AddStep::SaveMqtt | AddStep::WifiConnect => AddStep::Restart,
@@ -89,6 +97,20 @@ pub fn next(
             step.clone()
         }
     }
+}
+
+/// Whether the diffuser is on WiFi: it has a network set up, and on firmware above 2.0
+/// its WiFi status says connected. One set up for a network it can't reach is asked for
+/// a network as one with none is.
+pub fn on_wifi(info: &DeviceInfo) -> bool {
+    let version: Option<Vec<u32>> = info
+        .firmware
+        .split('.')
+        .map(|part| part.trim().parse().ok())
+        .collect();
+    let status_known =
+        version.is_some_and(|version| version.as_slice() > STATUS_RULE_AFTER.as_slice());
+    info.wifi_configured && (!status_known || CONNECTED_STATUSES.contains(&info.wifi_status))
 }
 
 /// How the wait for `device_connected` stands at `now`, when it began at `started`
@@ -181,6 +203,37 @@ mod tests {
                 AddStep::WaitConnected
             ]
         );
+    }
+
+    #[test]
+    fn wifi_set_up_but_not_connected_counts_as_not_on_wifi() {
+        // On firmware above 2.0 a WiFi status of 2 or 3 means connected (findings,
+        // "Device info"); anything else, with WiFi set up, is a network it can't reach.
+        let with = |configured: bool, status: u8, firmware: &str| DeviceInfo {
+            wifi_configured: configured,
+            wifi_status: status,
+            firmware: firmware.into(),
+            ..info(configured)
+        };
+        let after_read = |info: &DeviceInfo| next(&AddStep::ReadInfo, Some(info), false, None);
+        for status in [2, 3] {
+            assert_eq!(after_read(&with(true, status, "2.30")), AddStep::SaveMqtt);
+        }
+        for status in [0, 1, 4] {
+            assert_eq!(
+                after_read(&with(true, status, "2.30")),
+                AddStep::NeedWifi,
+                "{status}"
+            );
+        }
+        // The rule is only known for firmware above 2.0; otherwise set up is enough.
+        assert_eq!(after_read(&with(true, 0, "1.3.8")), AddStep::SaveMqtt);
+        assert_eq!(after_read(&with(true, 0, "")), AddStep::SaveMqtt);
+        // Not set up is never on WiFi.
+        assert_eq!(after_read(&with(false, 3, "2.30")), AddStep::NeedWifi);
+        // A network given goes ahead either way.
+        let given = next(&AddStep::ReadInfo, Some(&with(true, 0, "2.30")), true, None);
+        assert_eq!(given, AddStep::SaveMqtt);
     }
 
     #[test]

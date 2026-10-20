@@ -173,7 +173,18 @@ fn add_on_a_diffuser_found_nearby_opens_the_sheet_and_hands_over_the_add() {
     assert_eq!(request.label, "Diffuser");
     assert!(request.wifi.is_none());
 
-    // Once it is done, it is the diffuser that is open.
+    // Another add finishing doesn't take the selection.
+    harness
+        .state_mut()
+        .screens
+        .on_event(&crate::state::Event::Adding {
+            ble_id: "ble-other".to_owned(),
+            step: crate::add_flow::AddStep::Done(super::tests::TWO.to_owned()),
+        });
+    harness.run_steps(2);
+    assert_eq!(harness.state().screens.selected.as_deref(), Some(ONE));
+
+    // Once this one is done, it is the diffuser that is open.
     harness
         .state_mut()
         .screens

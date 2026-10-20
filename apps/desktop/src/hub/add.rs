@@ -1,17 +1,20 @@
 //! Adding a diffuser, as the hub runs it (see `add_flow` for the order of the steps):
 //! its info is read over Bluetooth first, and everything after that runs as one job in
-//! that diffuser's queue, so no other command to it comes between its steps.
+//! that diffuser's queue, so no other command to it comes between its steps. One add
+//! at a time for each diffuser: another asked for while one is under way is refused.
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use scent_core::{Command, DeviceInfo, Secret, Via};
 use tokio::time::{Instant, sleep};
 
-use super::{BLUETOOTH_UNANSWERED, Shared, Work, answer};
+use super::{BleError, Shared, Work, answer};
 use crate::add_flow::{self, AddRequest, AddStep, NO_BROKER_PASSWORD as NO_PASSWORD_TO_GIVE};
 use crate::mqtt::BrokerSettings;
 use crate::route::TransportPref;
-use crate::state::{AppState, Event, unix_now};
+use crate::state::{AppState, BrokerState, Event, unix_now};
 use crate::transport::{Transport, lock};
 
 /// How often the hub looks at the state while it waits for something to show up there.
@@ -23,9 +26,18 @@ const INFO_WAIT: Duration = Duration::from_secs(5);
 
 const CREDENTIALS_WAIT: Duration = Duration::from_secs(add_flow::CREDENTIALS_WAIT_S);
 
+/// What the log calls an add the hub turned down.
+const ADD: &str = "Add";
+
 const NO_INFO: &str = "The diffuser answered, but its info didn't come through, so its device ID isn't known. Try again.";
 
-const PING_REFUSED: &str = "The diffuser joined your broker, but the ping that finishes adding it couldn't be sent. Try again.";
+const LOGIN_REFUSED: &str = "The broker refused this app's login, so the diffuser would be refused too. Fix it in Settings first.";
+
+const ALREADY_ADDING: &str =
+    "This diffuser is already being added. Wait for that to finish, then try again.";
+
+/// A step the add never runs. Only a mistake in the app gets here.
+const LOST_STEP: &str = "The add stopped at a step it doesn't run. Try again.";
 
 /// The broker login the hub last started the MQTT worker with. An add hands it to the
 /// diffuser in `SAVE_MQTT` (the test broker has one shared login). Not `Debug`.
@@ -35,12 +47,29 @@ pub(super) struct Login {
     pub(super) password: Option<Secret>,
 }
 
+/// The diffusers being added, by Bluetooth ID.
+pub(super) type Adds = Arc<Mutex<HashSet<String>>>;
+
+/// An add under way. It is over when this is dropped, however the add ended: done,
+/// failed, or its job lost.
+struct InProgress {
+    adds: Adds,
+    ble_id: String,
+}
+
+impl Drop for InProgress {
+    fn drop(&mut self) {
+        lock(&self.adds).remove(&self.ble_id);
+    }
+}
+
 /// What a diffuser's add needs once its info is read: the rest runs as one job in its
 /// queue. Not `Debug`: it can hold a WiFi password.
 pub(super) struct AddJob {
     ble_id: String,
     info: DeviceInfo,
     wifi: Option<(String, Secret)>,
+    _in_progress: InProgress,
 }
 
 /// How a write to a diffuser being added ended.
@@ -87,24 +116,56 @@ impl<T: Transport> Shared<T> {
         }
     }
 
-    /// The first part of an add: there must be a broker password to hand the diffuser,
-    /// then its info is read over Bluetooth, by its Bluetooth ID. Returns its device ID
-    /// and the job that does the rest, for its queue; `None` when the add stops here,
-    /// having said why.
+    /// Marks an add of the diffuser at `ble_id` as under way, unless one already is.
+    fn start_add(&self, ble_id: &str) -> Option<InProgress> {
+        lock(&self.adds)
+            .insert(ble_id.to_owned())
+            .then(|| InProgress {
+                adds: Arc::clone(&self.adds),
+                ble_id: ble_id.to_owned(),
+            })
+    }
+
+    /// The first part of an add: no other add of it may be under way, and the broker
+    /// must have taken our login, which is what the diffuser is handed. Then its info is
+    /// read over Bluetooth, by its Bluetooth ID. Returns its device ID and the job that
+    /// does the rest, for its queue; `None` when the add stops here, having said why.
     pub(super) async fn prepare_add(&self, request: AddRequest) -> Option<(String, AddJob)> {
         let AddRequest {
             ble_id,
             label: _,
             wifi,
         } = request;
-        if lock(&self.login).password.is_none() {
-            self.adding(&ble_id, AddStep::Failed(NO_PASSWORD_TO_GIVE.to_owned()));
+        let Some(in_progress) = self.start_add(&ble_id) else {
+            // Said in the log, not as this add's step: the one under way goes on.
+            let device_id = lock(&self.state)
+                .devices
+                .values()
+                .find(|device| device.ble_id.as_deref() == Some(ble_id.as_str()))
+                .map(|device| device.id.clone());
+            self.failed(
+                device_id.as_deref(),
+                ADD.to_owned(),
+                ALREADY_ADDING.to_owned(),
+            );
+            return None;
+        };
+        let refused = matches!(lock(&self.state).broker, BrokerState::LoginRefused(_));
+        let stop = if refused {
+            Some(LOGIN_REFUSED)
+        } else if lock(&self.login).password.is_none() {
+            Some(NO_PASSWORD_TO_GIVE)
+        } else {
+            None
+        };
+        if let Some(why) = stop {
+            self.adding(&ble_id, AddStep::Failed(why.to_owned()));
             return None;
         }
         self.adding(&ble_id, AddStep::ReadInfo);
         let started = unix_now();
         if let Err(error) = answer(self.transport.ble_read_info(&ble_id)).await {
-            self.adding(&ble_id, AddStep::Failed(error));
+            self.adding(&ble_id, AddStep::Failed(error.to_string()));
             return None;
         }
         let Some(info) = self
@@ -117,7 +178,13 @@ impl<T: Transport> Shared<T> {
         match add_flow::next(&AddStep::ReadInfo, Some(&info), wifi.is_some(), None) {
             AddStep::SaveMqtt => {
                 let device_id = info.device_id.clone();
-                Some((device_id, AddJob { ble_id, info, wifi }))
+                let job = AddJob {
+                    ble_id,
+                    info,
+                    wifi,
+                    _in_progress: in_progress,
+                };
+                Some((device_id, job))
             }
             stop => {
                 self.adding(&ble_id, stop);
@@ -129,83 +196,86 @@ impl<T: Transport> Shared<T> {
     /// The rest of an add, as one job in the diffuser's queue: the writes over
     /// Bluetooth only, then the wait for it on our broker, and the ping over WiFi. A
     /// write whose result is unknown is never sent again: the flow goes on, and the
-    /// wait for `device_connected` tells whether it worked.
+    /// wait for `device_connected` tells whether it worked. Every way out says how the
+    /// add ended.
     pub(super) async fn run_add(&self, device_id: &str, job: AddJob) {
-        let AddJob { ble_id, info, wifi } = job;
+        let AddJob {
+            ble_id, info, wifi, ..
+        } = job;
         let wifi_given = wifi.is_some();
-        // When the restart was asked for: the diffuser must join the broker after it.
-        let mut restarted_at = unix_now();
+        // When the restart was asked for, by the app's clock (the diffuser must join
+        // the broker after it) and by the hub's (the 90 s count from it).
+        let mut restarted = (unix_now(), Instant::now());
         let mut step = AddStep::SaveMqtt;
         loop {
             self.adding(&ble_id, step.clone());
             let mut connected = None;
-            match &step {
+            let outcome = match &step {
                 AddStep::SaveMqtt => {
                     let (settings, password) = self.login();
-                    let Some(password) = password else {
-                        self.adding(&ble_id, AddStep::Failed(NO_PASSWORD_TO_GIVE.to_owned()));
-                        return;
+                    let written = match password {
+                        Some(password) => {
+                            let save = Command::SaveMqtt {
+                                broker: settings.url,
+                                username: settings.username,
+                                password,
+                            };
+                            self.add_write(device_id, &ble_id, save).await
+                        }
+                        None => Written::No(NO_PASSWORD_TO_GIVE.to_owned()),
                     };
-                    let since = unix_now();
-                    let save = Command::SaveMqtt {
-                        broker: settings.url,
-                        username: settings.username,
-                        password,
-                    };
-                    if let Written::No(error) = self.add_write(device_id, &ble_id, save).await {
-                        self.adding(&ble_id, AddStep::Failed(error));
-                        return;
+                    if !matches!(written, Written::No(_)) {
+                        // Always the whole wait, whatever the diffuser says meanwhile
+                        // (see `add_flow::CREDENTIALS_WAIT_S`).
+                        sleep(CREDENTIALS_WAIT).await;
                     }
-                    // Restarted either way once the wait is over.
-                    let _ = self
-                        .wait_for(CREDENTIALS_WAIT, |state| {
-                            credentials_saved(state, device_id, since)
-                        })
-                        .await;
+                    written
                 }
-                AddStep::WifiConnect => {
-                    let Some((ssid, password)) = wifi.clone() else {
-                        return;
-                    };
-                    let join = Command::WifiConnect { ssid, password };
-                    if let Written::No(error) = self.add_write(device_id, &ble_id, join).await {
-                        self.adding(&ble_id, AddStep::Failed(error));
-                        return;
+                AddStep::WifiConnect => match wifi.clone() {
+                    Some((ssid, password)) => {
+                        let join = Command::WifiConnect { ssid, password };
+                        self.add_write(device_id, &ble_id, join).await
                     }
-                }
+                    None => Written::No(LOST_STEP.to_owned()),
+                },
                 AddStep::Restart => {
-                    restarted_at = unix_now();
+                    restarted = (unix_now(), Instant::now());
                     // The reboot can cut the write short; whether it went through is
                     // what the wait finds out.
                     let _ = self
                         .add_write(device_id, &ble_id, Command::SoftRestart)
                         .await;
+                    Written::Yes
                 }
-                AddStep::WaitConnected => {
-                    match self.wait_connected(device_id, restarted_at).await {
-                        AddStep::Ping => connected = Some(device_id),
-                        failed => {
-                            self.adding(&ble_id, failed);
-                            return;
-                        }
+                AddStep::WaitConnected => match self.wait_connected(device_id, restarted).await {
+                    AddStep::Ping => {
+                        connected = Some(device_id);
+                        Written::Yes
                     }
-                }
+                    AddStep::Failed(why) => Written::No(why),
+                    _ => Written::No(LOST_STEP.to_owned()),
+                },
                 AddStep::Ping => {
+                    // Joining proved the move. If the broker won't take the ping now
+                    // (the failure is logged), the ping round registers it later.
                     let userid = Some(self.login().0.route_id);
                     let ping = Work::send(Command::Ping { userid });
-                    if !self.deliver(device_id, &ping, TransportPref::Wifi).await {
-                        self.adding(&ble_id, AddStep::Failed(PING_REFUSED.to_owned()));
-                        return;
+                    if self.deliver(device_id, &ping, TransportPref::Wifi).await {
+                        self.emit(Event::Pinged {
+                            device_id: device_id.to_owned(),
+                            at: unix_now(),
+                        });
                     }
-                    self.emit(Event::Pinged {
-                        device_id: device_id.to_owned(),
-                        at: unix_now(),
-                    });
+                    Written::Yes
                 }
-                AddStep::ReadInfo | AddStep::NeedWifi | AddStep::Done(_) | AddStep::Failed(_) => {
-                    return;
-                }
+                AddStep::Done(_) | AddStep::Failed(_) => return,
+                AddStep::ReadInfo | AddStep::NeedWifi => Written::No(LOST_STEP.to_owned()),
+            };
+            if let Written::No(why) = outcome {
+                self.adding(&ble_id, AddStep::Failed(why));
+                return;
             }
+            // Written::Unknown goes on, as Written::Yes does: never sent again.
             step = add_flow::next(&step, Some(&info), wifi_given, connected);
         }
     }
@@ -220,29 +290,28 @@ impl<T: Transport> Shared<T> {
                 Written::Yes
             }
             Err(error) => {
-                let failed = [(Via::Bluetooth, error)];
+                let failed = [(Via::Bluetooth, error.to_string())];
                 self.report_failure(device_id, &work, &failed, None);
-                let [(_, error)] = failed;
-                if error == BLUETOOTH_UNANSWERED {
-                    Written::Unknown
-                } else {
-                    Written::No(error)
+                match error {
+                    BleError::Unanswered => Written::Unknown,
+                    BleError::Failed(why) => Written::No(why),
                 }
             }
         }
     }
 
-    /// Waits for the diffuser to say it joined the broker after `since`, for up to
-    /// [`add_flow::WAIT_CONNECTED_S`]: `Ping` once it has, `Failed` when it hasn't.
-    async fn wait_connected(&self, device_id: &str, since: i64) -> AddStep {
-        let started = Instant::now();
+    /// Waits for the diffuser to say it joined the broker after the restart, for up to
+    /// [`add_flow::WAIT_CONNECTED_S`] from it: `restarted` is when it was asked for, by
+    /// the app's clock and by the hub's. `Ping` once it has, `Failed` when it hasn't.
+    async fn wait_connected(&self, device_id: &str, restarted: (i64, Instant)) -> AddStep {
+        let (since, at) = restarted;
         loop {
             let connected = lock(&self.state)
                 .devices
                 .get(device_id)
                 .and_then(|device| device.connected_at)
-                .is_some_and(|at| at > since);
-            let waited = i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX);
+                .is_some_and(|connected| connected > since);
+            let waited = i64::try_from(at.elapsed().as_secs()).unwrap_or(i64::MAX);
             match add_flow::wait_outcome(0, waited, connected) {
                 AddStep::WaitConnected => sleep(STATE_POLL).await,
                 outcome => return outcome,
@@ -262,16 +331,6 @@ fn fresh_info(state: &AppState, ble_id: &str, since: i64) -> Option<DeviceInfo> 
         .and_then(|device| device.info.clone())
 }
 
-/// Whether the diffuser said "Credentials saved" at `since` or later.
-fn credentials_saved(state: &AppState, device_id: &str, since: i64) -> Option<()> {
-    state
-        .devices
-        .get(device_id)
-        .and_then(|device| device.credentials_saved_at)
-        .is_some_and(|at| at >= since)
-        .then_some(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -284,7 +343,7 @@ mod tests {
     use crate::add_flow::{AddRequest, AddStep};
     use crate::mqtt::BrokerSettings;
     use crate::route::TransportPref;
-    use crate::state::{Event, unix_now};
+    use crate::state::{BrokerState, Event, unix_now};
     use crate::transport::lock;
 
     // --- adding a diffuser ---
@@ -490,7 +549,10 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn add_waits_for_credentials_saved_up_to_25_s() {
+    async fn add_waits_the_full_25_s_after_the_save() {
+        // Whatever the diffuser says meanwhile: the test login it makes with the new
+        // credentials (about 20 s) could otherwise announce it on the broker after an
+        // early restart, as though the restart had worked.
         let rig = || {
             let rig = Rig::new()
                 .device(ONE, Some("ble-1"))
@@ -503,12 +565,11 @@ mod tests {
             when(rig, "ble ble-1 SECRET_COMMAND") - when(rig, "ble ble-1 SAVE_MQTT done")
         };
 
-        // Nothing heard: the restart goes 25 s after the save.
         let quiet = rig();
         add(&quiet, request("ble-1", None)).await;
         assert_eq!(saved_to_restart(&quiet), secs(25));
 
-        // "Credentials saved" over Bluetooth after 4 s: the restart follows.
+        // "Credentials saved" over Bluetooth after 4 s: still 25 s.
         let over_ble = rig();
         over_ble.apply_later(
             secs(4),
@@ -519,11 +580,7 @@ mod tests {
             },
         );
         add(&over_ble, request("ble-1", None)).await;
-        let waited = saved_to_restart(&over_ble);
-        assert!(
-            waited >= secs(4) && waited <= Duration::from_millis(4_250),
-            "{waited:?}"
-        );
+        assert_eq!(saved_to_restart(&over_ble), secs(25));
 
         // As an acknowledgement on the broker after 6 s: the same.
         let over_wifi = rig();
@@ -540,21 +597,7 @@ mod tests {
             },
         );
         add(&over_wifi, request("ble-1", None)).await;
-        let waited = saved_to_restart(&over_wifi);
-        assert!(
-            waited >= secs(6) && waited <= Duration::from_millis(6_250),
-            "{waited:?}"
-        );
-
-        // One from an earlier save is not this save's.
-        let earlier = rig();
-        lock(&earlier.state)
-            .devices
-            .get_mut(ONE)
-            .unwrap()
-            .credentials_saved_at = Some(unix_now() - 100);
-        add(&earlier, request("ble-1", None)).await;
-        assert_eq!(saved_to_restart(&earlier), secs(25));
+        assert_eq!(saved_to_restart(&over_wifi), secs(25));
     }
 
     #[tokio::test(start_paused = true)]
@@ -702,8 +745,9 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_ping_the_broker_will_not_take_fails_the_add() {
-        // The broker went down after the diffuser joined it.
+    async fn a_ping_the_broker_will_not_take_still_ends_done() {
+        // The broker went down after the diffuser joined it. Joining proved the move,
+        // and the ping round registers it once the broker is back.
         let rig = Rig::new()
             .device(ONE, Some("ble-1"))
             .info_for("ble-1", info(ONE, true))
@@ -713,11 +757,180 @@ mod tests {
         add(&rig, request("ble-1", None)).await;
 
         let events = rig.events();
-        let Some(AddStep::Failed(why)) = steps(&events).last().cloned() else {
+        assert_eq!(steps(&events).last(), Some(&AddStep::Done(ONE.to_owned())));
+        // The ping that didn't go is logged, and the diffuser doesn't count as pinged.
+        assert!(failed(&events).iter().any(|(_, what, _)| what == "PING"));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::Pinged { .. }))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_for_it_to_join_counts_from_the_restart() {
+        // The restart's write is never answered: the backstop takes 30 s of the 90.
+        let rig = Rig::new()
+            .device(ONE, Some("ble-1"))
+            .info_for("ble-1", info(ONE, true))
+            .logged_in("broker-secret");
+        rig.broker_up();
+        rig.fake().script_ble([
+            Ble::After(Duration::ZERO, Ok(())),
+            Ble::After(Duration::ZERO, Ok(())),
+            Ble::Never,
+        ]);
+
+        add(&rig, request("ble-1", None)).await;
+
+        let restart = when(&rig, "ble ble-1 SECRET_COMMAND");
+        assert_eq!(Instant::now() - rig.fake().began - restart, secs(90));
+        let events = rig.events();
+        assert!(
+            matches!(steps(&events).last(), Some(AddStep::Failed(_))),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn add_is_refused_while_the_broker_refuses_our_login() {
+        // The diffuser would be handed a login the broker turns down, and be stranded.
+        let rig = Rig::new()
+            .info_for("ble-1", info(ONE, true))
+            .logged_in("broker-secret");
+        lock(&rig.state).broker = BrokerState::LoginRefused("Not authorized.".to_owned());
+
+        add(&rig, request("ble-1", None)).await;
+
+        assert!(rig.fake().labels().is_empty(), "Bluetooth was not touched");
+        let events = rig.events();
+        let [
+            Event::Adding {
+                step: AddStep::Failed(why),
+                ..
+            },
+        ] = &events[..]
+        else {
             panic!("{events:?}");
         };
-        assert!(why.contains("ping"), "{why}");
-        assert!(failed(&events).iter().any(|(_, what, _)| what == "PING"));
+        assert!(why.contains("refused") && why.contains("Settings"), "{why}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_second_add_for_a_diffuser_being_added_is_refused() {
+        let rig = Rig::new()
+            .device(ONE, Some("ble-1"))
+            .info_for("ble-1", info(ONE, true))
+            .logged_in("broker-secret");
+        rig.broker_up();
+        rig.apply_later(secs(40), device_connected(ONE, soon()));
+        let hub = rig.serve();
+        let count = |label: &str| {
+            rig.fake()
+                .labels()
+                .iter()
+                .filter(|seen| *seen == label)
+                .count()
+        };
+
+        hub.send(UiCommand::Add(request("ble-1", None))).unwrap();
+        // While the first is waiting after the save, and then while it waits for the
+        // diffuser to join.
+        tokio::time::sleep(secs(5)).await;
+        hub.send(UiCommand::Add(request("ble-1", None))).unwrap();
+        tokio::time::sleep(secs(30)).await;
+        hub.send(UiCommand::Add(request("ble-1", None))).unwrap();
+        tokio::time::sleep(secs(30)).await;
+
+        assert_eq!(count("ble ble-1 read info"), 1);
+        assert_eq!(count("ble ble-1 SAVE_MQTT"), 1);
+        assert_eq!(count("ble ble-1 SECRET_COMMAND"), 1);
+        let events = rig.events();
+        let refused: Vec<_> = failed(&events)
+            .into_iter()
+            .filter(|(_, what, _)| what == "Add")
+            .collect();
+        assert_eq!(refused.len(), 2, "{events:?}");
+        assert!(refused[0].2.contains("already being added"), "{refused:?}");
+        // The first carried on, untouched.
+        assert_eq!(steps(&events).last(), Some(&AddStep::Done(ONE.to_owned())));
+
+        // Once it is over, it can be added again.
+        hub.send(UiCommand::Add(request("ble-1", None))).unwrap();
+        tokio::time::sleep(secs(1)).await;
+        assert_eq!(count("ble ble-1 read info"), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wifi_connect_that_cannot_reach_the_diffuser_fails_the_add() {
+        let rig = Rig::new()
+            .device(ONE, Some("ble-1"))
+            .info_for("ble-1", info(ONE, false))
+            .logged_in("broker-secret");
+        rig.broker_up();
+        rig.fake().script_ble([
+            Ble::After(Duration::ZERO, Ok(())),
+            Ble::After(Duration::ZERO, Ok(())),
+            Ble::After(secs(13), Err(CONNECT_ERROR.to_owned())),
+        ]);
+
+        add(&rig, request("ble-1", Some(("ExampleWiFi", "hunter2")))).await;
+
+        assert_eq!(
+            steps(&rig.events()),
+            [
+                AddStep::ReadInfo,
+                AddStep::SaveMqtt,
+                AddStep::WifiConnect,
+                AddStep::Failed(CONNECT_ERROR.to_owned())
+            ]
+        );
+        // Not restarted, and nothing went over WiFi.
+        let labels = rig.fake().labels();
+        assert!(!labels.iter().any(|label| label.contains("SECRET_COMMAND")));
+        assert!(!labels.iter().any(|label| label.starts_with("wifi")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wifi_connect_whose_answer_never_comes_goes_on_to_the_restart() {
+        let rig = Rig::new()
+            .device(ONE, Some("ble-1"))
+            .info_for("ble-1", info(ONE, false))
+            .logged_in("broker-secret");
+        rig.broker_up();
+        rig.fake().script_ble([
+            Ble::After(Duration::ZERO, Ok(())),
+            Ble::After(Duration::ZERO, Ok(())),
+            Ble::Never,
+        ]);
+        rig.apply_later(secs(90), device_connected(ONE, soon()));
+
+        add(&rig, request("ble-1", Some(("ExampleWiFi", "hunter2")))).await;
+
+        // 25 s after the save, then 30 s for the backstop: sent once, never again.
+        assert_eq!(when(&rig, "ble ble-1 SECRET_COMMAND"), secs(55));
+        let joins = lock(&rig.fake().ble_commands)
+            .iter()
+            .filter(|(_, cmd)| matches!(cmd, Command::WifiConnect { .. }))
+            .count();
+        assert_eq!(joins, 1);
+        assert_eq!(
+            steps(&rig.events()).last(),
+            Some(&AddStep::Done(ONE.to_owned()))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn info_that_reaches_the_state_a_moment_after_the_read_is_used() {
+        // The screens fold the info in at their next frame, after the reply.
+        let rig = Rig::new()
+            .info_for("ble-1", info(ONE, false))
+            .info_after(secs(1))
+            .logged_in("broker-secret");
+
+        add(&rig, request("ble-1", None)).await;
+
+        assert_eq!(steps(&rig.events()), [AddStep::ReadInfo, AddStep::NeedWifi]);
     }
 
     #[tokio::test(start_paused = true)]

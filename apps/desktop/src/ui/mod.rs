@@ -106,15 +106,18 @@ impl Screens {
     }
 
     /// Tells the screens about an event before it is folded into the state, for what
-    /// only they care about (a scan has ended; a command has got through; a diffuser
-    /// was added, and is opened).
+    /// only they care about (a scan has ended; a command has got through; the diffuser
+    /// the add sheet is for was added, and is opened).
     pub fn on_event(&mut self, event: &Event) {
         self.list.on_event(event);
         self.panel.on_event(event);
+        // Only the add this sheet is for: another one finishing doesn't take the
+        // selection.
         if let Event::Adding {
+            ble_id,
             step: AddStep::Done(device_id),
-            ..
         } = event
+            && self.add_sheet.is_for(ble_id)
         {
             self.selected = Some(device_id.clone());
         }
