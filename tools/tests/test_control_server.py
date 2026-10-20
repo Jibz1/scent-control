@@ -3,8 +3,8 @@ from control_server import build_publish, device_id_from_name, parse_device_mess
 from safety import RefusedCommand
 
 def test_device_id_from_name():
-    assert device_id_from_name("Scentiment-D B n 48F6EE9B8FB0") == "48F6EE9B8FB0"
-    assert device_id_from_name("Scentiment-H B n f85b1b4ba63c") == "F85B1B4BA63C"
+    assert device_id_from_name("Scentiment-D B n A1B2C3D4E5F6") == "A1B2C3D4E5F6"
+    assert device_id_from_name("Scentiment-H B n 0a1b2c3d4e5f") == "0A1B2C3D4E5F"
     assert device_id_from_name("Scentiment-D B") is None
     assert device_id_from_name(None) is None
 
