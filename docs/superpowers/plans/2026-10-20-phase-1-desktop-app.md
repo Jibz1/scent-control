@@ -654,7 +654,7 @@ capitalization, which follows the spec section.
   - `theme::status_color(&Palette, Online) -> Color32`: Answering is green, waiting is
     orange, everything else is gray.
   - Widgets that Task 10's sheets will reuse: `switch(ui, &mut bool, label)`,
-    `segmented(ui, &mut T, &[(T, &str)])`, `grouped(ui, title, |ui| …)`,
+    `segmented(ui, &mut T, &[(T, &str)], label)` (the label names its accessibility group), `grouped(ui, title, |ui| …)`,
     `row(ui, label, |ui| …)`, `notice(ui, kind, text)`, `default_button(ui, text)` and
     `plain_button(ui, text)`.
 
@@ -724,6 +724,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `BleHandle`, `MqttHandle`, `Event`, `scent_core::{Command, Profile, Entry, AlwaysOn, trial_entry, local_weekday_and_time}`
+- Consumes (as built in Task 9a, `apps/desktop/src/ui/widgets.rs`; see its module index): `switch(ui, &mut bool, label)`, `segmented(ui, &mut T, &[(T, &str)], label) -> Choice<T>`, `grouped(ui, title, |ui| …)`, `grouped_with(ui, title, |ui| accessory, |ui| rows)`, `row(ui, label, |ui| …)`, `secondary(ui, text)`, `footnote(ui, text)`, `notice(ui, NoticeKind, text)` / `notice_with`, `default_button(ui, text)`, `plain_button(ui, text)`; tokens in `ui/theme.rs`; the clock helpers in `ui/clock.rs` (Mac's current UTC offset).
 - Produces:
   - `struct AddRequest { ble_id: String, label: String, wifi: Option<(String, Secret)> }`
   - `enum AddStep { ReadInfo, NeedWifi, SaveMqtt, WifiConnect, Restart, WaitConnected, Ping, Done(String /*deviceId*/), Failed(String) }`
