@@ -57,6 +57,8 @@ def parse_device_message(topic: str, payload: bytes) -> dict:
         message["payload"] = inner
         message["deviceId"] = inner.get("deviceId") or message["deviceId"]
         data = inner.get("data")
+        if isinstance(data, dict):  # update_status over MQTT: the array arrives as an object
+            data = json.dumps(data)
         if isinstance(data, str):
             parsed = parse_notification(data.encode("utf-8"))
             if parsed["kind"] != "unknown":
@@ -119,6 +121,13 @@ class Hub:
         body = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         self.client.publish(topic, body, qos=1).wait_for_publish(10)
         self.log.tx(body, f"mqtt:{topic}")
+
+    def greet(self) -> None:
+        """Ask every known diffuser to answer, so the page shows which ones are on this broker."""
+        for device_id in list(self.devices):
+            for action, payload in (("PING", {"userid": self.route_id}), ("GET_STATUS", {})):
+                topic, envelope = build_publish({"deviceId": device_id, "action": action, "payload": payload})
+                self.publish(topic, envelope)
 
     def _on_message(self, _client, _userdata, message) -> None:
         event = parse_device_message(message.topic, message.payload)
@@ -239,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {err}", file=sys.stderr)
         return 1
     hub = Hub(client, CaptureLog(captures_dir() / f"control-{stamp()}.jsonl"), known_devices(DEFAULT_CONFIG), args.route_id)
+    hub.greet()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(hub))
     print(f"test bench at http://127.0.0.1:{args.port}  (Ctrl-C to stop)", flush=True)
     try:

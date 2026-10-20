@@ -70,6 +70,9 @@ input, select { border: 1px solid var(--line); background: var(--surface); borde
 .readout div { display: grid; }
 .readout dt { color: var(--ink-soft); font-size: 0.75rem; }
 .readout dd { margin: 0; font-weight: 600; }
+.readout small { display: block; font-weight: 400; color: var(--amber); font-size: 0.72rem; }
+.offline { margin: 0; padding: 0.4rem 0.6rem; border-radius: 6px; background: var(--amber-wash); font-size: 0.82rem; }
+.offline[hidden] { display: none; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .row > .name { width: 5.5rem; color: var(--ink-soft); font-size: 0.85rem; }
 .swatch { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); }
@@ -170,13 +173,15 @@ const COLORS = [
   ["Blue", [0, 0, 255]], ["Cyan", [50, 209, 254]], ["Red", [255, 0, 0]], ["Green", [0, 255, 0]],
   ["Warm 1", [255, 151, 60]], ["Warm 2", [255, 175, 90]], ["Warm 3", [255, 190, 110]],
 ];
-const state = { devices: {}, routeId: "route-test-1", selected: null, entries: [], events: [] };
+const state = { devices: {}, routeId: "route-test-1", selected: null, entries: [], events: [], sent: {} };
 const $ = (id) => document.getElementById(id);
 
 function label(deviceId) {
   return (state.devices[deviceId] && state.devices[deviceId].label) || deviceId || "Broker";
 }
 function time(ts) { return ts ? ts.slice(11, 19) : ""; }
+// Local time as "YYYY-MM-DDTHH:MM:SS", the same format the helper uses.
+function localIso() { return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19); }
 
 async function publish(deviceId, action, payload) {
   const response = await fetch("/api/publish", {
@@ -186,8 +191,21 @@ async function publish(deviceId, action, payload) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    addNote(body.refused ? "refused" : "error", deviceId, action, body.refused || body.error || `HTTP ${response.status}`);
+    return addNote(body.refused ? "refused" : "error", deviceId, action, body.refused || body.error || `HTTP ${response.status}`);
   }
+  // Show what was sent until the diffuser reports otherwise; over WiFi it often says nothing.
+  const sent = state.sent[deviceId] || (state.sent[deviceId] = {});
+  if (action === "TURN_ON") sent.power = payload.on;
+  if (action === "SET_LEVEL") sent.intensity = payload.intensity;
+  sent.at = localIso();
+  if (cards[deviceId]) updateDevice(deviceId);
+}
+
+function reading(confirmed, sentValue, sentAt, lastSeen, format) {
+  if (sentValue != null && (!lastSeen || lastSeen < sentAt)) {
+    return `${format(sentValue)} <small>sent, waiting for the diffuser</small>`;
+  }
+  return confirmed == null ? "?" : format(confirmed);
 }
 
 // ---- devices ----
@@ -195,7 +213,7 @@ function powerSource(status) {
   if (status.charging === 2 || status.battery === 200) return "plugged in";
   if (status.charging === 1) return "charging";
   if (status.charging === 0) return status.battery != null ? `battery ${status.battery}%` : "battery";
-  return "unknown";
+  return "not reported yet";
 }
 
 const cards = {};
@@ -219,15 +237,18 @@ function updateDevice(id) {
   const s = d.status || {};
   const info = d.info || {};
   const el = cards[id];
+  const sent = state.sent[id] || {};
   el.className = "device" + (state.selected === id ? " selected" : "");
+  el.querySelector(".offline").hidden = !!d.lastSeen;
   el.querySelector(".meta").innerHTML = `${escape(info.model || "")} ${info.fw ? "firmware " + escape(info.fw) : ""}<br>
     ${d.lastSeen ? "last heard " + time(d.lastSeen) : "not heard from yet"}`;
   el.querySelector(".readout").innerHTML = `
-    <div><dt>Power</dt><dd>${s.power == null ? "?" : s.power ? "On" : "Off"}</dd></div>
-    <div><dt>Intensity</dt><dd>${s.intensity == null ? "?" : s.intensity || "–"}</dd></div>
+    <div><dt>Power</dt><dd>${reading(s.power, sent.power, sent.at, d.lastSeen, (v) => (v ? "On" : "Off"))}</dd></div>
+    <div><dt>Intensity</dt><dd>${reading(s.intensity, sent.intensity, sent.at, d.lastSeen, (v) => v || "–")}</dd></div>
     <div><dt>Power source</dt><dd>${powerSource(s)}</dd></div>
     <div><dt>WiFi signal</dt><dd>${d.rssi == null ? "?" : d.rssi + " dBm"}</dd></div>`;
-  for (const b of el.querySelectorAll("[data-level]")) b.setAttribute("aria-pressed", String(s.intensity === Number(b.dataset.level)));
+  const shown = sent.intensity != null && (!d.lastSeen || d.lastSeen < sent.at) ? sent.intensity : s.intensity;
+  for (const b of el.querySelectorAll("[data-level]")) b.setAttribute("aria-pressed", String(shown === Number(b.dataset.level)));
 }
 
 function renderDevice(id) {
@@ -238,6 +259,7 @@ function renderDevice(id) {
       <h3>${escape(d.label)}</h3>
       <div class="meta"></div>
     </header>
+    <p class="offline">Not heard from on the test broker. Commands go nowhere until this diffuser is pointed here with <code>session.py save-mqtt</code>.</p>
     <dl class="readout"></dl>
     <div class="row"><span class="name">Power</span>
       <button type="button" data-act="on">Turn on</button>
@@ -372,7 +394,7 @@ function loadReported() {
 
 // ---- conversation ----
 function addNote(kind, deviceId, action, text) {
-  state.events.push({ kind, deviceId, action, note: text, ts: new Date().toISOString().replace("Z", "") , local: true });
+  state.events.push({ kind, deviceId, action, note: text, ts: localIso(), local: true });
   renderLog(true);
 }
 

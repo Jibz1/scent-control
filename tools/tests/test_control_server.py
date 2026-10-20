@@ -44,3 +44,9 @@ def test_build_publish_rejects_bad_device_ids():
     for bad in ("", "#", "TESTDEVICE01/../x", "abc"):
         with pytest.raises(ValueError):
             build_publish({"deviceId": bad, "action": "PING", "payload": None})
+
+def test_parse_device_message_reads_status_array_given_as_an_object():
+    # Firmware 2.30 over MQTT sends the array as an object, not a string (observed 2026-10-20).
+    raw = b'{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-66}}'
+    m = parse_device_message("scentiment-mqtt-prod/user/route-test-1", raw)
+    assert m["valid_json"] and m["status"]["power"] == 1 and m["status"]["intensity"] == 2 and m["payload"]["rssi"] == -66
