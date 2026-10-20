@@ -19,8 +19,9 @@ fn entry(settings: &BrokerSettings) -> Result<Entry, String> {
     Entry::new(SERVICE, &account(settings)?).map_err(|error| format!("Keychain: {error}"))
 }
 
-/// The saved broker password, or `None` when there isn't one (or the Keychain can't
-/// be read; that case is also reported on stderr).
+/// The saved broker password. `None` means one of two things the caller can't tell
+/// apart: nothing is saved, or the Keychain couldn't be read (a read error is also
+/// reported on stderr). So a prompt for the password should mention the Keychain.
 pub fn broker_password(settings: &BrokerSettings) -> Option<Secret> {
     match entry(settings).ok()?.get_password() {
         Ok(password) => Some(Secret::new(password)),

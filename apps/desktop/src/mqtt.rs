@@ -144,6 +144,12 @@ pub struct MqttHandle {
 }
 
 impl MqttHandle {
+    /// Whether the broker is connected right now: true from the ConnAck until the
+    /// connection drops, and never true for a worker that did not start.
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+
     /// Queues `cmd` for the diffuser, as a QoS 1 message on its device topic, and
     /// returns without waiting for the network. It refuses a bad device ID, and
     /// refuses while the broker isn't connected so that nothing waits in the queue
@@ -397,6 +403,14 @@ mod tests {
             assert!(error.contains("device ID"), "{bad:?}: {error}");
         }
         assert_eq!(handle.send("TESTDEVICE01", &Command::GetStatus), Ok(()));
+    }
+
+    #[test]
+    fn is_connected_follows_the_connection_flag() {
+        let (up, _eventloop) = handle(true);
+        assert!(up.is_connected());
+        let (down, _eventloop) = handle(false);
+        assert!(!down.is_connected());
     }
 
     #[test]

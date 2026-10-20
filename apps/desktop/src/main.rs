@@ -16,15 +16,24 @@ mod app;
 #[allow(dead_code)]
 mod state;
 
-// The hub (Task 8) is what starts the Bluetooth worker.
+// The screens (Task 9) start the hub and read the broker password from the Keychain;
+// the hub starts the two workers and decides the route. Until then the binary on its
+// own would flag all of these as dead code.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 mod ble;
 
-// The hub (Task 8) is what starts the MQTT worker and reads the broker password.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod hub;
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 mod mqtt;
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod route;
 
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
