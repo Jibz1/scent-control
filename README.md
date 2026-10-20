@@ -35,6 +35,22 @@ bunx turbo run build test lint fmt:check
 That one command builds, tests, lints and format-checks every package, including the
 Python tools' tests (it creates `tools/.venv` on first run).
 
+## Desktop app
+
+`apps/desktop` is a native macOS app (Rust, eframe/egui). It is macOS only.
+
+Build and launch it as an app bundle:
+
+```sh
+scripts/bundle-macos.sh
+open "target/Scent Control.app"
+```
+
+Always launch it with `open`, never by running the binary directly. macOS kills any
+process that uses Bluetooth unless the app responsible for it declares a Bluetooth
+usage description in its Info.plist, and only the bundle has one. The script builds a
+release binary, assembles `target/Scent Control.app` and signs it ad hoc.
+
 ## Docs
 
 - [docs/findings.md](docs/findings.md): what we know about the devices and their

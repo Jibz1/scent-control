@@ -6,4 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[[bin]]
+name = "scent-control"
+path = "src/main.rs"
+
 [dependencies]
+eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+scent-core = { path = "../../packages/scent-core" }
