@@ -6,9 +6,9 @@
 //! They are never copied into the repo or the bundle; without them the app falls back
 //! to egui's fonts.
 
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use eframe::egui::style::{Selection, WidgetVisuals, Widgets};
 use eframe::egui::{
@@ -49,18 +49,22 @@ const TEXT_OPTICAL_SIZE: f32 = 17.0;
 const HEADLINE: &str = "Headline";
 
 /// The main window's size when it first opens, and the least it can be resized to.
-pub const WINDOW_SIZE: [f32; 2] = [1100.0, 780.0];
+pub const WINDOW_SIZE: [f32; 2] = [1100.0, 720.0];
 pub const MIN_WINDOW_SIZE: [f32; 2] = [900.0, 600.0];
 
 /// The layout grid. Spacing is a multiple of it.
 pub const GRID: f32 = 8.0;
 /// The margin around the content of the sidebar, the detail pane and the settings.
 pub const MARGIN: f32 = 20.0;
-/// The room at the top of the window for the traffic lights, which sit over the
-/// sidebar, and the height of the toolbar along the top of the detail pane.
-pub const TOOLBAR_HEIGHT: f32 = 38.0;
+/// The toolbar along the top of the detail pane: as tall as the title bar, so that its
+/// controls are centered on the traffic lights' line. With a full-size content view the
+/// traffic lights stay where AppKit puts them in a standard 28 pt title bar (winit only
+/// hides or disables them, never moves them), centered about 14 pt from the top.
+pub const TOOLBAR_HEIGHT: f32 = 28.0;
+/// The room at the top of the sidebar for the traffic lights, which sit over it.
+pub const SIDEBAR_TOP_INSET: f32 = 40.0;
 /// The width of the sidebar when the window first opens.
-pub const SIDEBAR_WIDTH: f32 = 240.0;
+pub const SIDEBAR_WIDTH: f32 = 260.0;
 
 /// Corner radii: grouped boxes, notices, and controls (push buttons, the sidebar's
 /// selection, segmented controls).
@@ -222,24 +226,43 @@ fn instance(weight: f32, optical_size: Option<f32>) -> FontTweak {
 }
 
 /// SF Pro twice over, from the bytes of `SFNS.ttf`: the regular instance and the
-/// semibold one, both at the optical size for text.
-fn sf_pro(bytes: Vec<u8>) -> [(&'static str, FontData); 2] {
+/// semibold one, both at the optical size for text. They share the one copy of the
+/// bytes.
+fn sf_pro(bytes: &'static [u8]) -> [(&'static str, FontData); 2] {
     let at = |weight| instance(weight, Some(TEXT_OPTICAL_SIZE));
     [
         (
             SF_PRO,
-            FontData::from_owned(bytes.clone()).tweak(at(REGULAR_WEIGHT)),
+            FontData::from_static(bytes).tweak(at(REGULAR_WEIGHT)),
         ),
         (
             SF_PRO_SEMIBOLD,
-            FontData::from_owned(bytes).tweak(at(SEMIBOLD_WEIGHT)),
+            FontData::from_static(bytes).tweak(at(SEMIBOLD_WEIGHT)),
         ),
     ]
 }
 
 /// SF Mono at its regular weight, from the bytes of `SFNSMono.ttf`.
-fn sf_mono(bytes: Vec<u8>) -> FontData {
-    FontData::from_owned(bytes).tweak(instance(REGULAR_WEIGHT, None))
+fn sf_mono(bytes: &'static [u8]) -> FontData {
+    FontData::from_static(bytes).tweak(instance(REGULAR_WEIGHT, None))
+}
+
+/// The bytes of the font file at `path`, read once and then kept for as long as the app
+/// runs, as the fonts made from them are. Two egui fonts can then share one copy (SF
+/// Pro is 8 MB), and installing the theme again reads nothing. `None` when the file
+/// can't be read.
+fn font_file(path: &Path) -> Option<&'static [u8]> {
+    static READ: OnceLock<Mutex<HashMap<PathBuf, &'static [u8]>>> = OnceLock::new();
+    let mut read = READ
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(bytes) = read.get(path) {
+        return Some(bytes);
+    }
+    let bytes: &'static [u8] = Vec::leak(std::fs::read(path).ok()?);
+    read.insert(path.to_owned(), bytes);
+    Some(bytes)
 }
 
 /// egui's fonts with SF Pro and SF Mono from `fonts_dir` put first, and egui's own
@@ -248,7 +271,7 @@ fn sf_mono(bytes: Vec<u8>) -> FontData {
 pub fn font_definitions(fonts_dir: &Path) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let mut semibold_fonts = fonts.families[&FontFamily::Proportional].clone();
-    if let Ok(bytes) = std::fs::read(fonts_dir.join(SF_PRO_FILE)) {
+    if let Some(bytes) = font_file(&fonts_dir.join(SF_PRO_FILE)) {
         let [(regular_name, regular), (semibold_name, semibold)] = sf_pro(bytes);
         fonts
             .font_data
@@ -260,7 +283,7 @@ pub fn font_definitions(fonts_dir: &Path) -> FontDefinitions {
         semibold_fonts.insert(0, semibold_name.to_owned());
     }
     fonts.families.insert(semibold(), semibold_fonts);
-    if let Ok(bytes) = std::fs::read(fonts_dir.join(SF_MONO_FILE)) {
+    if let Some(bytes) = font_file(&fonts_dir.join(SF_MONO_FILE)) {
         fonts
             .font_data
             .insert(SF_MONO.to_owned(), Arc::new(sf_mono(bytes)));
@@ -499,16 +522,31 @@ mod tests {
     #[test]
     fn semibold_uses_weight_590() {
         // The bytes are not looked at until a font is drawn with, so any will do here.
-        let [(regular_name, regular), (semibold_name, semibold)] = sf_pro(vec![0; 4]);
+        let [(regular_name, regular), (semibold_name, semibold)] = sf_pro(&[0; 4]);
         assert_eq!(coord(&regular, b"wght"), Some(400.0));
         assert_eq!(coord(&semibold, b"wght"), Some(590.0));
         assert_ne!(regular_name, semibold_name);
         // Both at the optical size for text; SF Mono at its regular weight.
         assert_eq!(coord(&regular, b"opsz"), Some(17.0));
         assert_eq!(coord(&semibold, b"opsz"), Some(17.0));
-        let mono = sf_mono(vec![0; 4]);
+        // The two SF Pro instances are one copy of the font.
+        assert!(std::ptr::eq(regular.font.as_ptr(), semibold.font.as_ptr()));
+        let mono = sf_mono(&[0; 4]);
         assert_eq!(coord(&mono, b"wght"), Some(400.0));
         assert_eq!(coord(&mono, b"opsz"), None);
+    }
+
+    #[test]
+    fn a_font_file_is_read_once() {
+        let dir = EmptyDir::new("scent-one-font");
+        let path = dir.0.join("Font.ttf");
+        std::fs::write(&path, b"font").unwrap();
+        let first = font_file(&path).unwrap();
+        std::fs::write(&path, b"changed").unwrap();
+        let again = font_file(&path).unwrap();
+        assert!(std::ptr::eq(first, again));
+        assert_eq!(again, b"font");
+        assert!(font_file(&dir.0.join("Missing.ttf")).is_none());
     }
 
     #[test]

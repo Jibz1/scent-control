@@ -7,7 +7,7 @@ use eframe::egui::{self, Key};
 
 use super::Screens;
 use super::tests::{NOW, ONE, state};
-use super::theme;
+use super::{log_view, theme};
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
 use crate::state::{AppState, BrokerState};
@@ -132,4 +132,13 @@ fn no_password_saved_is_a_notice_with_a_way_to_settings() {
     harness.get_by_label("Open Settings").click();
     harness.run_steps(2);
     assert!(harness.state().screens.settings.is_open());
+}
+
+#[test]
+fn the_log_pane_keeps_its_height_with_nothing_in_it() {
+    let mut harness = harness(AppState::default());
+    harness.run_steps(3);
+    let log = egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new("log"));
+    let height = log.expect("the log pane is shown").size().y;
+    assert!((height - log_view::OPEN_HEIGHT).abs() < 1.0, "{height}");
 }

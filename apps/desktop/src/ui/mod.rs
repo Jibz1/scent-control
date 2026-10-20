@@ -30,9 +30,11 @@ use self::device_panel::DevicePanel;
 use self::format::broker_text;
 use self::log_view::LogView;
 use self::settings::{SettingsWindow, Submitted};
-use self::theme::{GRID, MARGIN, Palette, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, broker_color};
+use self::theme::{
+    GRID, MARGIN, Palette, SIDEBAR_TOP_INSET, SIDEBAR_WIDTH, TOOLBAR_HEIGHT, broker_color,
+};
 use self::widgets::{
-    NoticeKind, gear_button, notice_with, plain_button, status_dot, toolbar_button,
+    NoticeKind, gear_button, hairline, notice_with, plain_button, status_dot, toolbar_button,
 };
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
@@ -125,31 +127,38 @@ impl Screens {
         drag_window(ui, band);
 
         // The sidebar next, so that it runs the height of the window, under the traffic
-        // lights.
+        // lights. The panes draw no separator lines of their own (egui leaves a gap for
+        // them that nothing fills); the hairlines between them are drawn at the end.
         let sidebar = Frame::new().fill(palette.sidebar).inner_margin(Margin {
-            left: 10,
-            right: 10,
-            top: TOOLBAR_HEIGHT as i8,
+            left: GRID as i8,
+            right: GRID as i8,
+            top: SIDEBAR_TOP_INSET as i8,
             bottom: 0,
         });
-        egui::Panel::left("sidebar")
+        let sidebar = egui::Panel::left("sidebar")
             .default_size(SIDEBAR_WIDTH)
             .size_range(200.0..=360.0)
+            .show_separator_line(false)
             .frame(sidebar)
             .show(ui, |ui| {
                 let commands = self.list.show(ui, state, &mut self.selected, now);
                 requests.commands.extend(commands);
-            });
+            })
+            .response
+            .rect;
 
         let toolbar = Frame::new()
             .fill(palette.window)
             .inner_margin(Margin::symmetric(MARGIN as i8, 0));
-        egui::Panel::top("toolbar")
+        let toolbar = egui::Panel::top("toolbar")
             .exact_size(TOOLBAR_HEIGHT)
+            .show_separator_line(false)
             .frame(toolbar)
-            .show(ui, |ui| self.toolbar(ui, state, broker));
+            .show(ui, |ui| self.toolbar(ui, state, broker))
+            .response
+            .rect;
 
-        self.log.show(ui, state, self.selected.as_deref(), now);
+        let log = self.log.show(ui, state, self.selected.as_deref(), now);
 
         let detail = Frame::new()
             .fill(palette.window)
@@ -180,6 +189,15 @@ impl Screens {
                 });
         });
 
+        // The hairlines between the panes, over their edges.
+        let painter = ui.painter();
+        let separator = egui::Stroke::new(hairline(ui), palette.separator);
+        painter.vline(sidebar.right(), sidebar.y_range(), separator);
+        painter.hline(toolbar.x_range(), toolbar.bottom(), separator);
+        if let Some(log) = log {
+            painter.hline(log.x_range(), log.top(), separator);
+        }
+
         requests.settings = self.settings.show(ui.ctx(), &state.broker);
         requests
     }
@@ -204,7 +222,6 @@ impl Screens {
                 self.log.toggle();
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
                 let text = broker_text(&state.broker);
                 status_dot(ui, broker_color(&palette, &state.broker), &text);
                 ui.add(
@@ -252,7 +269,8 @@ impl Screens {
 /// as a title bar does: the window's content runs under the title bar, so the title bar
 /// itself can't. Add it before the controls in `rect`, which then take the clicks.
 fn drag_window(ui: &mut egui::Ui, rect: egui::Rect) {
-    let response = ui.interact(rect, Id::new("title_bar"), Sense::click_and_drag());
+    // Clicks and drags, but no stop for the Tab key: there is nothing here to focus.
+    let response = ui.interact(rect, Id::new("title_bar"), Sense::CLICK | Sense::DRAG);
     if response.double_clicked() {
         let zoomed = ui.input(|input| input.viewport().maximized.unwrap_or(false));
         ui.ctx()

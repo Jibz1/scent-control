@@ -1,20 +1,22 @@
 //! The open diffuser: whether it answers, what it last reported, what its schedule
 //! says it should be doing, and the controls. As in System Settings, the readings and
-//! the controls are each a grouped box, "Status" and "Controls".
+//! the controls are each a grouped box, "Status" (with Read Status at the end of its
+//! heading) and "Controls".
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
-use scent_core::{Command, Level, expected_state};
+use scent_core::{Command, Level, Via, expected_state};
 
 use super::format::{
     expected_text, intensity, model_text, on_off, online_text, pending_text, power_source,
     reading_text, signal,
 };
-use super::theme::{GRID, Palette, status_color, subheadline, title1};
+use super::theme::{GRID, Palette, status_color, title1};
 use super::widgets::{
-    NoticeKind, grouped, notice, plain_button, row, segmented, status_dot, switch, value_with_note,
+    NoticeKind, footnote, grouped, grouped_with, notice, plain_button, row, secondary, segmented,
+    status_dot, switch, value_with_note,
 };
 use crate::hub::{UiCommand, on_our_broker};
 use crate::route::TransportPref;
@@ -174,19 +176,52 @@ impl DevicePanel {
                 ..
             } => {
                 self.sending.remove(device_id);
-                if let Some(asked) = self.asked.get_mut(device_id) {
-                    asked.power = asked.power.filter(|_| power.is_none());
-                    asked.intensity = asked.intensity.filter(|_| intensity.is_none());
-                }
+                // Only the command for what the person set last ends it: an earlier one
+                // (on, then off before it went) leaves the newer choice showing.
+                self.forget_asked(device_id, |asked| {
+                    if power.is_some() && *power == asked.power {
+                        asked.power = None;
+                    }
+                    if intensity.is_some() && *intensity == asked.intensity {
+                        asked.intensity = None;
+                    }
+                });
             }
             Event::Failed {
                 device_id: Some(device_id),
+                what,
                 ..
             } => {
                 self.sending.remove(device_id);
-                self.asked.remove(device_id);
+                // A failure ends what its command was for, if its name says; a failed
+                // read or schedule leaves the controls alone.
+                let action = what.rsplit(' ').next().unwrap_or(what);
+                let was_for = |cmd: Command| action == cmd.action(Via::Wifi);
+                self.forget_asked(device_id, |asked| {
+                    if asked
+                        .power
+                        .is_some_and(|on| was_for(Command::TurnOn { on }))
+                    {
+                        asked.power = None;
+                    }
+                    let level = asked.intensity.and_then(Level::new);
+                    if level.is_some_and(|level| was_for(Command::SetLevel(level))) {
+                        asked.intensity = None;
+                    }
+                });
             }
             _ => {}
+        }
+    }
+
+    /// Changes what the person set on `device_id` and is on its way, and forgets it once
+    /// nothing is left.
+    fn forget_asked(&mut self, device_id: &str, change: impl FnOnce(&mut Asked)) {
+        if let Some(asked) = self.asked.get_mut(device_id) {
+            change(asked);
+            if asked.power.is_none() && asked.intensity.is_none() {
+                self.asked.remove(device_id);
+            }
         }
     }
 
@@ -226,19 +261,38 @@ impl DevicePanel {
         }
         ui.add_space(GRID / 2.0);
 
-        grouped(ui, "Status", |ui| {
-            for reading in reading_rows(device, now) {
-                row(ui, reading.name, |ui| {
-                    let (value, note) = reading.parts();
-                    let color = match reading.tone {
-                        Tone::Fresh => palette.label,
-                        Tone::Stale => palette.secondary_label,
-                        Tone::Pending => palette.orange,
-                    };
-                    value_with_note(ui, RichText::new(value).color(color), note);
-                });
-            }
-        });
+        let read_status = |ui: &mut egui::Ui| {
+            plain_button(ui, "Read Status")
+                .on_hover_text(
+                    "Asks the diffuser for its state the way Send Over says. Over Bluetooth this reads what it last reported.",
+                )
+                .clicked()
+        };
+        let mut read = false;
+        grouped_with(
+            ui,
+            "Status",
+            |ui| read = read_status(ui),
+            |ui| {
+                for reading in reading_rows(device, now) {
+                    row(ui, reading.name, |ui| {
+                        let (value, note) = reading.parts();
+                        let color = match reading.tone {
+                            Tone::Fresh => palette.label,
+                            Tone::Stale => palette.secondary_label,
+                            Tone::Pending => palette.orange,
+                        };
+                        value_with_note(ui, RichText::new(value).color(color), note);
+                    });
+                }
+            },
+        );
+        if read {
+            commands.push(UiCommand::ReadStatus {
+                device_id: device.id.clone(),
+                pref,
+            });
+        }
         if let Some(line) = expected_line(device, now) {
             footnote(ui, &line);
         }
@@ -263,7 +317,7 @@ impl DevicePanel {
         });
         grouped(ui, "Controls", |ui| {
             row(ui, "Send Over", |ui| {
-                segmented(ui, &mut pref, &ROUTES)
+                segmented(ui, &mut pref, &ROUTES, "Send Over")
                     .response
                     .on_hover_text("Auto: Bluetooth when the diffuser is in range, otherwise WiFi");
             });
@@ -274,22 +328,11 @@ impl DevicePanel {
                 }
             });
             row(ui, "Intensity", |ui| {
-                if let Some(Some(number)) = segmented(ui, &mut level, &LEVELS).clicked
+                if let Some(Some(number)) = segmented(ui, &mut level, &LEVELS, "Intensity").clicked
                     && let Some(chosen) = Level::new(number)
                 {
                     commands.push(send(Command::SetLevel(chosen), pref));
                     now_asked.intensity = Some(number);
-                }
-            });
-            row(ui, "Tools", |ui| {
-                let read = plain_button(ui, "Read Status").on_hover_text(
-                    "Asks the diffuser for its state the way chosen above. Over Bluetooth this reads what it last reported.",
-                );
-                if read.clicked() {
-                    commands.push(UiCommand::ReadStatus {
-                        device_id: device.id.clone(),
-                        pref,
-                    });
                 }
             });
         });
@@ -306,27 +349,13 @@ impl DevicePanel {
             ui.add_space(GRID);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(
-                    RichText::new("Sending…")
-                        .text_style(subheadline())
-                        .color(palette.secondary_label),
-                );
+                secondary(ui, "Sending…");
             });
         }
 
         self.prefs.insert(device.id.clone(), pref);
         commands
     }
-}
-
-/// Secondary text under a grouped box, such as the expected-state line.
-fn footnote(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(GRID / 2.0);
-    let color = Palette::of(ui).secondary_label;
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(12.0);
-        ui.label(RichText::new(text).text_style(subheadline()).color(color));
-    });
 }
 
 /// The diffuser's name, whether it answers, and its model and ID.
@@ -346,7 +375,6 @@ fn header(ui: &mut egui::Ui, state: &AppState, device: &DeviceView, now: i64) {
         (false, false) => format!("{model} · {}", device.id),
     };
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
         let words = online_text(online);
         status_dot(ui, status_color(&palette, online), words);
         ui.label(RichText::new(words).color(palette.label));
@@ -551,6 +579,45 @@ mod tests {
         panel.on_event(&failed("TESTDEVICE02"));
         assert!(panel.asked(ID).is_some());
         panel.on_event(&failed(ID));
+        assert!(panel.asked(ID).is_none());
+    }
+
+    #[test]
+    fn the_override_ends_only_with_its_own_command() {
+        let sent = |power, intensity| Event::Sent {
+            device_id: ID.to_owned(),
+            summary: String::new(),
+            via: Via::Wifi,
+            at: NOW,
+            power,
+            intensity,
+            profile: None,
+        };
+        let failed = |what: &str| Event::Failed {
+            device_id: Some(ID.to_owned()),
+            what: what.to_owned(),
+            error: "No answer.".to_owned(),
+            at: 0,
+        };
+        let mut panel = DevicePanel::default();
+        // Turned off and on again before the first command went out.
+        panel.asked.insert(
+            ID.to_owned(),
+            Asked {
+                power: Some(true),
+                intensity: Some(2),
+                at: Instant::now(),
+            },
+        );
+        panel.on_event(&sent(Some(false), None));
+        assert_eq!(panel.asked(ID).unwrap().power, Some(true));
+        panel.on_event(&sent(Some(true), None));
+        assert_eq!(panel.asked(ID).unwrap().power, None);
+        // A failure ends only what its command was for.
+        panel.on_event(&failed("read status"));
+        panel.on_event(&failed("Bluetooth TURN_ON"));
+        assert_eq!(panel.asked(ID).unwrap().intensity, Some(2));
+        panel.on_event(&failed("Bluetooth SET_LEVEL"));
         assert!(panel.asked(ID).is_none());
     }
 

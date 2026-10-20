@@ -13,8 +13,8 @@ use eframe::egui::{
 use scent_core::Secret;
 
 use super::format::broker_text;
-use super::theme::{GRID, MARGIN, Palette, broker_color, subheadline};
-use super::widgets::{default_button, grouped, plain_button, row, status_dot};
+use super::theme::{GRID, MARGIN, Palette, broker_color};
+use super::widgets::{default_button, footnote, grouped, plain_button, row, status_dot};
 use crate::mqtt::{BrokerSettings, BrokerUrl};
 use crate::state::BrokerState;
 
@@ -228,18 +228,12 @@ impl SettingsWindow {
                 enter |= field(ui, password);
             });
         });
-        ui.add_space(GRID / 2.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(12.0);
-            ui.label(
-                RichText::new("Leave the password empty to keep the one saved in the Keychain.")
-                    .text_style(subheadline())
-                    .color(palette.secondary_label),
-            );
-        });
+        footnote(
+            ui,
+            "Leave the password empty to keep the one saved in the Keychain.",
+        );
         ui.add_space(GRID);
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
             let text = broker_text(broker);
             status_dot(ui, broker_color(&palette, broker), &text);
             ui.label(RichText::new(text).color(palette.label));
@@ -297,7 +291,149 @@ fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use eframe::egui::{ViewportEvent, ViewportId};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::super::theme;
     use super::*;
+
+    /// The window with what Save handed over, for a harness to drive. egui draws the
+    /// window inside the harness's own, as it does wherever it can't open one.
+    struct Rig {
+        window: SettingsWindow,
+        saved: Option<Submitted>,
+    }
+
+    /// The window open with the default settings and "hunter2" typed in the password
+    /// field, so that the text box's undo copy holds it too.
+    fn typed_in() -> Harness<'static, Rig> {
+        let mut window = SettingsWindow::default();
+        window.open(&BrokerSettings::default());
+        let mut frames = 0;
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(WIDTH, 480.0))
+            .with_os(egui::os::OperatingSystem::Mac)
+            .build_ui_state(
+                move |ui, rig: &mut Rig| {
+                    frames += 1;
+                    if frames == 1 {
+                        theme::install(ui.ctx(), Path::new("/nonexistent"));
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    if let Some(saved) = rig.window.show(ui.ctx(), &BrokerState::Connected) {
+                        rig.saved = Some(saved);
+                    }
+                },
+                Rig {
+                    window,
+                    saved: None,
+                },
+            );
+        harness.run_steps(2);
+        let field = harness.get_by(|node| node.placeholder() == Some("Saved in the Keychain"));
+        field.focus();
+        field.type_text("hunter2");
+        harness.run_steps(2);
+        assert_eq!(harness.state().window.password, "hunter2");
+        assert!(undo_kept(&harness));
+        harness
+    }
+
+    /// Whether the password box keeps something to undo to, which would hold what was
+    /// typed: a change on its way to being an undo point, or an undo point.
+    fn undo_kept(harness: &Harness<'_, Rig>) -> bool {
+        let state = TextEditState::load(&harness.ctx, SettingsWindow::password_id());
+        let typed = (egui::text::CCursorRange::default(), "hunter2".to_owned());
+        state.is_some_and(|state| {
+            let undoer = state.undoer();
+            undoer.is_in_flux() || undoer.has_undo(&typed)
+        })
+    }
+
+    /// The window is shut and holds the password nowhere.
+    fn forgotten(harness: &Harness<'_, Rig>) {
+        let rig = harness.state();
+        assert!(!rig.window.open);
+        assert!(rig.window.password.is_empty());
+        assert!(!undo_kept(harness));
+        assert!(rig.saved.is_none());
+    }
+
+    #[test]
+    fn cancel_forgets_the_password() {
+        let mut harness = typed_in();
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(2);
+        forgotten(&harness);
+    }
+
+    #[test]
+    fn escape_forgets_the_password() {
+        let mut harness = typed_in();
+        harness.key_press(Key::Escape);
+        harness.run_steps(2);
+        forgotten(&harness);
+    }
+
+    #[test]
+    fn command_w_forgets_the_password() {
+        let mut harness = typed_in();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
+        harness.run_steps(2);
+        forgotten(&harness);
+    }
+
+    #[test]
+    fn the_close_button_forgets_the_password() {
+        let mut harness = typed_in();
+        // What the window's close button sends. egui draws the window inside the
+        // harness's own here, so the request comes to that one.
+        harness
+            .input_mut()
+            .viewports
+            .entry(ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(ViewportEvent::Close);
+        harness.run_steps(2);
+        forgotten(&harness);
+    }
+
+    #[test]
+    fn return_with_nothing_focused_saves() {
+        let mut window = SettingsWindow::default();
+        window.open(&BrokerSettings::default());
+        let mut frames = 0;
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(WIDTH, 480.0))
+            .build_ui_state(
+                move |ui, rig: &mut Rig| {
+                    frames += 1;
+                    if frames == 1 {
+                        theme::install(ui.ctx(), Path::new("/nonexistent"));
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    if let Some(saved) = rig.window.show(ui.ctx(), &BrokerState::Connected) {
+                        rig.saved = Some(saved);
+                    }
+                },
+                Rig {
+                    window,
+                    saved: None,
+                },
+            );
+        harness.run_steps(2);
+        harness.key_press(Key::Enter);
+        harness.run_steps(2);
+        let saved = harness.state().saved.as_ref().expect("Return saves");
+        assert_eq!(saved.settings, BrokerSettings::default());
+        assert!(saved.password.is_none());
+    }
 
     #[test]
     fn good_settings_are_trimmed_and_kept() {

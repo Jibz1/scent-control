@@ -10,6 +10,8 @@
 //! - [`default_button`], [`plain_button`] and [`toolbar_button`]: push buttons. The
 //!   default one, filled in the accent color, is the one Return presses.
 //! - [`checkbox`]: for a choice that isn't a setting, such as a filter.
+//! - [`secondary`] and [`footnote`]: Subheadline text in the secondary label color, the
+//!   second under a grouped box; [`one_line`] lays text out on one line.
 //!
 //! Each reports its role, label and value to accessibility. Text in them follows the
 //! capitalization rules: title case on buttons and segments, sentence case on labels.
@@ -17,13 +19,17 @@
 //! change that comes from elsewhere (a diffuser's report) is shown at once.
 
 use eframe::egui::accesskit::Role;
+use std::sync::Arc;
+
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Frame, Id, Margin, Rect, Response, RichText, Sense,
-    Stroke, StrokeKind, TextStyle, TextWrapMode, Ui, WidgetInfo, WidgetText, WidgetType, pos2,
-    vec2,
+    self, Align2, Color32, CornerRadius, FontSelection, Frame, Galley, Id, Margin, Rect, Response,
+    RichText, Sense, Stroke, StrokeKind, TextStyle, TextWrapMode, Ui, UiBuilder, WidgetInfo,
+    WidgetText, WidgetType, pos2, vec2,
 };
 
-use super::theme::{BOX_RADIUS, CONTROL_RADIUS, NOTICE_RADIUS, Palette, headline, subheadline};
+use super::theme::{
+    BOX_RADIUS, CONTROL_RADIUS, GRID, NOTICE_RADIUS, Palette, headline, subheadline,
+};
 
 /// The regular macOS switch.
 const SWITCH_SIZE: egui::Vec2 = vec2(38.0, 22.0);
@@ -34,22 +40,51 @@ const CONTROL_HEIGHT: f32 = 22.0;
 /// The narrowest a push button gets, so that a pair such as Cancel and Save line up.
 const MIN_BUTTON_WIDTH: f32 = 72.0;
 
-/// The space inside a grouped box on its left and right, and the least above and below
-/// each row's content.
-const BOX_PADDING_X: f32 = 12.0;
-const ROW_PADDING_Y: f32 = 5.0;
+/// The space inside a grouped box on its left and right. A row's text, the hairlines
+/// between rows and a [`footnote`] under the box all start this far in.
+pub const BOX_PADDING_X: f32 = 16.0;
 
-/// How tall a row is at least: room for a 22 pt control, or for a value with a note
-/// under it, with the content centered.
+/// How tall a row is at least, on the 8 pt grid: a 22 pt control, or a value with a note
+/// under it, centered with [`ROW_PADDING_Y`] at least above and below.
 const ROW_MIN_HEIGHT: f32 = 40.0;
+const ROW_PADDING_Y: f32 = 4.0;
 
 /// Where [`row`] counts the rows of the box it is in, to draw a hairline above all but
 /// the first.
 const ROW_COUNT: &str = "grouped_rows";
 
 /// A hairline: one physical pixel.
-fn hairline(ui: &Ui) -> f32 {
+pub fn hairline(ui: &Ui) -> f32 {
     1.0 / ui.pixels_per_point()
+}
+
+/// `text` laid out on one line in `style`, cut short with "…" past `width` (none when it
+/// is infinite).
+pub fn one_line(ui: &Ui, text: impl Into<WidgetText>, style: TextStyle, width: f32) -> Arc<Galley> {
+    text.into().into_galley(
+        ui,
+        Some(TextWrapMode::Truncate),
+        width,
+        FontSelection::Style(style),
+    )
+}
+
+/// Subheadline text in the secondary label color, wrapped: notes, empty states, and
+/// "Sending…".
+pub fn secondary(ui: &mut Ui, text: &str) -> Response {
+    let color = Palette::of(ui).secondary_label;
+    ui.add(egui::Label::new(RichText::new(text).text_style(subheadline()).color(color)).wrap())
+}
+
+/// A [`secondary`] note under a grouped box, lined up with the text of its rows, such as
+/// the expected-state line under "Status".
+pub fn footnote(ui: &mut Ui, text: &str) -> Response {
+    ui.add_space(GRID / 2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(BOX_PADDING_X);
+        secondary(ui, text)
+    })
+    .inner
 }
 
 /// Moves a control's part to `target` over the style's animation time when the person
@@ -130,14 +165,9 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
 /// setting, such as a filter. Checked, it is filled in the accent color.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     let palette = Palette::of(ui);
-    let galley = WidgetText::from(label).into_galley(
-        ui,
-        Some(TextWrapMode::Extend),
-        f32::INFINITY,
-        TextStyle::Body,
-    );
+    let galley = one_line(ui, label, TextStyle::Body, f32::INFINITY);
     let box_size = 14.0;
-    let gap = 6.0;
+    let gap = GRID;
     let size = vec2(
         box_size + gap + galley.size().x,
         galley.size().y.max(box_size),
@@ -191,24 +221,19 @@ pub struct Choice<T> {
 
 /// A segmented control: one of `items`, each a value and the title it shows. Clicking a
 /// segment sets `value` to it. When `value` is none of them, no segment shows as chosen.
-/// Each segment is a radio button to accessibility, with its title as the label.
+/// To accessibility it is a radio group named `label`, as the switch is, and each
+/// segment a radio button in it with its title as the label.
 pub fn segmented<T: Copy + PartialEq>(
     ui: &mut Ui,
     value: &mut T,
     items: &[(T, &str)],
+    label: &str,
 ) -> Choice<T> {
     let palette = Palette::of(ui);
     let dark = ui.visuals().dark_mode;
     let galleys: Vec<_> = items
         .iter()
-        .map(|(_, title)| {
-            WidgetText::from(*title).into_galley(
-                ui,
-                Some(TextWrapMode::Extend),
-                f32::INFINITY,
-                TextStyle::Button,
-            )
-        })
+        .map(|(_, title)| one_line(ui, *title, TextStyle::Button, f32::INFINITY))
         .collect();
     let widest = galleys
         .iter()
@@ -218,8 +243,11 @@ pub fn segmented<T: Copy + PartialEq>(
     let size = vec2(segment_width * items.len() as f32, CONTROL_HEIGHT);
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::hover());
     let id = response.id;
-
     let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::RadioGroup, enabled, label));
+    // The segments are the group's children to accessibility.
+    let group = ui.new_child(UiBuilder::new().max_rect(rect).accessibility_parent(id));
+
     let mut clicked = None;
     let segment = |i: usize| {
         Rect::from_min_size(
@@ -228,7 +256,7 @@ pub fn segmented<T: Copy + PartialEq>(
         )
     };
     for (i, (item, title)) in items.iter().enumerate() {
-        let part = ui.interact(segment(i), id.with(i), Sense::click());
+        let part = group.interact(segment(i), id.with(i), Sense::click());
         if part.clicked() {
             clicked = Some(*item);
         }
@@ -292,12 +320,29 @@ pub fn segmented<T: Copy + PartialEq>(
 /// when empty), and the rows `add_rows` adds inside it. Put the [`row`]s straight in
 /// it, not in a layout of their own, so that the hairlines between them are drawn.
 pub fn grouped<R>(ui: &mut Ui, title: &str, add_rows: impl FnOnce(&mut Ui) -> R) -> R {
+    grouped_with(ui, title, |_| {}, add_rows)
+}
+
+/// A [`grouped`] box with what `add_accessory` adds at the trailing edge of its section
+/// heading, such as a button that acts on the whole section.
+pub fn grouped_with<R>(
+    ui: &mut Ui,
+    title: &str,
+    add_accessory: impl FnOnce(&mut Ui),
+    add_rows: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let palette = Palette::of(ui);
     if !title.is_empty() {
-        ui.label(
-            RichText::new(title)
-                .text_style(headline())
-                .color(palette.label),
+        egui::Sides::new().show(
+            ui,
+            |ui| {
+                ui.label(
+                    RichText::new(title)
+                        .text_style(headline())
+                        .color(palette.label),
+                )
+            },
+            add_accessory,
         );
     }
     let edge = if ui.visuals().dark_mode {
@@ -356,13 +401,10 @@ pub fn row<R>(ui: &mut Ui, label: &str, add_contents: impl FnOnce(&mut Ui) -> R)
 /// secondary label color.
 pub fn value_with_note(ui: &mut Ui, value: RichText, note: Option<&str>) -> Response {
     let palette = Palette::of(ui);
-    let one_line = |text: RichText, style: TextStyle| {
-        WidgetText::from(text).into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, style)
-    };
-    let value = one_line(value, TextStyle::Body);
+    let value = one_line(ui, value, TextStyle::Body, f32::INFINITY);
     let note = note.map(|note| {
         let text = RichText::new(note).color(palette.secondary_label);
-        one_line(text, subheadline())
+        one_line(ui, text, subheadline(), f32::INFINITY)
     });
     let note_size = note.as_ref().map_or(vec2(0.0, 0.0), |note| note.size());
     let size = vec2(
@@ -433,7 +475,7 @@ pub fn notice_with<R>(
     let inner = Frame::new()
         .fill(Palette::tint(color, 12))
         .corner_radius(NOTICE_RADIUS)
-        .inner_margin(Margin::symmetric(12, 8))
+        .inner_margin(Margin::symmetric(BOX_PADDING_X as i8, GRID as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::Sides::new()
@@ -477,12 +519,7 @@ pub fn toolbar_button(ui: &mut Ui, text: &str) -> Response {
 
 fn push_button(ui: &mut Ui, text: &str, style: ButtonStyle) -> Response {
     let palette = Palette::of(ui);
-    let galley = WidgetText::from(text).into_galley(
-        ui,
-        Some(TextWrapMode::Extend),
-        f32::INFINITY,
-        TextStyle::Button,
-    );
+    let galley = one_line(ui, text, TextStyle::Button, f32::INFINITY);
     let padding = ui.spacing().button_padding.x;
     let min_width = if style == ButtonStyle::Toolbar {
         0.0
@@ -516,16 +553,11 @@ fn push_button(ui: &mut Ui, text: &str, style: ButtonStyle) -> Response {
                 };
                 (state.bg_fill, state.bg_stroke, palette.label)
             }
-            ButtonStyle::Toolbar => {
-                let fill = if pressed {
-                    Palette::tint(palette.label, 12)
-                } else if response.hovered() {
-                    Palette::tint(palette.label, 6)
-                } else {
-                    Color32::TRANSPARENT
-                };
-                (fill, Stroke::NONE, palette.label)
-            }
+            ButtonStyle::Toolbar => (
+                borderless_fill(&palette, &response),
+                Stroke::NONE,
+                palette.label,
+            ),
         };
         let painter = ui.painter();
         if style == ButtonStyle::Plain && !ui.visuals().dark_mode {
@@ -544,6 +576,18 @@ fn push_button(ui: &mut Ui, text: &str, style: ButtonStyle) -> Response {
     response
 }
 
+/// What a borderless button is filled with: nothing until the pointer is over it, then
+/// a light tint of the label color, darker while pressed.
+fn borderless_fill(palette: &Palette, response: &Response) -> Color32 {
+    if response.is_pointer_button_down_on() {
+        Palette::tint(palette.label, 12)
+    } else if response.hovered() {
+        Palette::tint(palette.label, 6)
+    } else {
+        Color32::TRANSPARENT
+    }
+}
+
 /// The toolbar's gear button, which opens Settings. egui can't draw SF Symbols, so the
 /// gear is drawn here; `label` names it to accessibility.
 pub fn gear_button(ui: &mut Ui, label: &str) -> Response {
@@ -552,15 +596,8 @@ pub fn gear_button(ui: &mut Ui, label: &str) -> Response {
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
     if ui.is_rect_visible(rect) {
-        let fill = if response.is_pointer_button_down_on() {
-            Palette::tint(palette.label, 12)
-        } else if response.hovered() {
-            Palette::tint(palette.label, 6)
-        } else {
-            Color32::TRANSPARENT
-        };
         let painter = ui.painter();
-        painter.rect_filled(rect, CONTROL_RADIUS, fill);
+        painter.rect_filled(rect, CONTROL_RADIUS, borderless_fill(&palette, &response));
         let center = rect.center();
         let color = Palette::tint(palette.label, 90);
         let teeth = 8;
@@ -603,7 +640,7 @@ mod tests {
     fn segmented_selects_the_clicked_segment() {
         let mut harness = Harness::new_ui_state(
             |ui, route: &mut Route| {
-                segmented(ui, route, &ROUTES);
+                segmented(ui, route, &ROUTES, "Send Over");
             },
             Route::Auto,
         );
@@ -621,12 +658,31 @@ mod tests {
     }
 
     #[test]
+    fn the_segments_belong_to_a_group_the_label_names() {
+        let harness = Harness::new_ui_state(
+            |ui, route: &mut Route| {
+                segmented(ui, route, &ROUTES, "Send Over");
+            },
+            Route::Auto,
+        );
+        let group = harness.get_by_role_and_label(Role::RadioGroup, "Send Over");
+        let group = group.accesskit_node().id();
+        for title in ["Auto", "WiFi", "Bluetooth"] {
+            let segment = harness.get_by_label(title);
+            let in_group =
+                std::iter::successors(segment.accesskit_node().parent(), |node| node.parent())
+                    .any(|node| node.id() == group);
+            assert!(in_group, "{title}");
+        }
+    }
+
+    #[test]
     fn a_click_on_the_chosen_segment_is_still_a_click() {
         // The intensity buttons send again when the chosen one is clicked.
         let mut harness = Harness::new_ui_state(
             |ui, clicks: &mut Vec<Route>| {
                 let mut route = Route::Wifi;
-                if let Some(clicked) = segmented(ui, &mut route, &ROUTES).clicked {
+                if let Some(clicked) = segmented(ui, &mut route, &ROUTES, "Send Over").clicked {
                     clicks.push(clicked);
                 }
             },

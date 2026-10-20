@@ -198,6 +198,14 @@ impl eframe::App for ScentApp {
         ui.ctx().request_repaint_after(REDRAW_EVERY);
     }
 
+    /// What is behind the panes: the window color. eframe's own default is a
+    /// translucent near-black, which would show through any gap between them.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        theme::Palette::for_dark(visuals.dark_mode)
+            .window
+            .to_normalized_gamma_f32()
+    }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.drain_events();
         self.save();

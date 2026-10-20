@@ -4,15 +4,15 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    self, Align, Color32, FontSelection, Layout, Margin, RichText, Sense, TextStyle, TextWrapMode,
-    WidgetInfo, WidgetText, WidgetType, pos2, vec2,
+    self, Align, Color32, FontSelection, Layout, Margin, Rect, RichText, Sense, TextStyle,
+    TextWrapMode, WidgetInfo, WidgetText, WidgetType, pos2, vec2,
 };
 use scent_core::{Direction, Via};
 
 use super::clock::{clock_hms, local_utc_offset_secs};
 use super::format::via_name;
-use super::theme::{Palette, headline, subheadline};
-use super::widgets::checkbox;
+use super::theme::{GRID, Palette, headline};
+use super::widgets::{BOX_PADDING_X, checkbox, secondary};
 use crate::state::{AppState, LogEntry};
 
 /// How many lines the log shows. The state keeps more (see `state::LOG_CAP`).
@@ -23,7 +23,7 @@ const SHOWN: usize = 300;
 const ECHO_WITHIN_S: u64 = 5;
 
 /// Height of the log when it is open, before the person drags it.
-const OPEN_HEIGHT: f32 = 160.0;
+pub(super) const OPEN_HEIGHT: f32 = 160.0;
 
 /// The height of a line of the log.
 const LINE_HEIGHT: f32 = 20.0;
@@ -173,15 +173,22 @@ impl LogView {
     }
 
     /// The log pane along the bottom. Add it before the central panel above it. It
-    /// slides open and shut when [`toggle`](Self::toggle)d.
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState, selected: Option<&str>, now: i64) {
+    /// slides open and shut when [`toggle`](Self::toggle)d. Returns where it is, when it
+    /// is shown, for the separator above it.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        selected: Option<&str>,
+        now: i64,
+    ) -> Option<Rect> {
         let palette = Palette::of(ui);
         let frame = egui::Frame::new()
             .fill(palette.grouped)
             .inner_margin(Margin {
-                left: 12,
-                right: 12,
-                top: 8,
+                left: BOX_PADDING_X as i8,
+                right: BOX_PADDING_X as i8,
+                top: GRID as i8,
                 bottom: 0,
             });
         let only_selected = &mut self.only_selected;
@@ -189,18 +196,20 @@ impl LogView {
             .resizable(true)
             .default_size(OPEN_HEIGHT)
             .min_size(80.0)
+            .show_separator_line(false)
             .frame(frame)
             .show_collapsible(ui, &mut self.open, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Conversation").text_style(headline()));
+                    ui.label(RichText::new("Log").text_style(headline()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         checkbox(ui, only_selected, "Only the selected diffuser");
                     });
                 });
-                ui.add_space(4.0);
+                ui.add_space(GRID / 2.0);
                 let only = (*only_selected).then_some(selected).flatten();
                 lines(ui, state, only, now);
-            });
+            })
+            .map(|shown| shown.response.rect)
     }
 }
 
@@ -213,14 +222,12 @@ fn lines(ui: &mut egui::Ui, state: &AppState, only: Option<&str>, now: i64) {
         .filter(|entry| only.is_none_or(|id| entry.device_id.as_deref() == Some(id)));
     let lines = collapse_echoes(wanted);
     if lines.is_empty() {
-        let color = Palette::of(ui).secondary_label;
-        ui.label(
-            RichText::new(
-                "Nothing yet. Commands you send and everything the diffusers say appear here.",
-            )
-            .text_style(subheadline())
-            .color(color),
+        secondary(
+            ui,
+            "Nothing yet. Commands you send and everything the diffusers say appear here.",
         );
+        // Take the rest of the pane, as the lines would, so that it keeps its height.
+        ui.allocate_space(ui.available_size());
         return;
     }
     let lines = &lines[lines.len().saturating_sub(SHOWN)..];
@@ -243,7 +250,8 @@ fn lines(ui: &mut egui::Ui, state: &AppState, only: Option<&str>, now: i64) {
 fn line(ui: &mut egui::Ui, entry: &LogEntry, state: &AppState, offset: i64) {
     let palette = Palette::of(ui);
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, LINE_HEIGHT), Sense::click());
+    // Clicks for the context menu, but no stop for the Tab key on every line.
+    let (rect, response) = ui.allocate_exact_size(vec2(width, LINE_HEIGHT), Sense::CLICK);
     response.context_menu(|ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(entry.text.clone());

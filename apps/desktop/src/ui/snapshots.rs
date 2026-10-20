@@ -13,7 +13,7 @@ use scent_core::{AlwaysOn, DeviceInfo, Direction, Level, Profile, ScheduleFlag, 
 use super::Screens;
 use super::settings::{self, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
-use super::theme;
+use super::theme::{self, Palette};
 use crate::hub::NO_BROKER_PASSWORD;
 use crate::mqtt::BrokerSettings;
 use crate::state::{
@@ -163,7 +163,7 @@ fn snapshot_state() -> AppState {
 /// Draws `draw` at `size` points, twice the pixels, in the light or dark look,
 /// and writes `target/snapshots/<name>.png`. The first frame installs the
 /// theme; the fonts it loads are in use from the next.
-fn render(name: &str, size: Vec2, dark: bool, mut draw: impl FnMut(&mut egui::Ui)) {
+fn render(name: &str, size: Vec2, dark: bool, mut draw: impl FnMut(&mut egui::Ui)) -> Pixels {
     let theme = if dark { Theme::Dark } else { Theme::Light };
     let mut frames = 0;
     let mut harness = Harness::builder()
@@ -183,26 +183,128 @@ fn render(name: &str, size: Vec2, dark: bool, mut draw: impl FnMut(&mut egui::Ui
             whole_window(ui, &mut draw);
         });
     harness.run_steps(4);
-    save(name, &mut harness);
+    save(name, &mut harness)
 }
 
 /// Calls `draw` with a ui that covers the whole render, as a window's does: the
-/// harness puts a margin around the ui it hands out.
+/// harness puts a margin around the ui it hands out. Under it is the window color, as
+/// the app's clear color puts there.
 fn whole_window<R>(ui: &egui::Ui, draw: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let rect = ui.ctx().content_rect();
     let builder = egui::UiBuilder::new()
         .layer_id(egui::LayerId::background())
-        .max_rect(ui.ctx().content_rect());
+        .max_rect(rect);
     let mut window = egui::Ui::new(ui.ctx().clone(), egui::Id::new("snapshot"), builder);
+    window
+        .painter()
+        .rect_filled(rect, 0, Palette::of(&window).window);
     draw(&mut window)
 }
 
-fn save<S>(name: &str, harness: &mut Harness<'_, S>) {
+/// Writes the render to `target/snapshots/<name>.png` and hands back its pixels.
+fn save<S>(name: &str, harness: &mut Harness<'_, S>) -> Pixels {
     let image = harness.render().expect("render the screens");
     let dir = out_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.png"));
     image.save(&path).unwrap();
     println!("wrote {}", path.display());
+    let pixels = Pixels {
+        name: name.to_owned(),
+        width: image.width(),
+        rgba: image.as_raw().clone(),
+    };
+    pixels.assert_opaque();
+    pixels
+}
+
+/// A render's pixels, two to the point, for checking what was drawn.
+struct Pixels {
+    name: String,
+    width: u32,
+    rgba: Vec<u8>,
+}
+
+impl Pixels {
+    fn at(&self, x: u32, y: u32) -> [u8; 4] {
+        let i = 4 * (y * self.width + x) as usize;
+        [0, 1, 2, 3].map(|c| self.rgba[i + c])
+    }
+
+    /// Every pixel is opaque: nothing of what is behind the window (eframe's clear
+    /// color) shows through a gap.
+    fn assert_opaque(&self) {
+        let gaps = self.rgba.chunks(4).filter(|pixel| pixel[3] != 255).count();
+        assert_eq!(gaps, 0, "{}: {gaps} pixels not opaque", self.name);
+    }
+
+    /// The seam that `points` cross, in points, is drawn in the separator color over
+    /// one of `bases`, and everything else along them is one of those bases.
+    fn assert_seam(
+        &self,
+        points: impl IntoIterator<Item = (f32, f32)>,
+        separator: Color32,
+        bases: &[Color32],
+    ) {
+        let close = |a: [u8; 4], b: [u8; 3]| (0..3).all(|c| a[c].abs_diff(b[c]) <= 3);
+        let lines: Vec<[u8; 3]> = bases.iter().map(|&base| over(separator, base)).collect();
+        let plain: Vec<[u8; 3]> = bases
+            .iter()
+            .map(|base| [base.r(), base.g(), base.b()])
+            .collect();
+        let mut seen = false;
+        for (x, y) in points {
+            let pixel = self.at((2.0 * x) as u32, (2.0 * y) as u32);
+            let on_line = lines.iter().any(|&line| close(pixel, line));
+            assert!(
+                on_line || plain.iter().any(|&base| close(pixel, base)),
+                "{}: {pixel:?} at ({x}, {y}) pt is neither a base {plain:?} nor the separator over one {lines:?}",
+                self.name
+            );
+            if on_line {
+                println!("{}: separator {pixel:?} at ({x}, {y}) pt", self.name);
+            }
+            seen |= on_line;
+        }
+        assert!(seen, "{}: no separator found", self.name);
+    }
+}
+
+/// `top`, premultiplied, laid over the opaque `base`, blended as egui blends.
+fn over(top: Color32, base: Color32) -> [u8; 3] {
+    let keep = 1.0 - f32::from(top.a()) / 255.0;
+    let (top, base) = (top.to_array(), base.to_array());
+    [0, 1, 2].map(|c| (f32::from(top[c]) + f32::from(base[c]) * keep).round() as u8)
+}
+
+/// Half-point steps from `from` to `to`, across a seam.
+fn across(from: f32, to: f32) -> impl Iterator<Item = f32> {
+    (0..=((to - from) * 2.0) as u32).map(move |i| from + i as f32 / 2.0)
+}
+
+/// The sidebar's edge, the line under the toolbar and the line above the log are each
+/// the separator color, over an opaque window.
+fn assert_seams(pixels: &Pixels, dark: bool) {
+    let palette = Palette::for_dark(dark);
+    let [_, height] = theme::WINDOW_SIZE;
+    let edge = theme::SIDEBAR_WIDTH;
+    pixels.assert_seam(
+        across(edge - 2.0, edge + 2.0).map(|x| (x, 300.0)),
+        palette.separator,
+        &[palette.sidebar, palette.window],
+    );
+    let toolbar = theme::TOOLBAR_HEIGHT;
+    pixels.assert_seam(
+        across(toolbar - 2.0, toolbar + 2.0).map(|y| (750.0, y)),
+        palette.separator,
+        &[palette.window],
+    );
+    let log = height - super::log_view::OPEN_HEIGHT;
+    pixels.assert_seam(
+        across(log - 2.0, log + 2.0).map(|y| (750.0, y)),
+        palette.separator,
+        &[palette.window, palette.grouped],
+    );
 }
 
 /// Where the traffic lights are, drawn into the snapshot only: the real ones are
@@ -222,14 +324,14 @@ fn traffic_lights(ui: &egui::Ui) {
     }
 }
 
-fn main_window(name: &str, dark: bool, state: AppState, notice: Option<&str>) {
+fn main_window(name: &str, dark: bool, state: AppState, notice: Option<&str>) -> Pixels {
     let mut screens = Screens::new(notice.map(str::to_owned));
     // A scan has come back, as the hit in the state says.
     screens.on_event(&Event::Scanned(state.scan.clone()));
     render(name, theme::WINDOW_SIZE.into(), dark, move |ui| {
         let _ = screens.show(ui, &state, &BrokerSettings::default(), NOW);
         traffic_lights(ui);
-    });
+    })
 }
 
 /// The Settings window as the app draws it, at the height it asks for, showing
@@ -263,27 +365,30 @@ fn settings_window(name: &str, dark: bool) {
     let height = harness.state().fitted_height().expect("drawn");
     harness.set_size(vec2(settings::WIDTH, height));
     harness.run_steps(2);
-    save(name, &mut harness);
+    let _ = save(name, &mut harness);
 }
 
 #[test]
 #[ignore = "writes PNGs to look at; run on demand"]
 fn render_screens() {
-    main_window("main_light", false, snapshot_state(), None);
-    main_window("main_dark", true, snapshot_state(), None);
+    let light = main_window("main_light", false, snapshot_state(), None);
+    assert_seams(&light, false);
+    let dark = main_window("main_dark", true, snapshot_state(), None);
+    assert_seams(&dark, true);
 
     let mut refused = snapshot_state();
     refused.broker = BrokerState::LoginRefused("Not authorized.".to_owned());
     let damaged = "Scent Control couldn't read its saved diffusers, so it started without them. The damaged file was kept as desktop.json.damaged.";
-    main_window("notice_light", false, refused.clone(), Some(damaged));
-    main_window("notice_dark", true, refused, Some(damaged));
+    let _ = main_window("notice_light", false, refused.clone(), Some(damaged));
+    let _ = main_window("notice_dark", true, refused, Some(damaged));
 
     // Nothing known yet, and no password saved.
     let empty = AppState {
         broker: BrokerState::Disconnected(NO_BROKER_PASSWORD.to_owned()),
         ..AppState::default()
     };
-    main_window("empty_light", false, empty, None);
+    let empty = main_window("empty_light", false, empty, None);
+    assert_seams(&empty, false);
 
     for (name, dark) in [("settings_light", false), ("settings_dark", true)] {
         settings_window(name, dark);
