@@ -10,6 +10,16 @@ compile_error!("scent-desktop is macOS only");
 #[cfg(target_os = "macos")]
 mod app;
 
+// The hub and the screens (later tasks) are what use the state and the store; until
+// then the binary on its own would flag them as dead code.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod state;
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+mod store;
+
 #[cfg(target_os = "macos")]
 use app::ScentApp;
 

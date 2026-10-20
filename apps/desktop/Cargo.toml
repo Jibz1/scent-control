@@ -13,3 +13,6 @@ path = "src/main.rs"
 [dependencies]
 eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
 scent-core = { path = "../../packages/scent-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = "=7.0.0"
