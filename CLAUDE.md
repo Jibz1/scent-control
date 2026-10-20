@@ -1,106 +1,111 @@
 # Scent Control
 
-Self-hosted replacement for the Scentiment app and cloud: our own app and backend
-that control two Scentiment diffusers, including scheduling. No dependency on
-Scentiment's servers at any point.
+Self-hosted replacement for the Scentiment app and cloud. Scentiment's cloud no longer
+works, so their app can't set up or control the diffusers. This project is our own
+app and server: they put Scentiment diffusers on the owner's WiFi, control them from
+anywhere, and let the diffusers run their schedules, with no dependency on Scentiment
+at any point.
 
-## Background
+- Design (approved): `docs/superpowers/specs/2026-10-20-scent-control-design.md`
+- Device facts, with dates and sources: `docs/findings.md`
+- Current plan: `docs/superpowers/plans/2026-10-20-phase-0-device-verification.md`
 
-- The official Scentiment app contacts Scentiment's servers before it will connect
-  to the diffusers (over Bluetooth or WiFi). That check fails, so the app can't reach
-  the diffusers. The diffusers themselves work fine using their physical buttons.
-- Prior art: Scent Assistant, https://github.com/mr-sparks/scent-assistant
-  (MIT-licensed Home Assistant integration). It confirms the **Scentiment Diffuser
-  Air 2** works over BLE using a JSON-over-BLE protocol: power, status, intensity
-  (1-3), RGB LED, battery. Use its Scentiment source code in
-  `custom_components/scent_assistant/` as the protocol reference. Its PROTOCOL.md
-  covers other brands but not Scentiment in detail.
-- If we reuse its code, keep the MIT copyright notice (add THIRD_PARTY_NOTICES.md).
+## Devices
 
-## Open questions (resolve early, record answers in docs/findings.md)
-
-- Exact models of both diffusers (Air 2, Pro 2, Mini 2, other?). Only Air 2 is confirmed.
-- Does the device store schedules on-board, or must schedules be driven externally?
-  Scent Assistant exposes no schedule controls for Scentiment, so assume external.
-- Does BLE require pairing, a PIN, or a key from Scentiment's cloud?
-- WiFi: which hosts do the diffusers contact, over what protocol, with or without TLS?
+- Scentiment **Diffuser Air 2** and **Diffuser HVAC 2** (not the Pro 2). Both have an
+  Espressif chip and are never opened.
+- Bluetooth: JSON commands over GATT, with one connection at a time. WiFi: 2.4 GHz only.
+- The firmware is fixed, so we speak its protocol exactly. That includes keeping
+  Scentiment's MQTT topic names. Behavior varies by firmware version. See
+  `docs/findings.md`.
 
 ## Architecture
 
 ```
-App (PWA) -> Backend (API + scheduler + DB) <-> MQTT broker <-> Bridge (BLE, at home) -> diffusers
-Later, optional: diffusers' WiFi -> our backend directly (second transport)
+Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconciler)
+    │                     │
+    │ Bluetooth           │ MQTT (server's own login)
+    │ (setup + fallback)  ▼
+    └──────────────▶ MQTT broker ◀──wss (one login per diffuser)── Diffusers on home WiFi
 ```
 
-Design principles:
-
-- **Desired state, not one-off commands.** The backend stores what each device
-  should be doing right now (computed from schedules plus manual overrides). The
-  bridge compares actual vs desired on an interval and on every reconnect, and fixes
-  any mismatch. A diffuser that was offline at 7am catches up when it comes back.
-- **Transport abstraction.** A `DiffuserTransport` interface (connect, get_state,
-  set_power, set_intensity, set_led). Implement BLE first; WiFi can be added later
-  without touching the app or backend.
-- **Bridge connects outbound only** (MQTT), so the backend can run at home or in
-  the cloud.
-- **Bridge caches the effective schedule locally** so an internet or backend
-  outage doesn't stop scheduled runs.
-- **BLE allows one connection at a time.** Connect on demand and disconnect soon
-  after to save battery. The Scentiment phone app must be closed.
-- The app never uses Bluetooth; it only talks to the backend over HTTP.
+- **Mobile app:** Bluetooth for setup (`WIFI_CONNECT`, then `SAVE_MQTT` pointing at
+  our broker) and as a fallback when a diffuser is offline. Everything else goes
+  through the server over HTTPS.
+- **Server:** API, accounts and homes, device registry, schedules, per-device broker
+  logins, and the desired-state reconciler. The person's most recent change wins,
+  wherever it was made. A reboot or reconnect is never a change.
+- **MQTT broker:** on Railway. Diffusers connect over `wss://` with a public
+  certificate. Each diffuser has one login and may only use its own topics.
+- **Protocol package:** pure codec shared by app and server.
+- **Drivers and capabilities:** each device family is a driver, so other brands can
+  slot in later. The app shows only what a device supports, for example oil level.
+- Schedules are stored on and run by the diffuser. The server keeps the master copy,
+  re-sends it when needed, and re-sends the time zone offset when daylight saving
+  changes.
 
 ## Stack
 
-- Python 3.11+
-- `bleak` (BLE), `aiomqtt`, FastAPI, SQLite, APScheduler (or a simple scheduler loop)
-- Mosquitto as the MQTT broker
-- App: installable web app (PWA) served by the backend
-- Hosting: one Raspberry Pi at home to start; backend may move to Railway later
+- **Product code:** Bun 1.4 workspaces + Turborepo, **Effect v4 only**, Hono, Drizzle +
+  Postgres, Expo SDK 57 (custom dev build for Bluetooth), hosted on Railway. Follow
+  the conventions of the HCCNA monorepo (`~/Documents/Dev/Projects/HCCNA`, see its
+  `AGENTS.md`). Don't copy its domain code (GraphQL/Relay, Strapi, CCB, Firebase).
+- **Phase 0 tools:** Python ≥ 3.11 with `bleak` (Bluetooth) and `paho-mqtt`, under
+  `tools/`, tested with `pytest`.
 
-## Proposed layout
+## Layout
 
 ```
-protocol/   Scentiment BLE codec: pure functions, unit-tested
-bridge/     BLE transport, MQTT client, local schedule cache
-backend/    FastAPI app, scheduler, database models
-app/        PWA frontend
-tools/      scan.py, gatt_dump.py, send.py (CLI utilities)
-docs/       findings.md, wifi.md
+apps/mobile          Expo app (Phase 1+)
+apps/server          API, MQTT client, reconciler (Phase 1+)
+packages/<protocol>  pure Scentiment codec, fixture-tested (Phase 1+)
+infra/               broker and hosting config (test broker in Phase 0)
+tools/               Phase 0 CLI tools: scan, GATT dump, session, broker
+fixtures/scentiment/ sanitized captured messages, used as test fixtures
+docs/                findings, design, plans
 ```
 
-## MQTT topics (draft)
+## Rules
 
-- `scent/<device_id>/desired`: retained, backend -> bridge
-- `scent/<device_id>/state`: retained, bridge -> backend
-- `scent/bridge/<bridge_id>/status`: online/offline via last-will message
+- Never contact Scentiment's servers. Never use, store or print credentials found in
+  Scentiment's app.
+- Never send `UPDATE_FIRMWARE`, `U_FW`, `RESET` other than `{"mode":"soft"}`, or
+  `SECRET_COMMAND` other than `{"command":"restart"}`.
+- WiFi passwords and broker passwords never go in the repo, logs, captures,
+  fixtures or command-line arguments. Use a `getpass` prompt or an environment
+  variable. The server never stores WiFi passwords.
+- Protocol code is pure (bytes or JSON in, typed data out) and tested against real
+  captured messages saved as sanitized fixtures in `fixtures/scentiment/`.
+- Record every observed device behavior in `docs/findings.md` with a date and a
+  source tag (**[observed]**, **[prior art]**, **[web]**, or app code).
+- Device addresses and names go in config files (`tools/devices.toml`, which is
+  gitignored), never hardcoded.
+- Raw output goes to `captures/` (gitignored). Only sanitized fixtures are committed.
+- Never delete or recreate a Railway broker service, or its domain, while a diffuser
+  points at it.
+- The repo is private now and will be open source later, so no secrets and no real
+  personal data anywhere in it.
 
 ## Phases
 
-1. **Discovery and proof of control.** Write tools/scan.py and tools/gatt_dump.py,
-   identify both models, port the Scentiment codec, and build a CLI that sets
-   power, intensity and LED and reads battery and state.
-   Done when both diffusers can be controlled from the command line.
-2. **Bridge and backend.** MQTT, desired-state model, scheduler, API, database.
-3. **App.** Device list, controls, schedule editor, battery and status display.
-4. **WiFi investigation.** Check router or Pi-hole DNS logs for the hosts the
-   diffusers contact and document the findings in docs/wifi.md. Build a WiFi
-   transport only if it's feasible.
+0. **Prove it on the real devices (current, a gate):**
+   - Bluetooth control.
+   - `SAVE_MQTT` over Bluetooth to a `wss://` test broker.
+   - Schedules running on the device.
+   - Behavior across a power cut.
+   - The HVAC 2's protocol.
 
-## Conventions
-
-- Protocol code is pure (bytes/JSON in, structured data out) and tested against
-  real captured messages saved as fixtures.
-- Record every observed device behavior in docs/findings.md with a date.
-- Device addresses and names go in a config file, never hardcoded.
-- Never contact Scentiment's servers.
+   If `SAVE_MQTT` or on-device schedules fail, or only plain `mqtt://` works, stop and
+   ask the owner.
+1. **One diffuser end to end for the owner:** protocol package, server and broker on
+   Railway, app setup and manual control. Android first.
+2. **Schedules, status, resilience:** the reconciler, oil level, Bluetooth fallback,
+   and the HVAC 2.
+3. **Other people:** sign-up with an emailed code, homes and invites, TestFlight and
+   APK builds. Needs a domain for email first.
 
 ## Environment notes
 
-- The development machine needs Bluetooth and must be within range of the
-  diffusers. Run Claude Code on that machine or on the Pi.
-- If range is a problem, an ESP32 running ESPHome's Bluetooth proxy can help.
-
-## First task
-
-Create tools/scan.py and tools/gatt_dump.py, run them near the diffusers, and
-write the results (names, addresses, services, characteristics) to docs/findings.md.
+- Bluetooth work needs this Mac (or another machine) within range of the diffusers,
+  with Scentiment's app closed or the phone's Bluetooth off.
+- The first Bluetooth scan triggers a macOS permission prompt.
