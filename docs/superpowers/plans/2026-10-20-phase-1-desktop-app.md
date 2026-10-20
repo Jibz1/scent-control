@@ -5,7 +5,7 @@
 **Goal:** A native macOS app in Rust that finds, sets up and controls the owner's Scentiment diffusers, and edits their schedules. It sends over Bluetooth when a diffuser is in range and over WiFi through the Phase 0 test broker otherwise, and shows honest, aged status.
 
 **Architecture:** The work is split between two crates.
-- **`crates/scent-core`** is pure Rust, with no I/O: typed commands (the type *is* the allow-list), tolerant message parsing, schedules and expected state, and online/staleness rules. It's tested against `fixtures/scentiment/`.
+- **`packages/scent-core`** is pure Rust, with no I/O: typed commands (the type *is* the allow-list), tolerant message parsing, schedules and expected state, and online/staleness rules. It's tested against `fixtures/scentiment/`.
 - **`apps/desktop`** is an `eframe`/`egui` app. A background `tokio` runtime runs a Bluetooth worker (`btleplug`) and an MQTT worker (`rumqttc` over `wss://`), and the UI exchanges messages with them over channels.
 
 Bluetooth only works from the bundled `.app` (`scripts/bundle-macos.sh`).
@@ -13,6 +13,8 @@ Bluetooth only works from the bundled `.app` (`scripts/bundle-macos.sh`).
 **Tech Stack:** Rust ≥ 1.95 (edition 2024), eframe/egui 0.36.2, btleplug 0.13.4, rumqttc 0.25.1 (`websocket`, `use-rustls`), keyring 4.2.0, tokio 1.53.2, futures 0.3.34, uuid 1.27.0, serde 1.0.229, serde_json 1.0.151, dirs 7.0.0.
 
 **Spec:** `docs/superpowers/specs/2026-10-20-scent-control-design.md`: the "Addendum: a Rust desktop app first" (approved), plus "Appendix: Phase 0 results". Device facts: `docs/findings.md` → "Phase 0 results". The reference behavior is the Phase 0 Python tools and test bench (`tools/scentiment_ble.py`, `tools/safety.py`, `tools/control_server.py`, `tools/control.html`).
+
+**Monorepo (owner, 2026-10-20):** the repo is a Bun + Turborepo monorepo (Task 3a): `packages/scent-core`, `apps/desktop` and `tools/` are workspaces whose `package.json` scripts wrap `cargo`/`pytest`, and the Cargo workspace stays at the root. From the root, `bunx turbo run build test lint fmt:check` runs everything. Each later task adds its new Rust dependencies to its crate's `Cargo.toml` as before.
 
 **Branch:** `phase-1-desktop-app`, cut from `phase-0-device-verification` (rebase onto `main` once PR #1 is squash-merged).
 
@@ -54,9 +56,9 @@ Bluetooth only works from the bundled `.app` (`scripts/bundle-macos.sh`).
 ### Task 1: Workspace, toolchain and typed commands
 
 **Files:**
-- Create: `Cargo.toml` (workspace), `rust-toolchain.toml`, `crates/scent-core/Cargo.toml`, `crates/scent-core/src/lib.rs`, `crates/scent-core/src/command.rs`, `crates/scent-core/src/level.rs`
+- Create: `Cargo.toml` (workspace), `rust-toolchain.toml`, `packages/scent-core/Cargo.toml`, `packages/scent-core/src/lib.rs`, `packages/scent-core/src/command.rs`, `packages/scent-core/src/level.rs`
 - Modify: `.gitignore` (add `/target`)
-- Test: `crates/scent-core/src/command.rs` (`#[cfg(test)] mod tests`)
+- Test: `packages/scent-core/src/command.rs` (`#[cfg(test)] mod tests`)
 
 **Interfaces:**
 - Produces:
@@ -85,7 +87,7 @@ Bluetooth only works from the bundled `.app` (`scripts/bundle-macos.sh`).
   - Run `rustup update stable`. Then `rustc --version` must show 1.95 or newer.
   - `rust-toolchain.toml`: `channel = "stable"`.
   - Root `Cargo.toml`:
-    - `[workspace] resolver = "3"`, `members = ["crates/scent-core", "apps/desktop"]`;
+    - `[workspace] resolver = "3"`, `members = ["packages/scent-core", "apps/desktop"]`;
     - `[workspace.package] edition = "2024"`, `rust-version = "1.95"`, `license = "MIT"`;
     - `[workspace.dependencies]` pinning `serde = { version = "=1.0.229", features = ["derive"] }` and `serde_json = "=1.0.151"`.
   - Create `apps/desktop` as an empty binary crate (`fn main() {}`) so the workspace resolves. Task 4 fills it in.
@@ -146,8 +148,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 2: Message parsing and the fixture contract
 
 **Files:**
-- Create: `crates/scent-core/src/message.rs`, `crates/scent-core/src/names.rs`, `crates/scent-core/src/topics.rs`, `crates/scent-core/tests/fixtures.rs`
-- Modify: `crates/scent-core/src/lib.rs`
+- Create: `packages/scent-core/src/message.rs`, `packages/scent-core/src/names.rs`, `packages/scent-core/src/topics.rs`, `packages/scent-core/tests/fixtures.rs`
+- Modify: `packages/scent-core/src/lib.rs`
 
 **Interfaces:**
 - Produces:
@@ -195,7 +197,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add crates/scent-core
+git add packages/scent-core
 git commit -m "scent-core: tolerant message parsing, names, topics, fixture contract
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -206,8 +208,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 3: Schedules, expected state, online and staleness
 
 **Files:**
-- Create: `crates/scent-core/src/schedule.rs`, `crates/scent-core/src/status.rs`
-- Modify: `crates/scent-core/src/command.rs` (add `UpdateProfile(Profile)`), `crates/scent-core/src/lib.rs`
+- Create: `packages/scent-core/src/schedule.rs`, `packages/scent-core/src/status.rs`
+- Modify: `packages/scent-core/src/command.rs` (add `UpdateProfile(Profile)`), `packages/scent-core/src/lib.rs`
 
 **Interfaces:**
 - Consumes: `Level`
@@ -268,7 +270,7 @@ let secs = local.rem_euclid(86_400);
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add crates/scent-core
+git add packages/scent-core
 git commit -m "scent-core: schedules, expected state, online and staleness rules
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -290,7 +292,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write `apps/desktop/Cargo.toml` and the app shell.**
   - `[package] name = "scent-desktop"`, `[[bin]] name = "scent-control"`.
-  - Dependencies: `eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow"] }` and `scent-core = { path = "../../crates/scent-core" }`.
+  - Dependencies: `eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow"] }` and `scent-core = { path = "../../packages/scent-core" }`.
   - Gate the crate with `#![cfg(target_os = "macos")]` in `main.rs`, and give other targets a `compile_error!`.
   - The window is titled "Scent Control", 1100×720 by default. It has an empty left panel ("Diffusers") and an empty central panel.
   - **`muda` is deferred:** winit already gives a macOS app its standard app menu (About, Hide, Quit). The addendum's "real menu bar" comes when the app has menu commands of its own. Record this as a ruling.
@@ -696,7 +698,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 2: Update the docs.**
   - `README.md`: how to build (`scripts/bundle-macos.sh`) and why it must be launched with `open`.
-  - `CLAUDE.md`: add `crates/scent-core` and `apps/desktop` to the layout, and make Phase 1 current.
+  - `CLAUDE.md`: add `packages/scent-core` and `apps/desktop` to the layout, and make Phase 1 current.
   - `tools/README.md`: a note that everyday control moved to the desktop app, and that the bench stays for protocol experiments.
 
 - [ ] **Step 3: Final checks.**

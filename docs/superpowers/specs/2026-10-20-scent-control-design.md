@@ -459,7 +459,7 @@ way the Phase 0 test bench does, and the bench shows that's already useful.
   and never stored or logged.
 - **Layout:** a Cargo workspace at the repo root, next to the Bun workspace (HCCNA keeps
   `apps/server-rs` the same way).
-  - `crates/scent-core`: pure, no I/O. It holds:
+  - `packages/scent-core`: pure, no I/O. It holds:
     - the codec;
     - tolerant message parsing, including the firmware's invalid JSON;
     - the command allow-list;
