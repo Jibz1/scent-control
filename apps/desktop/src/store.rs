@@ -113,7 +113,7 @@ impl Store {
         }
     }
 
-    /// What [`save`](Self::save) writes for this state: the devices and the broker
+    /// What [`write`](Self::write) writes for this state: the devices and the broker
     /// settings, as JSON. Only what the file holds is in it, so two states give the
     /// same bytes exactly when what would be saved is the same.
     pub fn contents(state: &AppState, broker: &BrokerSettings) -> io::Result<Vec<u8>> {
