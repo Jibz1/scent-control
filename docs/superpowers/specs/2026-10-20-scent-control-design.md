@@ -424,3 +424,95 @@ follows for later phases:
 12. **macOS desktop clients must be app bundles that declare Bluetooth use**, which
     matters for the desktop app (see the Phase 1 design addition).
 
+
+## Addendum: a Rust desktop app first (2026-10-20, for approval)
+
+### Why
+
+The owner wants a working app as soon as possible, before the React Native app
+(owner). A native macOS app is the quickest route. As an app bundle it can declare
+Bluetooth use, which removes Phase 0's main obstacle (macOS kills Bluetooth access
+from processes without that declaration). It can then talk to the diffusers the
+way the Phase 0 test bench does, and the bench shows that's already useful.
+
+### Decided by the owner
+
+- A desktop app written in **Rust**, built **before** the mobile app.
+- **macOS only.** No Tauri, and no web view.
+- Both transports: Bluetooth first when in range, WiFi otherwise (goal 7).
+- Default intensity 1.
+
+### Designer's calls (patterned on github.com/michaelshimeles/bible-rs)
+
+- **UI toolkit:** `eframe`/`egui` 0.36, pure Rust, immediate mode. `bible-rs` compared
+  egui with gpui, iced, AppKit/SwiftUI and web views for a fast Mac app and chose egui.
+  Its widgets don't look like stock AppKit, so it uses custom drawing where needed.
+- **Native touches, macOS only:**
+  - `muda` for a real menu bar;
+  - `objc2`/`objc2-app-kit` only where AppKit is needed, such as window chrome.
+- **Bluetooth:** `btleplug` (CoreBluetooth).
+- **MQTT:** `rumqttc` with its `websocket` and `rustls` features, for `wss://`.
+- **Async runtime:** `tokio`, kept off the UI thread. The UI and the device workers talk
+  over channels.
+- **Secrets:** the broker password is kept in the **macOS Keychain** (`keyring` crate),
+  never in a file. WiFi passwords are typed into a password field, sent over Bluetooth,
+  and never stored or logged.
+- **Layout:** a Cargo workspace at the repo root, next to the Bun workspace (HCCNA keeps
+  `apps/server-rs` the same way).
+  - `crates/scent-core`: pure, no I/O. It holds:
+    - the codec;
+    - tolerant message parsing, including the firmware's invalid JSON;
+    - the command allow-list;
+    - schedule building;
+    - expected-state calculation;
+    - online status;
+    - reading ages.
+    It's tested against `fixtures/scentiment/`, so the Python tools and Rust agree on
+    the same real messages.
+  - `apps/desktop`: the egui app, plus Bluetooth and MQTT workers.
+- **Packaging:** a `scripts/bundle-macos.sh` builds `Scent Control.app` with an Info.plist
+  that declares `NSBluetoothAlwaysUsageDescription`, and signs it ad hoc for local use.
+  The app is launched with `open`. Developer ID signing and notarization come later, when
+  testers need it, as in `bible-rs`'s `RELEASING.md`.
+- **Rust toolchain:** 1.95 or newer (egui 0.36's minimum). This Mac has 1.93, so it needs
+  `rustup update`.
+- **Local state:** known diffusers, their aliases and the last known readings live in
+  `~/Library/Application Support/ScentControl/`. It holds no secrets.
+
+### What desktop v1 does: the test bench, as a real app
+
+1. **Diffusers:** scan over Bluetooth, list `Scentiment` devices with model and color,
+   and remember the ones you add.
+2. **Add a diffuser:**
+   - read `0xFEF4` first;
+   - if it's already on WiFi, send only `SAVE_MQTT` to our broker plus a soft restart;
+   - otherwise ask for the WiFi name and password and send `WIFI_CONNECT` first;
+   - then wait for `device_connected` and send a `PING` with the route ID.
+3. **Control:** power and intensity, over Bluetooth when in range and WiFi otherwise.
+   Over WiFi, what was sent shows as "sent, waiting for the diffuser".
+4. **Schedules:** an editor that sends `UPDATE_PROFILE` (`schedule_flag 1`) and then
+   `SYNC_TIME`, over WiFi, the path Phase 0 confirmed.
+5. **Status, as in the owner's power-reporting rethink:**
+   - each reading shows its source and age, and greys out after 5 minutes;
+   - online means answering pings, sent every 30 s;
+   - "what the schedule says it should be doing now" appears alongside.
+6. **Developer view:** the conversation log from the bench.
+
+### Not in desktop v1
+
+Accounts, homes and the server. The app talks to the test broker directly, like the
+bench, with one shared login. Also out: light control and oil level (unavailable on
+firmware 2.30), firmware updates, Windows/Linux and the mobile app.
+
+### Revised phases
+
+- **Phase 1:** desktop v1 as above, talking to the diffusers and the Phase 0 test broker
+  directly. The test bench is retired once v1 covers it.
+- **Phase 2:** the server and the production broker (per-device logins, the reconciler,
+  pings, stored state). Desktop switches its WiFi path to the server's API. The HVAC 2
+  and Phase 2 device tests (buttons, touchscreen, power cut, Bluetooth schedules) happen
+  here too.
+- **Phase 3:** the mobile app, then accounts, homes and testers (needs a domain for
+  email).
+  - **Open for the owner before Phase 3:** React Native/Expo, as planned, or SwiftUI on
+    iPhone over the same Rust core through UniFFI, which is what `bible-rs` does.
