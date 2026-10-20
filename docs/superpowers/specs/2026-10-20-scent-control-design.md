@@ -382,3 +382,41 @@ and the privacy policy. Needs a domain for sign-in email first (§5).
   control of any device, before publishing anything that describes it.
 - Decide how much of the decompiled-app findings to publish.
 - Confirm the MIT license and the use of the "Scentiment" name (README disclaimer).
+
+## Appendix: Phase 0 results (2026-10-20)
+
+Phase 0 gate: **go.** Details and evidence are in `docs/findings.md`, under "Phase 0
+results". These are the places where reality differs from this design, and what
+follows for later phases:
+
+1. **Oil level isn't available on either unit.** Goal 4's oil display has nothing to
+   show for now. The capability stays in the driver model and is off for both models.
+2. **Light control doesn't work** over Bluetooth or WiFi on firmware 2.30. The LED
+   capability is off for both models until shown otherwise.
+3. **The schedule must be followed by `SYNC_TIME`**: send `UPDATE_PROFILE`
+   (`schedule_flag 1`), then `SYNC_TIME`. Sending the clock first didn't run the
+   schedule.
+4. **Over WiFi, intensity and power changes through the always-on entry get no
+   reply.** The server treats them as sent-but-unconfirmed until a later report.
+5. **Online status comes from active pings**, not the broker connection: the device
+   uses keepalive 1200 s and no will message. The server pings each diffuser regularly,
+   as Scentiment's app does, and a missed answer means offline.
+6. **The device reports state only on change**, and nothing triggers a full report
+   without changing something. The app shows each reading with its source and age,
+   alongside what the schedule says the device should be doing. This is the owner's
+   power-reporting rethink, prototyped in the test bench.
+7. **Parsing must tolerate the firmware's invalid JSON** (`"data":enable:0`) and the
+   object-shaped `update_status` data.
+8. **`WIFI_CONNECT` is only needed for diffusers not yet on WiFi.** Setup checks
+   `0xFEF4` first, and if WiFi is already configured it sends only `SAVE_MQTT` and a
+   soft restart.
+9. **Topics:** the server also handles `scentiment-mqtt-prod/server-notifications/device`
+   (a device announcing itself before it has a user ID). Per-device broker rules must
+   allow subscribing to `scentiment-mqtt-prod/announcements` and publishing there.
+10. **One WiFi home per diffuser.** A diffuser on our broker can't use Scentiment's
+    cloud at the same time. Bluetooth works for both apps, one at a time.
+11. **Not yet tested, moved to Phase 2:** button and touchscreen change reporting, a true
+    power cut (the Air 2 has a battery), and HVAC 2 schedules.
+12. **macOS desktop clients must be app bundles that declare Bluetooth use**, which
+    matters for the desktop app (see the Phase 1 design addition).
+

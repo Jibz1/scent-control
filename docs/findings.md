@@ -6,8 +6,36 @@ Every device behavior we learn goes here with a date and a source tag:
 - **[prior art]**: reported in Scent Assistant's code or issues
 - **[web]**: found online (manuals, FCC filings, forums)
 
-Nothing below is **[observed]** yet. Treat it as leads to confirm with `tools/scan.py`
-and `tools/gatt_dump.py`.
+Sections tagged **[observed]** come from our own diffusers. Everything else is a lead
+until an observation confirms it.
+
+## Phase 0 results (2026-10-20) [observed]
+
+Run on our Air 2 and HVAC 2 (both firmware 2.30) with the Phase 0 tools and test bench.
+**Gate: go.** `SAVE_MQTT` over Bluetooth works on both units, and schedules run on
+the device itself, starting and stopping on time.
+
+| Design assumption | Result |
+|---|---|
+| Bluetooth control | **Partly confirmed.** `TURN_ON` and `SET_LEVEL` work and are acknowledged (`enable:N`, `level:N`, then a status array). `SET_RGB_LEVEL`/`SET_RGB_LED` get no reply and have no visible effect; the main light follows the diffuser's own state (green, white while intensity changes). |
+| `SAVE_MQTT` over Bluetooth | **Confirmed on both.** The device makes a test login within ~20 s and then disconnects. After a soft restart it connects to the new broker (keepalive 1200 s, no will message). |
+| `WIFI_CONNECT` needed | **Not for our units.** Both were still on WiFi from their original setup, so `SAVE_MQTT` plus a restart was enough. |
+| Command order | Only `SAVE_MQTT` then soft restart was used, so the device never needed to reach Scentiment's broker during the move. |
+| URL form | `wss://<railway-domain>/mqtt` with Railway's public certificate worked first time. |
+| Topics | The device subscribes to `scentiment-mqtt-prod/device/<deviceId>` **and** `scentiment-mqtt-prod/announcements` (QoS 0). It publishes `device_connected` to `scentiment-mqtt-prod/server-notifications/device` before it knows a user ID, and to `scentiment-mqtt-prod/user/<userId>` after. Client ID is `ESP32_` + the last 6 characters of the device ID. |
+| `PING`/`userid` persistence | **Confirmed.** The first `PING {"userid"}` replies `ADDED`, later ones `ALREADY_ADDED`. The user ID survives a soft restart: the device announces itself on `user/<userId>` without a new `PING`. A `PING` over Bluetooth also stores it. |
+| Control over WiFi | `TURN_ON` works and is acknowledged. `SET_LEVEL` and `UPDATE_PROFILE` (`schedule_flag 0`, the always-on entry) work **without** any reply. Light commands have no effect. `GET_STATUS` answers only sometimes. `SYNC_TIME` never replies. WiFi commands seemed held while a Bluetooth session was open, and replies can lag ~14 s. |
+| On-device schedules | **Confirmed on the Air 2** (10:24 start; 11:03–11:06 start and stop), with no phone or Bluetooth involved. **The order matters:** `UPDATE_PROFILE` (`schedule_flag 1`) then `SYNC_TIME` works, as in Scentiment's app. `SYNC_TIME` first, then the schedule, did not run. |
+| Power cut | Not tested as a true power cut: the Air 2 **has a battery** and kept running unplugged. A soft restart keeps the broker, the user ID and WiFi. |
+| Button / touchscreen reporting | Not tested yet (Phase 2). |
+| Status reporting | The device reports **only on a change**. `0xFEF3` holds the last value it sent (e.g. `led:50`), not a live status. `PING`, `GET_STATUS` over Bluetooth, and re-sending the same intensity trigger nothing. Unplugging the Air 2 sent no power-source change. |
+| Online detection | With keepalive 1200 s and no will message, the broker can take ~30 min to notice a dead device, so **online status needs active pings**. The bench pings every 30 s, and answers come within ~1 s. |
+| Oil level | **Not available.** Status index 7 (Scentiment's app's "oil") flips between 50 and 100 at constant intensity, so it looks like the spray/pause phase. The HVAC has no oil reading at all. |
+| Status frame | 16 bytes: `55 AA 0B FF`, fields at 4–13, byte 14 a checksum, byte 15 `0x6A`. On the Air 2, `sum(bytes 0..14) & 0xFF == 0x64` in 7 of 7 frames. On the HVAC that rule fails (one sample), so it differs per model. |
+| JSON quirks | `notification` sends `"data":enable:0` without quotes, which is invalid JSON. `update_status` over MQTT carries the array as an object, `{"data":[...]}`, not a string. |
+| HVAC 2 protocol | **Same as the Air 2:** same GATT layout, info and status formats, and move to our broker. Model `H`, manufacturer `03`. Its status array uses fan, gas pump and light fields. |
+| macOS Bluetooth | A process may use Bluetooth only if its responsible app declares `NSBluetoothAlwaysUsageDescription`. Tools started by Claude need the `ScentTools.app` wrapper, and that wrapper can't read `~/Documents`. |
+| Coexisting with Scentiment's app | A diffuser stores **one** broker address. While it points at ours, Scentiment's cloud can't reach it over WiFi. Bluetooth works for both apps, one connection at a time. Each app sends the whole schedule table, so mixing them on one diffuser conflicts. |
 
 ## Our devices (user-reported, 2026-10-20)
 
@@ -15,7 +43,7 @@ and `tools/gatt_dump.py`.
 - **Scentiment Diffuser HVAC 2** (touchscreen, 500 ml). This is **not** the Scent
   Diffuser Pro 2, so the Pro 2 hardware notes below don't apply to it. No FCC filing for
   the HVAC 2 has turned up, so nothing public is known about its chips or its Bluetooth
-  protocol. Scanning it is the first real unknown.
+  protocol. Scanning showed it speaks the same protocol as the Air 2 (see Phase 0 results).
 
 ## 2026-10-20: Read-only survey of our two diffusers [observed]
 
