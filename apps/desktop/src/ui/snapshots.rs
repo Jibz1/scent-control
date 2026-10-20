@@ -1,6 +1,7 @@
 //! Renders the screens to `target/snapshots/*.png`, so that the look can be judged
 //! without a screen: the main window in light and dark with the first diffuser open,
-//! the Settings window, and the notices. Uses the Mac's own fonts; the PNGs stay
+//! the Settings window, the notices, the Add Diffuser sheet as it asks for a network,
+//! waits and fails, and the Edit Schedule sheet with a valid schedule and a mistake. Uses the Mac's own fonts; the PNGs stay
 //! under `target/` and are never committed. Run it with
 //! `cargo test -p scent-desktop render_screens -- --ignored`.
 
@@ -11,13 +12,16 @@ use egui_kittest::Harness;
 use scent_core::{AlwaysOn, DeviceInfo, Direction, Level, Profile, ScheduleFlag, Via};
 
 use super::Screens;
+use super::add_sheet::Target;
+use super::schedule_editor::{DraftEntry, test_time};
 use super::settings::{self, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
 use super::theme::{self, Palette};
+use crate::add_flow::{AddStep, wait_outcome};
 use crate::hub::NO_BROKER_PASSWORD;
 use crate::mqtt::BrokerSettings;
 use crate::state::{
-    AppState, BrokerState, DeviceView, Event, Field, LogEntry, Reading, ScanHit, Sent,
+    Adding, AppState, BrokerState, DeviceView, Event, Field, LogEntry, Reading, ScanHit, Sent,
 };
 
 fn out_dir() -> PathBuf {
@@ -182,7 +186,8 @@ fn render(name: &str, size: Vec2, dark: bool, mut draw: impl FnMut(&mut egui::Ui
             }
             whole_window(ui, &mut draw);
         });
-    harness.run_steps(4);
+    // A sheet takes a few frames to measure what it holds.
+    harness.run_steps(8);
     save(name, &mut harness)
 }
 
@@ -325,13 +330,98 @@ fn traffic_lights(ui: &egui::Ui) {
 }
 
 fn main_window(name: &str, dark: bool, state: AppState, notice: Option<&str>) -> Pixels {
+    let size = theme::WINDOW_SIZE.into();
+    main_window_with(name, dark, size, state, notice, |_, _| {})
+}
+
+/// The main window at `size`, with `prepare` given the screens to open a sheet on first.
+fn main_window_with(
+    name: &str,
+    dark: bool,
+    size: Vec2,
+    state: AppState,
+    notice: Option<&str>,
+    prepare: impl FnOnce(&mut Screens, &AppState),
+) -> Pixels {
     let mut screens = Screens::new(notice.map(str::to_owned));
     // A scan has come back, as the hit in the state says.
     screens.on_event(&Event::Scanned(state.scan.clone()));
-    render(name, theme::WINDOW_SIZE.into(), dark, move |ui| {
+    prepare(&mut screens, &state);
+    render(name, size, dark, move |ui| {
         let _ = screens.show(ui, &state, &BrokerSettings::default(), NOW);
         traffic_lights(ui);
     })
+}
+
+/// The diffuser found nearby, read over Bluetooth as the add began: not on WiFi yet.
+const ADDED: &str = "TESTDEVICE03";
+const ADDED_BLE: &str = "ble-7";
+
+/// The state while the diffuser found nearby is being added, at `step`.
+fn adding_state(step: AddStep, reached: AddStep) -> AppState {
+    let mut state = snapshot_state();
+    let mut found = DeviceView::new(ADDED);
+    found.ble_id = Some(ADDED_BLE.to_owned());
+    found.info = Some(DeviceInfo {
+        manufacturer_id: "01".into(),
+        model_name: "Diffuser".into(),
+        variant_name: "Black".into(),
+        device_id: ADDED.into(),
+        firmware: "2.30".into(),
+        wifi_configured: false,
+        wifi_status: 0,
+    });
+    state.devices.insert(ADDED.to_owned(), found);
+    state.adding = Some(Adding {
+        ble_id: ADDED_BLE.to_owned(),
+        label: "Air 2".to_owned(),
+        step,
+        reached: Some(reached),
+    });
+    state
+}
+
+/// The Add Diffuser sheet over the main window, at `step`.
+fn add_sheet(name: &str, dark: bool, step: AddStep, reached: AddStep, with_wifi: bool) {
+    let state = adding_state(step, reached);
+    let size = theme::WINDOW_SIZE.into();
+    let _ = main_window_with(name, dark, size, state, None, move |screens, _| {
+        screens.add_sheet.open(Target {
+            ble_id: ADDED_BLE.to_owned(),
+            name: "Air 2".to_owned(),
+        });
+        screens.add_sheet.as_submitted(with_wifi);
+    });
+}
+
+/// The Edit Schedule sheet over the main window, for the first diffuser, with `entries`.
+/// The window is taller than it opens, so that the whole sheet shows; at the size it
+/// opens the times scroll.
+fn schedule_editor(name: &str, dark: bool, entries: Vec<DraftEntry>) {
+    let size = vec2(theme::WINDOW_SIZE[0], 1260.0);
+    let _ = main_window_with(
+        name,
+        dark,
+        size,
+        snapshot_state(),
+        None,
+        move |screens, state| {
+            screens.schedule.open(&state.devices[ONE], NOW);
+            let draft = screens.schedule.draft_mut();
+            draft.offset = "-4".to_owned();
+            draft.entries = entries;
+        },
+    );
+}
+
+fn time(start: &str, end: &str, days: &[u8], level: u8) -> DraftEntry {
+    DraftEntry {
+        start: start.to_owned(),
+        end: end.to_owned(),
+        days: days.to_vec(),
+        level,
+        runs: true,
+    }
 }
 
 /// The Settings window as the app draws it, at the height it asks for, showing
@@ -393,4 +483,50 @@ fn render_screens() {
     for (name, dark) in [("settings_light", false), ("settings_dark", true)] {
         settings_window(name, dark);
     }
+
+    // Adding the diffuser found nearby: it isn't on WiFi, so the sheet asks for the
+    // network; then, with one given, it waits for the diffuser on the broker; and then
+    // the wait has failed.
+    add_sheet(
+        "add_need_wifi_light",
+        false,
+        AddStep::NeedWifi,
+        AddStep::ReadInfo,
+        false,
+    );
+    for (name, dark) in [("add_waiting_light", false), ("add_waiting_dark", true)] {
+        add_sheet(
+            name,
+            dark,
+            AddStep::WaitConnected,
+            AddStep::WaitConnected,
+            true,
+        );
+    }
+    add_sheet(
+        "add_failed_light",
+        false,
+        wait_outcome(0, 90, false),
+        AddStep::WaitConnected,
+        true,
+    );
+
+    // Two times and a test time starting in 3 minutes (11:33 at UTC-4); then a time
+    // that ends before it starts.
+    let test = test_time(NOW, -4.0, 3).expect("a test time");
+    let valid = vec![
+        time("07:00", "09:00", &[1, 2, 3, 4, 5], 2),
+        time("18:30", "22:00", &[0, 6], 1),
+        test,
+    ];
+    schedule_editor("schedule_valid_light", false, valid.clone());
+    schedule_editor("schedule_valid_dark", true, valid);
+    schedule_editor(
+        "schedule_error_light",
+        false,
+        vec![
+            time("07:00", "09:00", &[1, 2, 3, 4, 5], 2),
+            time("22:00", "06:00", &[0, 6], 1),
+        ],
+    );
 }

@@ -1,17 +1,20 @@
 //! The screens, as a Mac split view: the sidebar (the diffuser list) on the left under
 //! the traffic lights, and on the right a toolbar, the open diffuser, and the log pane
-//! along the bottom. Settings is a window of its own. Each file is one screen; the look
-//! is in `theme` and the controls they share in `widgets`. This one lays them out and
-//! holds what they ask of the app.
+//! along the bottom. Settings is a window of its own; Add Diffuser and Edit Schedule are
+//! sheets over the main window. Each file is one screen; the look is in `theme` and the
+//! controls they share in `widgets`. This one lays them out and holds what they ask of
+//! the app.
 //!
 //! The screens only read the state they are given and hand back what they want done
 //! ([`Requests`]); the app sends the commands to the hub and saves the settings.
 
+pub mod add_sheet;
 pub mod clock;
 pub mod device_list;
 pub mod device_panel;
 pub mod format;
 pub mod log_view;
+pub mod schedule_editor;
 pub mod settings;
 pub mod theme;
 pub mod widgets;
@@ -25,10 +28,12 @@ use eframe::egui::{
     self, Align, Frame, Id, Key, KeyboardShortcut, Layout, Margin, RichText, Sense, ViewportCommand,
 };
 
+use self::add_sheet::{AddSheet, Target};
 use self::device_list::DeviceList;
 use self::device_panel::DevicePanel;
 use self::format::{broker_summary, broker_text};
 use self::log_view::LogView;
+use self::schedule_editor::ScheduleEditor;
 use self::settings::{SettingsWindow, Submitted};
 use self::theme::{
     GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_TOP_INSET, SIDEBAR_WIDTH,
@@ -37,6 +42,7 @@ use self::theme::{
 use self::widgets::{
     NoticeKind, gear_button, hairline, notice_with, plain_button, status_dot, toolbar_button,
 };
+use crate::add_flow::AddStep;
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
 use crate::state::{AppState, BrokerState, Event};
@@ -48,6 +54,14 @@ const SETTINGS_SHORTCUT: KeyboardShortcut =
 /// The widest the open diffuser's boxes get, so that rows stay readable in a wide
 /// window.
 const CONTENT_MAX_WIDTH: f32 = 640.0;
+
+/// A sheet a screen asks to open.
+pub enum OpenSheet {
+    /// Add Diffuser, for this diffuser.
+    Add(Target),
+    /// Edit Schedule, for the diffuser with this device ID.
+    Schedule(String),
+}
 
 /// What the screens ask the app to do after a frame.
 #[derive(Default)]
@@ -66,6 +80,8 @@ pub struct Screens {
     panel: DevicePanel,
     log: LogView,
     pub settings: SettingsWindow,
+    add_sheet: AddSheet,
+    schedule: ScheduleEditor,
     /// A problem with the saved file, until the person dismisses it.
     notice: Option<String>,
 }
@@ -78,6 +94,8 @@ impl Screens {
             panel: DevicePanel::default(),
             log: LogView::default(),
             settings: SettingsWindow::default(),
+            add_sheet: AddSheet::default(),
+            schedule: ScheduleEditor::default(),
             notice,
         }
     }
@@ -88,10 +106,18 @@ impl Screens {
     }
 
     /// Tells the screens about an event before it is folded into the state, for what
-    /// only they care about (a scan has ended; a command has got through).
+    /// only they care about (a scan has ended; a command has got through; a diffuser
+    /// was added, and is opened).
     pub fn on_event(&mut self, event: &Event) {
         self.list.on_event(event);
         self.panel.on_event(event);
+        if let Event::Adding {
+            step: AddStep::Done(device_id),
+            ..
+        } = event
+        {
+            self.selected = Some(device_id.clone());
+        }
     }
 
     /// Opens the first diffuser when none is open.
@@ -113,6 +139,7 @@ impl Screens {
         now: i64,
     ) -> Requests {
         let mut requests = Requests::default();
+        let mut sheet = None;
         self.keep_selection(state);
         let palette = Palette::of(ui);
         if ui.input_mut(|input| input.consume_shortcut(&SETTINGS_SHORTCUT)) {
@@ -142,7 +169,9 @@ impl Screens {
             .show_separator_line(false)
             .frame(sidebar)
             .show(ui, |ui| {
-                let commands = self.list.show(ui, state, &mut self.selected, now);
+                let commands = self
+                    .list
+                    .show(ui, state, &mut self.selected, now, &mut sheet);
                 requests.commands.extend(commands);
             })
             .response
@@ -172,7 +201,7 @@ impl Screens {
                     self.notices(ui, state, broker);
                     match self.selected.as_ref().and_then(|id| state.devices.get(id)) {
                         Some(device) => {
-                            let commands = self.panel.show(ui, state, device, now);
+                            let commands = self.panel.show(ui, state, device, now, &mut sheet);
                             requests.commands.extend(commands);
                         }
                         None => {
@@ -198,6 +227,21 @@ impl Screens {
         if let Some(log) = log {
             painter.hline(log.x_range(), log.top(), separator);
         }
+
+        match sheet {
+            Some(OpenSheet::Add(target)) => self.add_sheet.open(target),
+            Some(OpenSheet::Schedule(device_id)) => {
+                if let Some(device) = state.devices.get(&device_id) {
+                    self.schedule.open(device, now);
+                }
+            }
+            None => {}
+        }
+        let sheets = [
+            self.add_sheet.show(ui.ctx(), state),
+            self.schedule.show(ui.ctx(), state, now),
+        ];
+        requests.commands.extend(sheets.into_iter().flatten());
 
         requests.settings = self.settings.show(ui.ctx(), &state.broker);
         requests

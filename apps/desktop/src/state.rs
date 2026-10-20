@@ -12,6 +12,8 @@ use scent_core::{
     Status, Via, online_status, parse_mqtt, parse_notification, valid_device_id,
 };
 
+use crate::add_flow::AddStep;
+
 /// How many log entries the app keeps. The oldest go first.
 pub const LOG_CAP: usize = 500;
 
@@ -20,6 +22,13 @@ const WIFI_CONNECTED: u8 = 3;
 
 /// The log's label for a message with no `action`.
 const NO_ACTION: &str = "(no action)";
+
+/// What the log calls an add that failed.
+const ADD: &str = "Add";
+
+/// What a diffuser says once it has taken `SAVE_MQTT`, over Bluetooth or as the `msg` of
+/// an acknowledgement on the broker. Matched in any case.
+const CREDENTIALS_SAVED: &str = "credentials saved";
 
 /// One value a diffuser reported, with when and over what it arrived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +105,14 @@ pub struct DeviceView {
     pub sent: Option<Sent>,
     /// The schedule table we believe the diffuser holds, from what we sent it.
     pub sent_profile: Option<Profile>,
+    /// When it last said it joined the broker (`device_connected`, on either topic).
+    /// An add waits for one that comes after the restart.
+    pub connected_at: Option<i64>,
+    /// When its info was last read over Bluetooth, so that an add can tell the info it
+    /// just read from what was known before.
+    pub info_at: Option<i64>,
+    /// When it last said "Credentials saved", after an add's `SAVE_MQTT`.
+    pub credentials_saved_at: Option<i64>,
 }
 
 impl DeviceView {
@@ -111,6 +128,9 @@ impl DeviceView {
             ping_at: None,
             sent: None,
             sent_profile: None,
+            connected_at: None,
+            info_at: None,
+            credentials_saved_at: None,
         }
     }
 
@@ -150,9 +170,10 @@ impl DeviceView {
         }
     }
 
-    /// A `device_connected` message: the diffuser joined the broker. It fills in
-    /// what the message carries and leaves the rest of what Bluetooth told us.
-    fn note_connected(&mut self, connected: &Connected) {
+    /// A `device_connected` message at `at`: the diffuser joined the broker. It fills
+    /// in what the message carries and leaves the rest of what Bluetooth told us.
+    fn note_connected(&mut self, connected: &Connected, at: i64) {
+        self.connected_at = Some(at);
         let id = &self.id;
         let info = self.info.get_or_insert_with(|| DeviceInfo {
             manufacturer_id: String::new(),
@@ -176,6 +197,20 @@ impl DeviceView {
             }
         }
     }
+}
+
+/// The add the screens started last, and where it is. Not saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adding {
+    /// The diffuser being added, by its Bluetooth ID.
+    pub ble_id: String,
+    /// What it is to be called once it is added; empty keeps its device ID.
+    pub label: String,
+    /// Where it is, as the hub last said.
+    pub step: AddStep,
+    /// The last step the hub was working on, which is where a failure happened. `None`
+    /// until the hub has started one.
+    pub reached: Option<AddStep>,
 }
 
 /// A Bluetooth device seen while scanning.
@@ -220,6 +255,12 @@ pub enum Event {
         power: Option<bool>,
         intensity: Option<u8>,
         profile: Option<Profile>,
+    },
+    /// An add has reached `step` (see `add_flow`). The diffuser is known by its
+    /// Bluetooth ID until its info has been read.
+    Adding {
+        ble_id: String,
+        step: AddStep,
     },
     /// A `PING` went to the diffuser over WiFi.
     Pinged {
@@ -274,6 +315,8 @@ pub struct AppState {
     pub broker: BrokerState,
     /// The conversation, oldest first, at most [`LOG_CAP`] entries.
     pub log: VecDeque<LogEntry>,
+    /// The add the screens started last. Not saved.
+    pub adding: Option<Adding>,
 }
 
 impl AppState {
@@ -320,6 +363,7 @@ impl AppState {
                     }
                 }
             }
+            Event::Adding { ble_id, step } => self.on_adding(&ble_id, step, now),
             Event::Pinged { device_id, at } => {
                 if let Some(device) = self.devices.get_mut(&device_id) {
                     device.ping_at = Some(at);
@@ -342,6 +386,56 @@ impl AppState {
             Event::BrokerConnected => self.set_broker(BrokerState::Connected, now),
             Event::BrokerLoginRefused(why) => self.set_broker(BrokerState::LoginRefused(why), now),
             Event::BrokerDisconnected(why) => self.set_broker(BrokerState::Disconnected(why), now),
+        }
+    }
+
+    /// Starts following an add of the diffuser at `ble_id`, to be called `label`, in
+    /// place of any earlier one. The screens call it as they hand the add to the hub.
+    pub fn begin_add(&mut self, ble_id: &str, label: &str) {
+        self.adding = Some(Adding {
+            ble_id: ble_id.to_owned(),
+            label: label.to_owned(),
+            step: AddStep::ReadInfo,
+            reached: None,
+        });
+    }
+
+    /// The hub says where the add of `ble_id` is. Only the add the screens follow
+    /// counts. Once it is done, the diffuser takes its name; a failure is logged, as
+    /// the sheet may have been closed.
+    fn on_adding(&mut self, ble_id: &str, step: AddStep, now: i64) {
+        let Some(adding) = self
+            .adding
+            .as_mut()
+            .filter(|adding| adding.ble_id == ble_id)
+        else {
+            return;
+        };
+        if step.is_running() {
+            adding.reached = Some(step.clone());
+        }
+        if let AddStep::Done(id) = &step
+            && !adding.label.is_empty()
+            && let Some(device) = self.devices.get_mut(id)
+        {
+            device.label.clone_from(&adding.label);
+        }
+        adding.step = step.clone();
+        if let AddStep::Failed(why) = step {
+            let device_id = self
+                .devices
+                .values()
+                .find(|device| device.ble_id.as_deref() == Some(ble_id))
+                .map(|device| device.id.clone());
+            self.push_log(LogEntry {
+                at: now,
+                device_id,
+                via: None,
+                direction: Direction::ToDevice,
+                action: ADD.to_owned(),
+                text: why,
+                sent: false,
+            });
         }
     }
 
@@ -370,6 +464,8 @@ impl AppState {
         // capped log within hours. It is still heard, below.
         let routine = ack == Some(Ack::AlreadyAdded)
             || (direction == Direction::ToDevice && action.as_deref() == Some("PING"));
+        let credentials_saved =
+            action.as_deref() == Some("acknowledgement") && says_credentials_saved(&raw);
         if !routine {
             self.push_log(LogEntry {
                 at,
@@ -396,7 +492,10 @@ impl AppState {
             .or_insert_with_key(|id| DeviceView::new(id));
         device.heard_wifi = Some(at);
         if let Some(connected) = &connected {
-            device.note_connected(connected);
+            device.note_connected(connected, at);
+        }
+        if credentials_saved {
+            device.credentials_saved_at = Some(at);
         }
         device.merge_readings(&status.unwrap_or_default(), rssi, at, Via::Wifi);
     }
@@ -411,6 +510,9 @@ impl AppState {
         if let Some(device) = device {
             device.heard_ble = Some(at);
             device.merge_readings(&note.status, None, at, Via::Bluetooth);
+            if says_credentials_saved(&note.raw) {
+                device.credentials_saved_at = Some(at);
+            }
         }
         let action = match note.kind {
             NoteKind::StatusText | NoteKind::StatusArray => "status",
@@ -439,6 +541,7 @@ impl AppState {
                 .or_insert_with_key(|id| DeviceView::new(id));
             device.ble_id = Some(ble_id);
             device.info = Some(info);
+            device.info_at = Some(at);
             device.heard_ble = Some(at);
         }
         self.push_log(LogEntry {
@@ -494,6 +597,11 @@ pub fn unix_now() -> i64 {
         .map_or(0, |since| {
             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+/// Whether a diffuser's message says it took `SAVE_MQTT` (see [`CREDENTIALS_SAVED`]).
+fn says_credentials_saved(text: &str) -> bool {
+    text.to_ascii_lowercase().contains(CREDENTIALS_SAVED)
 }
 
 /// The `action` of a command's redacted frame (Bluetooth frames end in `-|`).
@@ -678,6 +786,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::add_flow::AddStep;
     use crate::mqtt::BrokerSettings;
     use crate::store::{Store, TempDir};
 
@@ -1529,6 +1638,160 @@ mod tests {
         );
     }
 
+    // Adding a diffuser
+
+    /// `device_connected` on the topic it uses before it knows a user ID.
+    const CONNECTED_FIRST: &str = include_str!(
+        "../../../fixtures/scentiment/air2-mqtt-device-connected-server-notifications.json"
+    );
+    /// `device_connected` on our user topic, after a soft restart.
+    const CONNECTED_AGAIN: &str =
+        include_str!("../../../fixtures/scentiment/air2-mqtt-device-connected-user.json");
+
+    #[test]
+    fn device_connected_on_either_topic_says_when_it_joined() {
+        for fixture in [CONNECTED_FIRST, CONNECTED_AGAIN] {
+            let mut s = AppState::default();
+            s.apply_at(fixture_event(fixture, 700), NOW);
+            assert_eq!(s.devices[ID1].connected_at, Some(700));
+            // A later one moves it on.
+            s.apply_at(fixture_event(fixture, 800), NOW);
+            assert_eq!(s.devices[ID1].connected_at, Some(800));
+        }
+        // Nothing else does: a status report, our own ping, the info over Bluetooth.
+        let mut s = known_air2();
+        s.apply_at(fixture_event(UPDATE_STATUS, 900), NOW);
+        s.apply_at(our_ping(901), NOW);
+        s.apply_at(fixture_event(ACK_ALREADY_ADDED, 902), NOW);
+        s.apply_at(ble_info(BLE1, ID1, 903), NOW);
+        assert_eq!(s.devices[ID1].connected_at, None);
+    }
+
+    #[test]
+    fn the_info_read_over_bluetooth_says_when_it_was_read() {
+        let mut s = AppState::default();
+        s.apply_at(ble_info(BLE1, ID1, 10), NOW);
+        assert_eq!(s.devices[ID1].info_at, Some(10));
+        // Hearing it otherwise is not reading its info.
+        s.apply_at(note(BLE1, "S:1,L:2", 20), NOW);
+        s.apply_at(fixture_event(CONNECTED_AGAIN, 30), NOW);
+        assert_eq!(s.devices[ID1].info_at, Some(10));
+        s.apply_at(ble_info(BLE1, ID1, 40), NOW);
+        assert_eq!(s.devices[ID1].info_at, Some(40));
+    }
+
+    #[test]
+    fn credentials_saved_is_heard_over_bluetooth_or_the_broker() {
+        // Over Bluetooth, from the diffuser it is linked to.
+        let mut s = known_air2();
+        s.apply_at(note(BLE1, "Credentials saved-|", 50), NOW);
+        assert_eq!(s.devices[ID1].credentials_saved_at, Some(50));
+        // As an acknowledgement on the broker.
+        let body = serde_json::json!({
+            "action": "acknowledgement",
+            "payload": { "deviceId": ID1, "msg": "Credentials saved" },
+        });
+        let mut s = known_air2();
+        s.apply_at(mqtt(USER_TOPIC, &body.to_string(), 60), NOW);
+        assert_eq!(s.devices[ID1].credentials_saved_at, Some(60));
+        // Other notifications and acknowledgements are not it.
+        let mut s = known_air2();
+        s.apply_at(note(BLE1, "enable:1", 70), NOW);
+        s.apply_at(fixture_event(ACK_ADDED, 71), NOW);
+        s.apply_at(fixture_event(ACK_ALREADY_ADDED, 72), NOW);
+        assert_eq!(s.devices[ID1].credentials_saved_at, None);
+        // Nor is our own SAVE_MQTT, as the broker hands it back.
+        let save = Command::SaveMqtt {
+            broker: "wss://broker.example.test/mqtt".into(),
+            username: "user".into(),
+            password: Secret::new("x".into()),
+        };
+        s.apply_at(
+            Event::Mqtt {
+                topic: DEVICE1_TOPIC.to_owned(),
+                body: save.mqtt_body(),
+                at: 73,
+            },
+            NOW,
+        );
+        assert_eq!(s.devices[ID1].credentials_saved_at, None);
+    }
+
+    fn adding(ble_id: &str, step: AddStep) -> Event {
+        Event::Adding {
+            ble_id: ble_id.to_owned(),
+            step,
+        }
+    }
+
+    #[test]
+    fn an_add_follows_its_steps_and_names_the_diffuser_when_done() {
+        let mut s = AppState::default();
+        s.begin_add(BLE1, "Bedroom");
+        let current = s.adding.clone().unwrap();
+        assert_eq!(
+            (current.ble_id.as_str(), current.label.as_str()),
+            (BLE1, "Bedroom")
+        );
+        assert_eq!((current.step, current.reached), (AddStep::ReadInfo, None));
+
+        s.apply_at(adding(BLE1, AddStep::ReadInfo), NOW);
+        // Reading the info is what makes it a known diffuser, under its ID.
+        s.apply_at(ble_info(BLE1, ID1, 10), NOW);
+        assert_eq!(s.devices[ID1].label, ID1);
+        for step in [AddStep::SaveMqtt, AddStep::Restart, AddStep::WaitConnected] {
+            s.apply_at(adding(BLE1, step.clone()), NOW);
+            let current = s.adding.as_ref().unwrap();
+            assert_eq!(current.step, step);
+            assert_eq!(current.reached.as_ref(), Some(&step));
+        }
+        // Another diffuser's progress is not this add's.
+        s.apply_at(adding("ble-other", AddStep::Failed("No.".into())), NOW);
+        assert_eq!(s.adding.as_ref().unwrap().step, AddStep::WaitConnected);
+
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].label, "Bedroom");
+        let current = s.adding.as_ref().unwrap();
+        assert_eq!(current.step, AddStep::Done(ID1.to_owned()));
+        assert_eq!(current.reached, Some(AddStep::WaitConnected));
+    }
+
+    #[test]
+    fn an_add_with_no_name_keeps_the_device_id() {
+        let mut s = known_air2();
+        s.begin_add(BLE1, "");
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].label, ID1);
+    }
+
+    #[test]
+    fn a_failed_add_says_why_in_the_log_and_where_it_stopped() {
+        let mut s = known_air2();
+        let before = s.log.len();
+        s.begin_add(BLE1, "Bedroom");
+        s.apply_at(adding(BLE1, AddStep::SaveMqtt), NOW);
+        s.apply_at(adding(BLE1, AddStep::Failed("No answer.".into())), NOW);
+        let current = s.adding.as_ref().unwrap();
+        assert_eq!(current.step, AddStep::Failed("No answer.".into()));
+        assert_eq!(current.reached, Some(AddStep::SaveMqtt));
+        assert_eq!(s.devices[ID1].label, ID1);
+        let logged = s.log.iter().skip(before).collect::<Vec<_>>();
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert_eq!(logged[0].action, "Add");
+        assert_eq!(logged[0].text, "No answer.");
+        assert_eq!(logged[0].device_id.as_deref(), Some(ID1));
+        assert_eq!(logged[0].via, None);
+        // Progress is not logged.
+        assert!(s.log.iter().skip(before).all(|entry| entry.action == "Add"));
+        // A new add starts over.
+        s.begin_add(BLE1, "Kitchen");
+        let current = s.adding.as_ref().unwrap();
+        assert_eq!(
+            (current.step.clone(), current.reached.clone()),
+            (AddStep::ReadInfo, None)
+        );
+    }
+
     // Local store
 
     #[test]
@@ -1558,6 +1821,9 @@ mod tests {
             NOW,
         );
         s.apply_at(Event::BrokerConnected, NOW);
+        s.apply_at(fixture_event(CONNECTED_AGAIN, 4_003), NOW);
+        s.apply_at(note(BLE1, "Credentials saved", 4_004), NOW);
+        s.begin_add(BLE1, "Bedroom");
 
         store.save(&s, &BrokerSettings::default()).unwrap();
         let loaded = store.load().state;
@@ -1577,6 +1843,15 @@ mod tests {
             (None, None, None)
         );
         assert!(after.sent.is_none() && after.sent_profile.is_none());
+        assert_eq!(
+            (
+                after.connected_at,
+                after.info_at,
+                after.credentials_saved_at
+            ),
+            (None, None, None)
+        );
+        assert!(loaded.adding.is_none());
         assert!(loaded.log.is_empty() && loaded.scan.is_empty());
         assert_eq!(loaded.broker, BrokerState::Connecting);
 

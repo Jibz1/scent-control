@@ -188,6 +188,11 @@ impl eframe::App for ScentApp {
 
         let requests = self.screens.show(ui, &self.view, &self.broker, now);
         for command in requests.commands {
+            // The state follows the add from here, so that its name is given once it is
+            // done, even if the sheet has been closed.
+            if let UiCommand::Add(request) = &command {
+                self.change_state(|state| state.begin_add(&request.ble_id, &request.label));
+            }
             self.hub.submit(command);
         }
         if let Some(submitted) = requests.settings {

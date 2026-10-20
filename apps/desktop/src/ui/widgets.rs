@@ -15,8 +15,12 @@
 //!   default one, filled in the accent color, is the one Return presses.
 //!   [`gear_button`] is the toolbar's way to Settings.
 //! - [`checkbox`]: for a choice that isn't a setting, such as a filter.
+//! - [`day_toggles`]: the days of the week, S M T W T F S, each on or off.
 //! - [`secondary`] and [`footnote`]: Subheadline text in the secondary label color, the
 //!   second under a grouped box, lined up with its rows at [`BOX_PADDING_X`].
+//!   [`problem`] is a footnote in red, for what is wrong with the box above it.
+//! - [`sheet`]: a modal panel that hangs from the top of the window, as a Mac sheet
+//!   does; [`alert`] is one in the middle of the window, such as a confirmation.
 //! - [`one_line`] lays text out on one line, cut short to a width; [`hairline`] is the
 //!   width of a one-pixel line.
 //!
@@ -35,7 +39,8 @@ use eframe::egui::{
 };
 
 use super::theme::{
-    BOX_RADIUS, CONTROL_RADIUS, GRID, NOTICE_RADIUS, Palette, headline, subheadline,
+    BOX_RADIUS, CONTROL_RADIUS, GRID, MARGIN, NOTICE_RADIUS, Palette, TOOLBAR_HEIGHT, headline,
+    subheadline,
 };
 
 /// The regular macOS switch.
@@ -45,7 +50,22 @@ const SWITCH_SIZE: egui::Vec2 = vec2(38.0, 22.0);
 const CONTROL_HEIGHT: f32 = 22.0;
 
 /// The narrowest a push button gets, so that a pair such as Cancel and Save line up.
-const MIN_BUTTON_WIDTH: f32 = 72.0;
+pub const MIN_BUTTON_WIDTH: f32 = 72.0;
+
+/// The width of each of the [`day_toggles`], and the gap between them.
+const DAY_WIDTH: f32 = 26.0;
+const DAY_GAP: f32 = 2.0;
+
+/// The days of the week, from Sunday (0), as [`day_toggles`] shows and names them.
+const DAYS: [(&str, &str); 7] = [
+    ("S", "Sunday"),
+    ("M", "Monday"),
+    ("T", "Tuesday"),
+    ("W", "Wednesday"),
+    ("T", "Thursday"),
+    ("F", "Friday"),
+    ("S", "Saturday"),
+];
 
 /// The space inside a grouped box on its left and right. A row's text, the hairlines
 /// between rows and a [`footnote`] under the box all start this far in.
@@ -90,6 +110,18 @@ pub fn footnote(ui: &mut Ui, text: &str) -> Response {
     ui.horizontal(|ui| {
         ui.add_space(BOX_PADDING_X);
         secondary(ui, text)
+    })
+    .inner
+}
+
+/// A [`footnote`] in the red of an error: what is wrong with the box above it, such as a
+/// time that ends before it starts.
+pub fn problem(ui: &mut Ui, text: &str) -> Response {
+    let color = Palette::of(ui).red;
+    ui.add_space(GRID / 2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(BOX_PADDING_X);
+        ui.add(egui::Label::new(RichText::new(text).text_style(subheadline()).color(color)).wrap())
     })
     .inner
 }
@@ -209,6 +241,65 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
         let text_at = pos2(mark.right() + gap, rect.center().y - galley.size().y / 2.0);
         painter.galley(text_at, galley, palette.label);
         focus_ring(ui, &response, mark, 3.5);
+    }
+    response
+}
+
+/// The days of the week as seven toggle buttons, S M T W T F S, for the days a schedule
+/// runs on: `days` holds the chosen ones, 0 for Sunday to 6 for Saturday, in order.
+/// Clicking a day adds or removes it, and the response is then `changed`. A chosen day
+/// is filled in the accent color. To accessibility it is a group named `label`, and each
+/// day a checkbox in it named for the day.
+pub fn day_toggles(ui: &mut Ui, days: &mut Vec<u8>, label: &str) -> Response {
+    let palette = Palette::of(ui);
+    let size = vec2(
+        DAY_WIDTH * DAYS.len() as f32 + DAY_GAP * (DAYS.len() - 1) as f32,
+        CONTROL_HEIGHT,
+    );
+    let (rect, mut response) = ui.allocate_exact_size(size, Sense::hover());
+    let id = response.id;
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, enabled, label));
+    let group = ui.new_child(UiBuilder::new().max_rect(rect).accessibility_parent(id));
+    let mut changed = false;
+    for (day, (letter, name)) in (0_u8..).zip(DAYS) {
+        let part_rect = Rect::from_min_size(
+            rect.min + vec2(f32::from(day) * (DAY_WIDTH + DAY_GAP), 0.0),
+            vec2(DAY_WIDTH, CONTROL_HEIGHT),
+        );
+        let part = group.interact(part_rect, id.with(day), Sense::click());
+        if part.clicked() {
+            match days.iter().position(|&chosen| chosen == day) {
+                Some(at) => {
+                    days.remove(at);
+                }
+                None => {
+                    days.push(day);
+                    days.sort_unstable();
+                }
+            }
+            changed = true;
+        }
+        let on = days.contains(&day);
+        part.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, on, name));
+        if ui.is_rect_visible(part_rect) {
+            let widgets = &ui.visuals().widgets.inactive;
+            let (fill, edge, text) = if on {
+                (palette.accent, Stroke::NONE, Color32::WHITE)
+            } else {
+                (widgets.bg_fill, widgets.bg_stroke, palette.label)
+            };
+            let painter = ui.painter();
+            painter.rect(part_rect, CONTROL_RADIUS, fill, edge, StrokeKind::Inside);
+            let galley = one_line(ui, letter, TextStyle::Button, f32::INFINITY);
+            let at = Align2::CENTER_CENTER.align_size_within_rect(galley.size(), part_rect);
+            painter.galley(at.min, galley, text);
+            focus_ring(ui, &part, part_rect, CONTROL_RADIUS);
+        }
+        response |= part;
+    }
+    if changed {
+        response.mark_changed();
     }
     response
 }
@@ -498,6 +589,74 @@ pub fn notice_with<R>(
     (inner.inner, inner.response)
 }
 
+/// A sheet, as on the Mac: a modal panel `width` wide that hangs from the top of the
+/// window's content, under the toolbar, over a light dim that keeps the window behind it
+/// from being used. What `add_contents` adds is inside the window's margins. A click
+/// outside doesn't close it, as it doesn't a Mac sheet: its own buttons and keys do.
+pub fn sheet<R>(
+    ctx: &egui::Context,
+    id: Id,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    modal(
+        ctx,
+        id,
+        width,
+        (Align2::CENTER_TOP, vec2(0.0, TOOLBAR_HEIGHT)),
+        add_contents,
+    )
+}
+
+/// An alert: as a [`sheet`], in the middle of the window, over whatever is open. For a
+/// question such as "Replace Bedroom's stored schedule?".
+pub fn alert<R>(
+    ctx: &egui::Context,
+    id: Id,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    modal(
+        ctx,
+        id,
+        width,
+        (Align2::CENTER_CENTER, egui::Vec2::ZERO),
+        add_contents,
+    )
+}
+
+fn modal<R>(
+    ctx: &egui::Context,
+    id: Id,
+    width: f32,
+    (anchor, offset): (Align2, egui::Vec2),
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let style = ctx.global_style();
+    let dark = style.visuals.dark_mode;
+    let palette = Palette::for_dark(dark);
+    let (dim, edge) = if dark {
+        (Color32::from_black_alpha(60), Color32::from_white_alpha(26))
+    } else {
+        (Color32::from_black_alpha(20), Color32::from_black_alpha(38))
+    };
+    let frame = Frame::new()
+        .fill(palette.window)
+        .stroke(Stroke::new(1.0 / ctx.pixels_per_point(), edge))
+        .corner_radius(BOX_RADIUS)
+        .inner_margin(MARGIN)
+        .shadow(style.visuals.window_shadow);
+    egui::Modal::new(id)
+        .area(egui::Modal::default_area(id).anchor(anchor, offset))
+        .backdrop_color(dim)
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width(width - 2.0 * MARGIN);
+            add_contents(ui)
+        })
+        .inner
+}
+
 /// How a push button is filled.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ButtonStyle {
@@ -543,6 +702,13 @@ fn push_button(ui: &mut Ui, text: &str, style: ButtonStyle) -> Response {
     if ui.is_rect_visible(rect) {
         let pressed = response.is_pointer_button_down_on();
         let widgets = &ui.visuals().widgets;
+        // A default button that can't be pressed is drawn as any other, as on the Mac:
+        // a dim accent color would read as one that can.
+        let style = if style == ButtonStyle::Default && !ui.is_enabled() {
+            ButtonStyle::Plain
+        } else {
+            style
+        };
         let (fill, stroke, text_color) = match style {
             ButtonStyle::Default => {
                 let fill = if pressed {
@@ -727,6 +893,31 @@ mod tests {
         });
         let dot = harness.get_by_label("Status");
         assert_eq!(dot.accesskit_node().value().as_deref(), Some("Answering"));
+    }
+
+    #[test]
+    fn day_toggles_add_and_remove_days_in_order() {
+        let mut harness = Harness::new_ui_state(
+            |ui, days: &mut Vec<u8>| {
+                day_toggles(ui, days, "Days");
+            },
+            vec![1, 5],
+        );
+        let monday = harness.get_by_label("Monday");
+        assert_eq!(monday.accesskit_node().role(), Role::CheckBox);
+        assert_eq!(monday.accesskit_node().toggled(), Some(Toggled::True));
+        let sunday = harness.get_by_label("Sunday");
+        assert_eq!(sunday.accesskit_node().toggled(), Some(Toggled::False));
+
+        harness.get_by_label("Saturday").click();
+        harness.run();
+        harness.get_by_label("Sunday").click();
+        harness.run();
+        harness.get_by_label("Monday").click();
+        harness.run();
+        assert_eq!(harness.state(), &[0, 5, 6]);
+        let saturday = harness.get_by_label("Saturday");
+        assert_eq!(saturday.accesskit_node().toggled(), Some(Toggled::True));
     }
 
     #[test]

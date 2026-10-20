@@ -265,13 +265,6 @@ impl Done {
 
 /// What a connected diffuser can be asked to do.
 enum Op {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the add-a-diffuser sheet (Task 10) is the first to ask"
-        )
-    )]
     ReadInfo,
     Send(Command),
     ReadStatus,
@@ -310,13 +303,6 @@ impl BleHandle {
     /// Reads the diffuser's info string and sends it as `Event::BleInfo`. `ble_id` is
     /// what an earlier scan or info event reported.
     #[must_use = "a refusal is reported only through the Reply"]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the add-a-diffuser sheet (Task 10) is the first to ask"
-        )
-    )]
     pub fn read_info(&self, ble_id: &str) -> Reply {
         self.link("Bluetooth read info", ble_id, Op::ReadInfo)
     }

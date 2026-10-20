@@ -1,22 +1,24 @@
 //! The open diffuser: whether it answers, what it last reported, what its schedule
-//! says it should be doing, and the controls. As in System Settings, the readings and
-//! the controls are each a grouped box, "Status" (with Read Status at the end of its
-//! heading) and "Controls".
+//! says it should be doing, and the controls. As in System Settings, the readings, the
+//! controls and the schedule are each a grouped box: "Status" (with Read Status at the
+//! end of its heading), "Controls", and "Schedule" (with Edit Schedule…).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
-use scent_core::{Command, Level, Via, expected_state};
+use scent_core::{Command, Level, Profile, Via, expected_state};
 
+use super::OpenSheet;
+use super::add_sheet::{Target, name_from_model};
 use super::format::{
     expected_text, intensity, model_text, on_off, online_text, pending_text, power_source,
     reading_text, signal,
 };
 use super::theme::{GRID, Palette, status_color, title1};
 use super::widgets::{
-    NoticeKind, footnote, grouped, grouped_with, notice, plain_button, row, secondary, segmented,
-    status_dot, switch, value_with_note,
+    NoticeKind, footnote, grouped, grouped_with, notice, notice_with, plain_button, row, secondary,
+    segmented, status_dot, switch, value_with_note,
 };
 use crate::hub::{UiCommand, on_our_broker};
 use crate::route::TransportPref;
@@ -121,6 +123,42 @@ pub fn reading_rows(device: &DeviceView, now: i64) -> [ReadingRow; 4] {
 pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     let profile = device.sent_profile.as_ref()?;
     Some(expected_text(&expected_state(profile, now)))
+}
+
+/// The schedule this app last sent, in a few words: how many times, and the always-on
+/// entry when it is on. `profile` is `None` when none was sent since the app started.
+pub fn schedule_summary(profile: Option<&Profile>) -> String {
+    let Some(profile) = profile else {
+        return "Nothing sent yet".to_owned();
+    };
+    let times = match profile.entries.len() {
+        0 => "No times".to_owned(),
+        1 => "1 time".to_owned(),
+        n => format!("{n} times"),
+    };
+    if profile.always_on.enable {
+        let level = intensity(i64::from(profile.always_on.level.get()));
+        format!("{times} · always on at {level}")
+    } else {
+        times
+    }
+}
+
+/// The add sheet for a diffuser known over Bluetooth that isn't on our broker yet, named
+/// as it is, or after its model.
+fn add_target(device: &DeviceView) -> Option<Target> {
+    let ble_id = device.ble_id.clone()?;
+    let name = if device.label == device.id {
+        name_from_model(
+            device
+                .info
+                .as_ref()
+                .map_or("", |info| info.model_name.as_str()),
+        )
+    } else {
+        device.label.clone()
+    };
+    Some(Target { ble_id, name })
 }
 
 /// The intensity to show as chosen: the one we sent and is not yet reported, else the
@@ -281,13 +319,15 @@ impl DevicePanel {
             .copied()
     }
 
-    /// Shows the diffuser and returns the commands the controls asked for.
+    /// Shows the diffuser and returns the commands the controls asked for. `sheet` is set
+    /// when Edit Schedule… or Add to Broker… was clicked.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
         device: &DeviceView,
         now: i64,
+        sheet: &mut Option<OpenSheet>,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         let mut pref = self.prefs.get(&device.id).copied().unwrap_or_default();
@@ -295,11 +335,20 @@ impl DevicePanel {
 
         header(ui, state, device, now);
         if !on_our_broker(device) {
-            notice(
-                ui,
-                NoticeKind::Warning,
-                "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.",
-            );
+            let text = "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.";
+            match add_target(device) {
+                Some(target) => {
+                    let (add, _) = notice_with(ui, NoticeKind::Warning, text, |ui| {
+                        plain_button(ui, "Add to Broker…").clicked()
+                    });
+                    if add {
+                        *sheet = Some(OpenSheet::Add(target));
+                    }
+                }
+                None => {
+                    notice(ui, NoticeKind::Warning, text);
+                }
+            }
         }
         ui.add_space(GRID / 2.0);
 
@@ -393,6 +442,26 @@ impl DevicePanel {
                 ui.spinner();
                 secondary(ui, "Sending…");
             });
+        }
+        ui.add_space(GRID);
+
+        let mut edit = false;
+        grouped_with(
+            ui,
+            "Schedule",
+            |ui| edit = plain_button(ui, "Edit Schedule…").clicked(),
+            |ui| {
+                row(ui, "Sent from this Mac", |ui| {
+                    ui.label(schedule_summary(device.sent_profile.as_ref()));
+                });
+            },
+        );
+        footnote(
+            ui,
+            "The diffuser keeps its schedule and runs it on its own.",
+        );
+        if edit {
+            *sheet = Some(OpenSheet::Schedule(device.id.clone()));
         }
 
         self.prefs.insert(device.id.clone(), pref);
@@ -564,6 +633,67 @@ mod tests {
             expected_line(&d, NOW).as_deref(),
             Some("Based on the schedule this app last sent, it should be off now.")
         );
+    }
+
+    #[test]
+    fn the_schedule_is_summed_up_in_a_few_words() {
+        assert_eq!(schedule_summary(None), "Nothing sent yet");
+        let mut profile = Profile {
+            always_on: AlwaysOn {
+                enable: false,
+                level: Level::new(1).unwrap(),
+            },
+            entries: vec![],
+            timezone_hours: -5.0,
+            flag: ScheduleFlag::Replace,
+        };
+        assert_eq!(schedule_summary(Some(&profile)), "No times");
+        profile.always_on.enable = true;
+        assert_eq!(
+            schedule_summary(Some(&profile)),
+            "No times · always on at Low"
+        );
+        let entry = scent_core::Entry {
+            start: scent_core::HhMm::parse("07:00").unwrap(),
+            end: scent_core::HhMm::parse("08:00").unwrap(),
+            weekdays: vec![1],
+            level: Level::new(2).unwrap(),
+            enable: true,
+        };
+        profile.entries = vec![entry.clone()];
+        profile.always_on.enable = false;
+        assert_eq!(schedule_summary(Some(&profile)), "1 time");
+        profile.entries = vec![entry.clone(), entry];
+        assert_eq!(schedule_summary(Some(&profile)), "2 times");
+    }
+
+    #[test]
+    fn a_diffuser_known_over_bluetooth_can_be_added_under_its_name() {
+        let mut d = device();
+        assert_eq!(
+            add_target(&d),
+            None,
+            "no Bluetooth ID: nothing to add it by"
+        );
+        d.ble_id = Some("ble-1".to_owned());
+        d.info = Some(scent_core::DeviceInfo {
+            manufacturer_id: "03".into(),
+            model_name: "Hvac".into(),
+            variant_name: "Black".into(),
+            device_id: ID.into(),
+            firmware: "2.30".into(),
+            wifi_configured: true,
+            wifi_status: 2,
+        });
+        assert_eq!(
+            add_target(&d),
+            Some(Target {
+                ble_id: "ble-1".to_owned(),
+                name: "HVAC 2".to_owned()
+            })
+        );
+        d.label = "Hallway".to_owned();
+        assert_eq!(add_target(&d).unwrap().name, "Hallway");
     }
 
     #[test]

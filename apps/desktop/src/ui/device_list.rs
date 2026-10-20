@@ -1,19 +1,21 @@
 //! The sidebar, a source list: the known diffusers under "Diffusers", each with its
 //! status dot, name and model, then what the Bluetooth scan found under "Found Nearby",
-//! and the scan button at the bottom.
+//! each with "Add…", and the scan button at the bottom.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, Galley, Pos2, Rect, RichText, Sense, Spinner, TextStyle, WidgetInfo,
-    WidgetType, pos2, vec2,
+    self, Color32, Galley, Pos2, RichText, Sense, Spinner, TextStyle, WidgetInfo, WidgetType, pos2,
+    vec2,
 };
 use scent_core::Online;
 
+use super::OpenSheet;
+use super::add_sheet::{Target, name_from_scan};
 use super::format::{online_text, scan_signal};
 use super::theme::{CONTROL_RADIUS, GRID, Palette, status_color, subheadline};
-use super::widgets::{one_line, plain_button, secondary};
+use super::widgets::{MIN_BUTTON_WIDTH, one_line, plain_button, secondary};
 use crate::hub::{SCAN_FAILED, UiCommand};
 use crate::state::{AppState, DeviceView, Event, ScanHit};
 
@@ -24,8 +26,8 @@ const SCAN_GIVE_UP: Duration = Duration::from_secs(35);
 /// A diffuser's row: its name over its model.
 const DEVICE_ROW_HEIGHT: f32 = 40.0;
 
-/// A row of what the scan found: one line.
-const HIT_ROW_HEIGHT: f32 = 24.0;
+/// A row of what the scan found: its name over its signal, as a diffuser's row.
+const HIT_ROW_HEIGHT: f32 = DEVICE_ROW_HEIGHT;
 
 /// Where the status dot starts, from the row's left edge, and where its center is.
 const DOT_INSET: f32 = GRID;
@@ -176,13 +178,15 @@ impl DeviceList {
     }
 
     /// Shows the list in the sidebar and returns what was asked for. `selected` is the
-    /// diffuser that is open, and changes when another is clicked.
+    /// diffuser that is open, and changes when another is clicked; `sheet` is set when
+    /// "Add…" was clicked on what the scan found.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
         selected: &mut Option<String>,
         now: i64,
+        sheet: &mut Option<OpenSheet>,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         let scanning = self.is_scanning();
@@ -229,12 +233,18 @@ impl DeviceList {
                 }
                 ui.add_space(2.0 * GRID);
                 section_heading(ui, "Found Nearby");
-                self.found_nearby(ui, state, scanning);
+                self.found_nearby(ui, state, scanning, sheet);
             });
         commands
     }
 
-    fn found_nearby(&self, ui: &mut egui::Ui, state: &AppState, scanning: bool) {
+    fn found_nearby(
+        &self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        scanning: bool,
+        sheet: &mut Option<OpenSheet>,
+    ) {
         let hits = unknown_hits(state);
         if scanning {
             note(ui, "Scanning…");
@@ -246,7 +256,12 @@ impl DeviceList {
             return;
         }
         for hit in hits {
-            hit_row(ui, hit);
+            if hit_row(ui, hit) {
+                *sheet = Some(OpenSheet::Add(Target {
+                    ble_id: hit.ble_id.clone(),
+                    name: name_from_scan(&hit.name),
+                }));
+            }
         }
     }
 }
@@ -322,30 +337,33 @@ fn device_row(
     response.on_hover_text(words)
 }
 
-/// A row of what the scan found: the name, and its signal in secondary text.
-fn hit_row(ui: &mut egui::Ui, hit: &ScanHit) {
+/// A row of what the scan found: the name, its signal under it in secondary text, and
+/// "Add…" at the end. True when Add… was clicked.
+fn hit_row(ui: &mut egui::Ui, hit: &ScanHit) -> bool {
     let palette = Palette::of(ui);
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, HIT_ROW_HEIGHT), Sense::hover());
-    let signal = scan_signal(hit.rssi);
-    response.widget_info(|| {
-        WidgetInfo::labeled(WidgetType::Label, true, format!("{}, {signal}", hit.name))
-    });
-    if !ui.is_rect_visible(rect) {
-        return;
-    }
-    let signal = one_line(ui, &signal, subheadline(), f32::INFINITY);
-    let name_width = rect.width() - TEXT_INSET - signal.size().x - 2.0 * GRID;
-    let name = one_line(ui, &hit.name, TextStyle::Body, name_width);
-    let text = Rect::from_min_max(
-        pos2(rect.left() + TEXT_INSET, rect.top()),
-        pos2(rect.right() - GRID, rect.bottom()),
-    );
-    let painter = ui.painter();
-    let name_at = Align2::LEFT_CENTER.align_size_within_rect(name.size(), text);
-    painter.galley(name_at.min, name, palette.label);
-    let signal_at = Align2::RIGHT_CENTER.align_size_within_rect(signal.size(), text);
-    painter.galley(signal_at.min, signal, palette.secondary_label);
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - MIN_BUTTON_WIDTH - GRID).max(0.0);
+        let (rect, response) = ui.allocate_exact_size(vec2(width, HIT_ROW_HEIGHT), Sense::hover());
+        let signal = scan_signal(hit.rssi);
+        response.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Label, true, format!("{}, {signal}", hit.name))
+        });
+        if ui.is_rect_visible(rect) {
+            let text_width = (rect.width() - TEXT_INSET).max(0.0);
+            let name = one_line(ui, &hit.name, TextStyle::Body, text_width);
+            let signal = one_line(ui, &signal, subheadline(), text_width);
+            let top = rect.center().y - (name.size().y + signal.size().y) / 2.0;
+            let name_at = pos2(rect.left() + TEXT_INSET, top);
+            let signal_at = pos2(name_at.x, top + name.size().y);
+            let painter = ui.painter();
+            painter.galley(name_at, name, palette.label);
+            painter.galley(signal_at, signal, palette.secondary_label);
+        }
+        plain_button(ui, "Add…")
+            .on_hover_text("Puts this diffuser on your broker")
+            .clicked()
+    })
+    .inner
 }
 
 #[cfg(test)]
@@ -450,7 +468,7 @@ mod tests {
         let harness = Harness::new_ui_state(
             |ui, list: &mut DeviceList| {
                 let mut selected = None;
-                let _ = list.show(ui, &state, &mut selected, 0);
+                let _ = list.show(ui, &state, &mut selected, 0, &mut None);
             },
             DeviceList::default(),
         );

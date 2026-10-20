@@ -14,6 +14,8 @@
 //! The app is a binary crate, so the example includes the modules it needs by path.
 #![allow(dead_code)]
 
+#[path = "../src/add_flow.rs"]
+mod add_flow;
 #[path = "../src/mqtt.rs"]
 mod mqtt;
 #[path = "../src/secrets.rs"]

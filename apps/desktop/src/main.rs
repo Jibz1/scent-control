@@ -8,6 +8,9 @@
 compile_error!("scent-desktop is macOS only");
 
 #[cfg(target_os = "macos")]
+mod add_flow;
+
+#[cfg(target_os = "macos")]
 mod app;
 
 #[cfg(target_os = "macos")]

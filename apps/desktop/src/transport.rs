@@ -25,6 +25,9 @@ pub trait Transport: Send + Sync + 'static {
     fn ble_send(&self, ble_id: &str, cmd: Command) -> Reply;
     /// Reads the last state the diffuser at `ble_id` reported.
     fn ble_read_status(&self, ble_id: &str) -> Reply;
+    /// Reads the info of the diffuser at `ble_id`. The info itself goes to the app as
+    /// `Event::BleInfo`; the reply only says that the read worked.
+    fn ble_read_info(&self, ble_id: &str) -> Reply;
     /// Queues `cmd` for the diffuser on the broker. Refuses while it isn't connected.
     fn wifi_send(&self, device_id: &str, cmd: &Command) -> Result<(), String>;
     /// The route ID to ping with, while the broker is connected; `None` otherwise.
@@ -72,6 +75,10 @@ impl Transport for Radios {
 
     fn ble_read_status(&self, ble_id: &str) -> Reply {
         self.ble.read_status(ble_id)
+    }
+
+    fn ble_read_info(&self, ble_id: &str) -> Reply {
+        self.ble.read_info(ble_id)
     }
 
     fn wifi_send(&self, device_id: &str, cmd: &Command) -> Result<(), String> {
