@@ -3,11 +3,12 @@
 //!
 //! - [`switch`]: on or off, such as power.
 //! - [`segmented`]: one of a few choices, such as the intensity; it hands back a
-//!   [`Choice`].
+//!   [`Choice`]. [`segmented_wide`] fills the width it is given, as in the hero.
 //! - [`grouped`] and [`row`]: a rounded box of label–value rows with hairlines
 //!   between them, as in System Settings. [`grouped_with`] adds something at the end of
 //!   the box's heading, such as Read Status; [`value_with_note`] is a row's value with
-//!   its age and source under it.
+//!   its age and source under it; [`free_row`] is a row laid out by its caller, such as
+//!   the Today strip.
 //! - [`status_dot`]: the 8 pt dot that says whether a diffuser answers.
 //! - [`notice`] and [`notice_with`]: a tinted notice at the top of a pane, by
 //!   [`NoticeKind`].
@@ -21,6 +22,8 @@
 //!   [`problem`] is a footnote in red, for what is wrong with the box above it.
 //! - [`sheet`]: a modal panel that hangs from the top of the window, as a Mac sheet
 //!   does; [`alert`] is one in the middle of the window, such as a confirmation.
+//! - [`empty_state`]: a glyph, one Title 2 line, one sentence and one default button,
+//!   for a pane with nothing to show.
 //! - [`one_line`] lays text out on one line, cut short to a width; [`hairline`] is the
 //!   width of a one-pixel line.
 //!
@@ -40,7 +43,7 @@ use eframe::egui::{
 
 use super::theme::{
     BOX_RADIUS, CONTROL_RADIUS, GRID, MARGIN, NOTICE_RADIUS, Palette, TOOLBAR_HEIGHT, headline,
-    subheadline,
+    subheadline, title2,
 };
 
 /// The regular macOS switch.
@@ -327,6 +330,30 @@ pub fn segmented<T: Copy + PartialEq>(
     items: &[(T, &str)],
     label: &str,
 ) -> Choice<T> {
+    segmented_in(ui, value, items, label, None)
+}
+
+/// A [`segmented`] control as wide as the room it is given and `height` tall, each
+/// segment an equal share: the hero's intensity.
+pub fn segmented_wide<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    value: &mut T,
+    items: &[(T, &str)],
+    label: &str,
+    height: f32,
+) -> Choice<T> {
+    let width = ui.available_width();
+    segmented_in(ui, value, items, label, Some(vec2(width, height)))
+}
+
+/// A segmented control `size` big, or just big enough for its titles.
+fn segmented_in<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    value: &mut T,
+    items: &[(T, &str)],
+    label: &str,
+    size: Option<egui::Vec2>,
+) -> Choice<T> {
     let palette = Palette::of(ui);
     let dark = ui.visuals().dark_mode;
     let galleys: Vec<_> = items
@@ -337,8 +364,11 @@ pub fn segmented<T: Copy + PartialEq>(
         .iter()
         .map(|galley| galley.size().x)
         .fold(0.0, f32::max);
-    let segment_width = widest + 2.0 * ui.spacing().button_padding.x;
-    let size = vec2(segment_width * items.len() as f32, CONTROL_HEIGHT);
+    let size = size.unwrap_or_else(|| {
+        let segment = widest + 2.0 * ui.spacing().button_padding.x;
+        vec2(segment * items.len() as f32, CONTROL_HEIGHT)
+    });
+    let segment_width = size.x / items.len() as f32;
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::hover());
     let id = response.id;
     let enabled = ui.is_enabled();
@@ -494,6 +524,30 @@ pub fn row<R>(ui: &mut Ui, label: &str, add_contents: impl FnOnce(&mut Ui) -> R)
     inner
 }
 
+/// A row of a [`grouped`] box that its caller lays out across the whole width, such as
+/// the Today strip, with the hairline above it that a [`row`] has.
+pub fn free_row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let palette = Palette::of(ui);
+    let count = ui.id().with(ROW_COUNT);
+    let before = ui.data_mut(|d| {
+        let rows = d.get_temp_mut_or_default::<usize>(count);
+        *rows += 1;
+        *rows - 1
+    });
+    if before > 0 {
+        let y = ui.cursor().top();
+        ui.painter().hline(
+            ui.max_rect().x_range(),
+            y,
+            Stroke::new(hairline(ui), palette.separator),
+        );
+    }
+    ui.add_space(3.0 * ROW_PADDING_Y);
+    let inner = add_contents(ui);
+    ui.add_space(3.0 * ROW_PADDING_Y);
+    inner
+}
+
 /// A value with a note under it, both right-aligned, for the right side of a [`row`]:
 /// a reading, and when and over what it came in. The note is Subheadline, in the
 /// secondary label color.
@@ -541,6 +595,36 @@ pub fn status_dot(ui: &mut Ui, color: Color32, words: &str) -> Response {
     });
     ui.painter().circle_filled(rect.center(), 4.0, color);
     response
+}
+
+/// An empty state, centered in the room it has: a glyph that `draw_glyph` paints in the
+/// square it is given (in the secondary color, on the window's), one Title 2 line, one
+/// sentence, and one default button. True when the button was clicked.
+pub fn empty_state(
+    ui: &mut Ui,
+    draw_glyph: impl FnOnce(&egui::Painter, Rect, Color32, Color32),
+    title: &str,
+    sentence: &str,
+    button: &str,
+) -> bool {
+    let palette = Palette::of(ui);
+    let mut clicked = false;
+    ui.vertical_centered(|ui| {
+        ui.add_space(12.0 * GRID);
+        let (rect, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
+        draw_glyph(ui.painter(), rect, palette.gray, palette.window);
+        ui.add_space(2.0 * GRID);
+        ui.label(
+            RichText::new(title)
+                .text_style(title2())
+                .color(palette.label),
+        );
+        ui.add_space(GRID / 2.0);
+        ui.label(RichText::new(sentence).color(palette.secondary_label));
+        ui.add_space(2.0 * GRID);
+        clicked = default_button(ui, button).clicked();
+    });
+    clicked
 }
 
 /// What a notice is about, which picks its color.

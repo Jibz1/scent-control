@@ -1,18 +1,25 @@
 //! The log: the conversation with the diffusers, newest last, in a pane along the
-//! bottom of the detail pane that the toolbar shows and hides. Each entry is one line
-//! in SF Mono 11 pt, and only the lines in view are laid out.
+//! bottom of the detail pane that the toolbar shows and hides. Hidden until it is
+//! asked for, for this session.
+//!
+//! Each entry is a row that reads as a sentence (see `log_summary`), with a chevron for
+//! what was sent or heard and the time in tabular figures. A row opens, on a click, to
+//! the message itself, masked, in SF Mono. Only the rows in view are laid out.
 
-use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::style::ScrollAnimation;
+use eframe::egui::text::LayoutJob;
 use eframe::egui::{
-    self, Align, Color32, FontSelection, Layout, Margin, Rect, RichText, Sense, TextStyle,
-    TextWrapMode, WidgetInfo, WidgetText, WidgetType, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, Id, Layout, Margin, Rect, RichText, Sense, TextStyle,
+    Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 use scent_core::{Direction, Via};
 
 use super::clock::{clock_hms, local_utc_offset_secs};
-use super::format::via_name;
-use super::theme::{GRID, Palette, headline};
-use super::widgets::{BOX_PADDING_X, checkbox, secondary};
+use super::format::{display_name, unknown_name};
+use super::glyphs::{Pointing, chevron, solid};
+use super::log_summary::{detail, sentence};
+use super::theme::{CONTROL_RADIUS, GRID, Palette, headline, subheadline};
+use super::widgets::{BOX_PADDING_X, checkbox, one_line, secondary};
 use crate::state::{AppState, LogEntry};
 
 /// How many lines the log shows. The state keeps more (see `state::LOG_CAP`).
@@ -23,13 +30,18 @@ const SHOWN: usize = 300;
 const ECHO_WITHIN_S: u64 = 5;
 
 /// Height of the log when it is open, before the person drags it.
-pub(super) const OPEN_HEIGHT: f32 = 160.0;
+pub(super) const OPEN_HEIGHT: f32 = 200.0;
 
-/// The height of a line of the log.
-const LINE_HEIGHT: f32 = 20.0;
+/// The height of a row of the log, closed.
+const ROW_HEIGHT: f32 = 26.0;
 
-/// The space before a line's text.
-const LINE_INSET: f32 = 8.0;
+/// The space at either end of a row, the chevron's square, and the space after it.
+const ROW_INSET: f32 = 8.0;
+const CHEVRON: f32 = 14.0;
+const CHEVRON_GAP: f32 = 6.0;
+
+/// The space inside an opened row's message box.
+const MESSAGE_PADDING: f32 = 8.0;
 
 /// Whether this entry is a command to a diffuser on the broker: one we sent over WiFi,
 /// or a copy of a command that someone published to its topic.
@@ -98,7 +110,247 @@ pub fn collapse_echoes<'a>(entries: impl IntoIterator<Item = &'a LogEntry>) -> V
         .collect()
 }
 
-/// How a line is told apart from the others.
+/// The name a row goes by: the diffuser's, as the screens show it, or "Broker" for what
+/// the broker did, or "App" for what the app itself reports.
+fn subject(entry: &LogEntry, state: &AppState) -> String {
+    match &entry.device_id {
+        Some(id) => state
+            .devices
+            .get(id)
+            .map_or_else(|| unknown_name(id), display_name),
+        None if entry.action == "broker" => "Broker".to_owned(),
+        None => "App".to_owned(),
+    }
+}
+
+/// An entry, told apart from the others well enough to stay open as the log grows: what
+/// it holds, and which of the entries that hold the same it is (the same command sent
+/// twice in one second is two rows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowKey {
+    at: i64,
+    device_id: Option<String>,
+    action: String,
+    text: String,
+    nth: usize,
+}
+
+impl RowKey {
+    /// The key of `entries[i]`.
+    fn of(entries: &[&LogEntry], i: usize) -> RowKey {
+        let entry = entries[i];
+        let mut key = RowKey {
+            at: entry.at,
+            device_id: entry.device_id.clone(),
+            action: entry.action.clone(),
+            text: entry.text.clone(),
+            nth: 0,
+        };
+        key.nth = entries[..i].iter().filter(|other| key.holds(other)).count();
+        key
+    }
+
+    fn holds(&self, entry: &LogEntry) -> bool {
+        self.at == entry.at
+            && self.device_id == entry.device_id
+            && self.action == entry.action
+            && self.text == entry.text
+    }
+
+    /// Where the entry is in `entries`, if it is still there.
+    fn find(&self, entries: &[&LogEntry]) -> Option<usize> {
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| self.holds(entry))
+            .nth(self.nth)
+            .map(|(i, _)| i)
+    }
+}
+
+/// What the log screen remembers.
+#[derive(Default)]
+pub struct LogView {
+    /// Shown or hidden: hidden at first, for each session.
+    open: bool,
+    only_selected: bool,
+    /// The row that is open to its message.
+    expanded: Option<RowKey>,
+    /// A row was just opened: it is scrolled into view, its message and all.
+    reveal: bool,
+}
+
+impl LogView {
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Shows the log if it is hidden, and hides it if it is shown.
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+    }
+
+    /// The log open, with the row of the first entry that `pick` likes open to its
+    /// message, for the snapshots.
+    #[cfg(test)]
+    pub fn as_open(&mut self, state: &AppState, pick: impl Fn(&LogEntry) -> bool) {
+        self.open = true;
+        let entries: Vec<&LogEntry> = state.log.iter().collect();
+        self.expanded = entries
+            .iter()
+            .position(|entry| pick(entry))
+            .map(|i| RowKey::of(&entries, i));
+        self.reveal = self.expanded.is_some();
+    }
+
+    /// The log pane along the bottom. Add it before the central panel above it. It
+    /// slides open and shut when [`toggle`](Self::toggle)d. Returns where it is, when it
+    /// is shown, for the separator above it.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        state: &AppState,
+        selected: Option<&str>,
+        now: i64,
+    ) -> Option<Rect> {
+        let palette = Palette::of(ui);
+        let frame = egui::Frame::new()
+            .fill(palette.grouped)
+            .inner_margin(Margin {
+                left: BOX_PADDING_X as i8,
+                right: BOX_PADDING_X as i8,
+                top: GRID as i8,
+                bottom: 0,
+            });
+        let only_selected = &mut self.only_selected;
+        let expanded = &mut self.expanded;
+        let reveal = &mut self.reveal;
+        egui::Panel::bottom("log")
+            .resizable(true)
+            .default_size(OPEN_HEIGHT)
+            .min_size(80.0)
+            .show_separator_line(false)
+            .frame(frame)
+            .show_collapsible(ui, &mut self.open, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Log").text_style(headline()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        checkbox(ui, only_selected, "Only the selected diffuser");
+                    });
+                });
+                ui.add_space(GRID / 2.0);
+                let only = (*only_selected).then_some(selected).flatten();
+                rows(ui, state, only, now, (expanded, reveal));
+            })
+            .map(|shown| shown.response.rect)
+    }
+}
+
+/// The rows of the log, of one diffuser if `only` names one. Only the rows in view are
+/// laid out; the open one is as tall as its message needs, and is scrolled into view
+/// when it has just been opened (`reveal`).
+fn rows(
+    ui: &mut Ui,
+    state: &AppState,
+    only: Option<&str>,
+    now: i64,
+    (expanded, reveal): (&mut Option<RowKey>, &mut bool),
+) {
+    let wanted = state
+        .log
+        .iter()
+        .filter(|entry| only.is_none_or(|id| entry.device_id.as_deref() == Some(id)));
+    let entries = collapse_echoes(wanted);
+    if entries.is_empty() {
+        secondary(
+            ui,
+            "Nothing yet. Commands you send and everything the diffusers say appear here.",
+        );
+        // Take the rest of the pane, as the rows would, so that it keeps its height.
+        ui.allocate_space(ui.available_size());
+        return;
+    }
+    let entries = &entries[entries.len().saturating_sub(SHOWN)..];
+    let offset = local_utc_offset_secs(now);
+    let open_at = expanded.as_ref().and_then(|key| key.find(entries));
+    // The open row's message, laid out once for its height.
+    let width = ui.available_width();
+    let message = open_at.map(|at| Message::lay_out(ui, entries[at], width));
+    let extra = message.as_ref().map_or(0.0, Message::height);
+    let total = entries.len() as f32 * ROW_HEIGHT + extra;
+    let mut toggled = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        // New rows keep the newest in view, except while an opened row is brought in.
+        .stick_to_bottom(!*reveal)
+        .show_viewport(ui, |ui, viewport| {
+            ui.set_height(total);
+            let origin = ui.max_rect().top();
+            let x_range = ui.max_rect().x_range();
+            let mut top = 0.0;
+            for (i, entry) in entries.iter().enumerate() {
+                let open = open_at == Some(i);
+                let height = ROW_HEIGHT + if open { extra } else { 0.0 };
+                let rect = Rect::from_x_y_ranges(x_range, (origin + top)..=(origin + top + height));
+                // Scrolled to, at once, until it is in view: all of it, or its top when it
+                // is taller than the pane. The pane may still be opening.
+                if open && *reveal {
+                    let fits = height <= viewport.height();
+                    let align = (!fits).then_some(Align::Min);
+                    ui.scroll_to_rect_animation(rect, align, ScrollAnimation::none());
+                    let top_shown = viewport.min.y <= top && top <= viewport.max.y;
+                    let end_shown = top + height <= viewport.max.y;
+                    *reveal = !(top_shown && (end_shown || !fits));
+                }
+                if top + height >= viewport.min.y && top <= viewport.max.y {
+                    let message = message.as_ref().filter(|_| open);
+                    let subject = subject(entry, state);
+                    if row(ui, rect, i, entry, &subject, offset, message) {
+                        toggled = Some(i);
+                    }
+                }
+                top += height;
+            }
+        });
+    if let Some(i) = toggled {
+        *expanded = (open_at != Some(i)).then(|| RowKey::of(entries, i));
+        *reveal = expanded.is_some();
+    }
+}
+
+/// An open row's message: what it was, and the masked text in SF Mono, wrapped.
+struct Message {
+    detail: std::sync::Arc<egui::Galley>,
+    text: std::sync::Arc<egui::Galley>,
+}
+
+impl Message {
+    fn lay_out(ui: &Ui, entry: &LogEntry, width: f32) -> Message {
+        // The box runs from under the sentence to the row's end.
+        let inner = width - 2.0 * ROW_INSET - CHEVRON - CHEVRON_GAP - 2.0 * MESSAGE_PADDING;
+        let inner = inner.max(40.0);
+        let palette = Palette::of(ui);
+        let detail = one_line(
+            ui,
+            RichText::new(detail(entry)).color(palette.secondary_label),
+            subheadline(),
+            inner,
+        );
+        // Compact JSON has no spaces to wrap at: it wraps anywhere.
+        let font = TextStyle::Monospace.resolve(ui.style());
+        let mut job = LayoutJob::simple(entry.text.clone(), font, palette.label, inner);
+        job.wrap.break_anywhere = true;
+        let text = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+        Message { detail, text }
+    }
+
+    /// How much taller it makes its row.
+    fn height(&self) -> f32 {
+        self.detail.size().y + GRID / 2.0 + self.text.size().y + 2.0 * MESSAGE_PADDING + GRID
+    }
+}
+
+/// How a row is told apart from the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// Something we sent.
@@ -119,194 +371,140 @@ fn kind(entry: &LogEntry) -> Kind {
     }
 }
 
-/// Who a line is about: "You to Bedroom over WiFi" for what we sent, "To Bedroom over
-/// WiFi" for a command that someone else put on its topic, "Bedroom over Bluetooth"
-/// for what it said, or just "Broker" or the diffuser's name for a note of the app's own.
-fn who(entry: &LogEntry, subject: &str) -> String {
-    match (kind(entry), entry.direction, entry.via, &entry.device_id) {
-        (Kind::Sent, _, Some(via), _) => format!("You to {subject} over {}", via_name(via)),
-        (Kind::Heard, Direction::ToDevice, Some(via), _) => {
-            format!("To {subject} over {}", via_name(via))
-        }
-        (Kind::Heard, _, Some(via), Some(_)) => format!("{subject} over {}", via_name(via)),
-        _ => subject.to_owned(),
-    }
-}
-
-/// The name a line goes by: the diffuser's, or "Broker" for what the broker did, or
-/// "App" for what the app itself reports.
-fn subject(entry: &LogEntry, state: &AppState) -> String {
-    match &entry.device_id {
-        Some(id) => state
-            .devices
-            .get(id)
-            .map_or_else(|| id.clone(), |device| device.label.clone()),
-        None if entry.action == "broker" => "Broker".to_owned(),
-        None => "App".to_owned(),
-    }
-}
-
-/// What the log screen remembers.
-pub struct LogView {
-    open: bool,
-    only_selected: bool,
-}
-
-impl Default for LogView {
-    fn default() -> LogView {
-        // Open: a failed command is only explained here.
-        LogView {
-            open: true,
-            only_selected: false,
-        }
-    }
-}
-
-impl LogView {
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-
-    /// Shows the log if it is hidden, and hides it if it is shown.
-    pub fn toggle(&mut self) {
-        self.open = !self.open;
-    }
-
-    /// The log pane along the bottom. Add it before the central panel above it. It
-    /// slides open and shut when [`toggle`](Self::toggle)d. Returns where it is, when it
-    /// is shown, for the separator above it.
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        state: &AppState,
-        selected: Option<&str>,
-        now: i64,
-    ) -> Option<Rect> {
-        let palette = Palette::of(ui);
-        let frame = egui::Frame::new()
-            .fill(palette.grouped)
-            .inner_margin(Margin {
-                left: BOX_PADDING_X as i8,
-                right: BOX_PADDING_X as i8,
-                top: GRID as i8,
-                bottom: 0,
-            });
-        let only_selected = &mut self.only_selected;
-        egui::Panel::bottom("log")
-            .resizable(true)
-            .default_size(OPEN_HEIGHT)
-            .min_size(80.0)
-            .show_separator_line(false)
-            .frame(frame)
-            .show_collapsible(ui, &mut self.open, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Log").text_style(headline()));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        checkbox(ui, only_selected, "Only the selected diffuser");
-                    });
-                });
-                ui.add_space(GRID / 2.0);
-                let only = (*only_selected).then_some(selected).flatten();
-                lines(ui, state, only, now);
-            })
-            .map(|shown| shown.response.rect)
-    }
-}
-
-/// The lines of the log, of one diffuser if `only` names one. Only the lines in view
-/// are laid out.
-fn lines(ui: &mut egui::Ui, state: &AppState, only: Option<&str>, now: i64) {
-    let wanted = state
-        .log
-        .iter()
-        .filter(|entry| only.is_none_or(|id| entry.device_id.as_deref() == Some(id)));
-    let lines = collapse_echoes(wanted);
-    if lines.is_empty() {
-        secondary(
-            ui,
-            "Nothing yet. Commands you send and everything the diffusers say appear here.",
-        );
-        // Take the rest of the pane, as the lines would, so that it keeps its height.
-        ui.allocate_space(ui.available_size());
-        return;
-    }
-    let lines = &lines[lines.len().saturating_sub(SHOWN)..];
-    let offset = local_utc_offset_secs(now);
-    ui.spacing_mut().item_spacing.y = 0.0;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
-        .show_rows(ui, LINE_HEIGHT, lines.len(), |ui, shown| {
-            for entry in &lines[shown] {
-                line(ui, entry, state, offset);
-            }
-        });
-}
-
-/// One entry on one line: the time, the action, who it is about, and the text, cut
-/// short to fit. The whole text is in the tooltip when it was cut, and Copy in the
-/// line's context menu puts it on the clipboard, since the lines are drawn, not
-/// selectable text.
-fn line(ui: &mut egui::Ui, entry: &LogEntry, state: &AppState, offset: i64) {
+/// One row in `rect`: the chevron, the sentence (cut short to fit, the whole of it in the
+/// tooltip), and the time; with `message`, the row is open and shows it under them. A
+/// click opens or closes it; Copy in its context menu puts the masked message on the
+/// clipboard. True when it was clicked.
+fn row(
+    ui: &mut Ui,
+    rect: Rect,
+    index: usize,
+    entry: &LogEntry,
+    subject: &str,
+    offset: i64,
+    message: Option<&Message>,
+) -> bool {
     let palette = Palette::of(ui);
-    let width = ui.available_width();
-    // Clicks for the context menu, but no stop for the Tab key on every line.
-    let (rect, response) = ui.allocate_exact_size(vec2(width, LINE_HEIGHT), Sense::CLICK);
+    let said = sentence(entry, subject);
+    let clock = clock_hms(entry.at, offset);
+    // Clicks and the context menu, but no stop for the Tab key on every row.
+    let response = ui.interact(rect, Id::new("log_row").with(index), Sense::CLICK);
+    response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::Button, true, &said);
+        info.current_text_value = Some(clock.clone());
+        info
+    });
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_expanded(message.is_some());
+    });
     response.context_menu(|ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(entry.text.clone());
         }
     });
+    let clicked = response.clicked();
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
     if !ui.is_rect_visible(rect) {
-        return;
+        return clicked;
     }
-    let fill = match kind(entry) {
-        Kind::Sent => Palette::tint(palette.label, 5),
+    let kind = kind(entry);
+    let fill = match kind {
         Kind::Problem => Palette::tint(palette.orange, 12),
-        Kind::Heard => Color32::TRANSPARENT,
+        _ if message.is_some() || hovered => Palette::tint(palette.label, 5),
+        _ => Color32::TRANSPARENT,
     };
-    ui.painter().rect_filled(rect, 4, fill);
+    let painter = ui.painter();
+    painter.rect_filled(rect, CONTROL_RADIUS, fill);
 
-    let font = TextStyle::Monospace.resolve(ui.style());
-    let mut job = LayoutJob::default();
-    let mut add = |text: &str, color: Color32| {
-        let format = TextFormat {
-            font_id: font.clone(),
-            color,
-            ..TextFormat::default()
-        };
-        job.append(text, 0.0, format);
+    let line = Rect::from_min_size(rect.min, vec2(rect.width(), ROW_HEIGHT));
+    let mark = Rect::from_center_size(
+        pos2(line.left() + ROW_INSET + CHEVRON / 2.0, line.center().y),
+        vec2(CHEVRON, CHEVRON),
+    );
+    let (pointing, ink) = match kind {
+        Kind::Sent => (Pointing::Out, palette.gray),
+        Kind::Heard => (Pointing::In, palette.gray),
+        Kind::Problem => (Pointing::Out, palette.orange),
     };
-    let (clock, who) = (
-        clock_hms(entry.at, offset),
-        who(entry, &subject(entry, state)),
-    );
-    add(&clock, palette.secondary_label);
-    add("  ", palette.label);
-    add(&entry.action, palette.label);
-    add("  ", palette.label);
-    add(&who, palette.secondary_label);
-    add("  ", palette.label);
-    add(&entry.text, palette.label);
-    response.widget_info(|| {
-        let line = format!("{clock} {} {who} {}", entry.action, entry.text);
-        WidgetInfo::labeled(WidgetType::Label, true, line)
-    });
-    let galley = WidgetText::from(job).into_galley(
+    let ground = solid(fill, palette.grouped);
+    chevron(painter, mark, solid(ink, ground), pointing);
+
+    let time_width = tabular(
         ui,
-        Some(TextWrapMode::Truncate),
-        rect.width() - 2.0 * LINE_INSET,
-        FontSelection::Style(TextStyle::Monospace),
+        &clock,
+        palette.secondary_label,
+        line.right() - ROW_INSET,
+        line.center().y,
     );
-    let top = rect.center().y - galley.size().y / 2.0;
+    let text_left = mark.right() + CHEVRON_GAP;
+    let text_width = (line.right() - ROW_INSET - time_width - 2.0 * GRID - text_left).max(0.0);
+    let galley = one_line(ui, &said, TextStyle::Body, text_width);
     let elided = galley.elided;
-    ui.painter()
-        .galley(pos2(rect.left() + LINE_INSET, top), galley, palette.label);
-    if elided {
-        response.on_hover_ui(|ui| {
-            ui.label(RichText::new(&entry.text).text_style(TextStyle::Monospace));
-        });
+    let at = Align2::LEFT_CENTER.anchor_size(pos2(text_left, line.center().y), galley.size());
+    ui.painter().galley(at.min, galley, palette.label);
+
+    if let Some(message) = message {
+        let mut y = line.bottom();
+        ui.painter().galley(
+            pos2(text_left, y),
+            message.detail.clone(),
+            palette.secondary_label,
+        );
+        y += message.detail.size().y + GRID / 2.0;
+        let boxed = Rect::from_min_max(
+            pos2(text_left, y),
+            pos2(
+                line.right() - ROW_INSET,
+                y + message.text.size().y + 2.0 * MESSAGE_PADDING,
+            ),
+        );
+        ui.painter()
+            .rect_filled(boxed, CONTROL_RADIUS, Palette::tint(palette.label, 5));
+        ui.painter().galley(
+            boxed.min + vec2(MESSAGE_PADDING, MESSAGE_PADDING),
+            message.text.clone(),
+            palette.label,
+        );
     }
+    if elided && message.is_none() {
+        response.on_hover_text(&said);
+    }
+    clicked
+}
+
+/// `text` in Subheadline with its digits in columns of one width, as tabular figures
+/// are, so that the times line up row under row; right-aligned at `right` and centered
+/// on `middle`. Returns how wide it is.
+fn tabular(ui: &Ui, text: &str, color: Color32, right: f32, middle: f32) -> f32 {
+    let font = subheadline().resolve(ui.style());
+    let digit = ui.ctx().fonts_mut(|fonts| {
+        ('0'..='9')
+            .map(|c| fonts.glyph_width(&font, c))
+            .fold(0.0, f32::max)
+    });
+    let glyphs: Vec<(std::sync::Arc<egui::Galley>, f32)> = text
+        .chars()
+        .map(|c| {
+            let galley = one_line(ui, c.to_string(), subheadline(), f32::INFINITY);
+            let width = if c.is_ascii_digit() {
+                digit
+            } else {
+                galley.size().x
+            };
+            (galley, width)
+        })
+        .collect();
+    let total: f32 = glyphs.iter().map(|(_, width)| width).sum();
+    let mut x = right - total;
+    for (galley, width) in glyphs {
+        let at = Align2::CENTER_CENTER.anchor_size(pos2(x + width / 2.0, middle), galley.size());
+        ui.painter().galley(at.min, galley, color);
+        x += width;
+    }
+    total
 }
 
 #[cfg(test)]
@@ -582,22 +780,9 @@ mod tests {
     }
 
     #[test]
-    fn a_line_says_who_it_is_about_and_over_what() {
+    fn a_row_is_told_apart_by_what_happened() {
         let sent = wifi_sent(1, ONE, &on(true));
         assert_eq!(kind(&sent), Kind::Sent);
-        assert_eq!(who(&sent, "Bedroom"), "You to Bedroom over WiFi");
-
-        let bluetooth = entry(
-            1,
-            ONE,
-            Some(Via::Bluetooth),
-            Direction::ToDevice,
-            true,
-            "TURN_ON",
-            "{}",
-        );
-        assert_eq!(who(&bluetooth, "Bedroom"), "You to Bedroom over Bluetooth");
-
         let heard = entry(
             1,
             ONE,
@@ -608,8 +793,6 @@ mod tests {
             "{}",
         );
         assert_eq!(kind(&heard), Kind::Heard);
-        assert_eq!(who(&heard, "Bedroom"), "Bedroom over Bluetooth");
-
         // A failure: nothing went out, so it names no transport.
         let problem = entry(
             1,
@@ -621,8 +804,22 @@ mod tests {
             "x",
         );
         assert_eq!(kind(&problem), Kind::Problem);
-        assert_eq!(who(&problem, "Bedroom"), "Bedroom");
+        // A command on the topic that we did not send (the bench, or a server).
+        assert_eq!(kind(&wifi_echo(1, ONE, &on(true))), Kind::Heard);
+    }
 
+    #[test]
+    fn a_row_goes_by_the_name_the_screens_show() {
+        let mut state = AppState::default();
+        let mut named = crate::state::DeviceView::new(ONE);
+        named.label = "Bedroom".to_owned();
+        state.devices.insert(ONE.to_owned(), named);
+        assert_eq!(subject(&wifi_sent(1, ONE, &on(true)), &state), "Bedroom");
+        // One the app doesn't know: never its raw ID.
+        assert_eq!(
+            subject(&wifi_sent(1, TWO, &on(true)), &state),
+            "Diffuser CE02"
+        );
         // The app's own note about the broker has no diffuser.
         let broker = LogEntry {
             at: 1,
@@ -633,15 +830,24 @@ mod tests {
             text: "Connected to the broker.".to_owned(),
             sent: false,
         };
-        assert_eq!(subject(&broker, &AppState::default()), "Broker");
-        assert_eq!(who(&broker, "Broker"), "Broker");
+        assert_eq!(subject(&broker, &state), "Broker");
     }
 
     #[test]
-    fn a_command_on_the_topic_that_we_did_not_send_is_not_called_ours() {
-        // The bench, or a server, publishing to the diffuser: only the broker's copy.
-        let other = wifi_echo(1, ONE, &on(true));
-        assert_eq!(kind(&other), Kind::Heard);
-        assert_eq!(who(&other, "Bedroom"), "To Bedroom over WiFi");
+    fn an_open_row_stays_open_as_the_log_grows() {
+        let log = [
+            wifi_sent(1, ONE, &on(true)),
+            wifi_sent(1, ONE, &on(true)),
+            wifi_sent(2, ONE, &on(false)),
+        ];
+        let entries: Vec<&LogEntry> = log.iter().collect();
+        // The same command twice in one second is two rows, each opened on its own.
+        let second = RowKey::of(&entries, 1);
+        assert_eq!(second.find(&entries), Some(1));
+        assert_eq!(RowKey::of(&entries, 0).find(&entries), Some(0));
+        // Older rows dropping off the top don't open another.
+        let fewer: Vec<&LogEntry> = log[1..].iter().collect();
+        assert_eq!(RowKey::of(&entries, 2).find(&fewer), Some(1));
+        assert_eq!(second.find(&fewer), None);
     }
 }

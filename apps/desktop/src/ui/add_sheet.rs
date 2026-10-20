@@ -14,7 +14,7 @@ use eframe::egui::{
     self, Id, Key, KeyboardShortcut, Modifiers, Rect, RichText, Sense, Spinner, Stroke, TextStyle,
     WidgetInfo, WidgetType, pos2, vec2,
 };
-use scent_core::{Secret, parse_name};
+use scent_core::Secret;
 
 use super::theme::{GRID, Palette, headline};
 use super::widgets::{
@@ -41,31 +41,6 @@ const JOIN: &str = "Joining your WiFi…";
 const RESTART: &str = "Restarting…";
 const CONNECT: &str = "Waiting for it to connect…";
 const DONE: &str = "Done";
-
-/// The name for a diffuser from its Bluetooth name, which says its model by a letter.
-pub fn name_from_scan(scan_name: &str) -> String {
-    let name = parse_name(scan_name);
-    match name.model_code.as_deref() {
-        Some("D") => "Air 2".to_owned(),
-        Some("H") => "HVAC 2".to_owned(),
-        _ => name.model.unwrap_or_else(|| "Diffuser".to_owned()),
-    }
-}
-
-/// The name for a diffuser from the model it gave in its info: "Diffuser" is the Air 2,
-/// "Hvac" the HVAC 2.
-pub fn name_from_model(model: &str) -> String {
-    let lower = model.to_ascii_lowercase();
-    if lower.contains("hvac") {
-        "HVAC 2".to_owned()
-    } else if lower.contains("air") || lower == "diffuser" {
-        "Air 2".to_owned()
-    } else if model.is_empty() {
-        "Diffuser".to_owned()
-    } else {
-        model.to_owned()
-    }
-}
 
 /// How far a step of the list has got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,7 +351,7 @@ impl AddSheet {
         footnote(ui, "What it is called in the list.");
 
         let wifi_note = match phase {
-            Phase::NeedWifi(_) => Some("It isn't on WiFi yet."),
+            Phase::NeedWifi(_) => Some("It isn't connected to WiFi right now."),
             Phase::RetryWifi => Some("Check the network, and type its password again."),
             _ => None,
         };
@@ -551,20 +526,6 @@ mod tests {
     use crate::state::Adding;
 
     const BLE: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-
-    #[test]
-    fn the_name_comes_from_the_model() {
-        assert_eq!(name_from_scan("Scentiment-D B n 0A1B2C3D4E5F"), "Air 2");
-        assert_eq!(name_from_scan("Scentiment-H B n 0A1B2C3D4E5F"), "HVAC 2");
-        assert_eq!(name_from_scan("Scentiment-M W"), "Mini");
-        assert_eq!(name_from_scan("Scentiment"), "Diffuser");
-        // From what the diffuser told us about itself.
-        assert_eq!(name_from_model("Diffuser"), "Air 2");
-        assert_eq!(name_from_model("Diffuser Air 2"), "Air 2");
-        assert_eq!(name_from_model("Hvac"), "HVAC 2");
-        assert_eq!(name_from_model("Diffuser HVAC 2"), "HVAC 2");
-        assert_eq!(name_from_model(""), "Diffuser");
-    }
 
     #[test]
     fn the_steps_say_how_far_it_got() {

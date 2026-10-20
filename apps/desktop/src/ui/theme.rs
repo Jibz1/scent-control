@@ -30,10 +30,16 @@ const SF_MONO_FILE: &str = "SFNSMono.ttf";
 /// The names the fonts go by in egui.
 const SF_PRO: &str = "SF Pro";
 const SF_PRO_SEMIBOLD: &str = "SF Pro Semibold";
+const SF_PRO_DISPLAY: &str = "SF Pro Display";
+const SF_PRO_DISPLAY_SEMIBOLD: &str = "SF Pro Display Semibold";
 const SF_MONO: &str = "SF Mono";
 
 /// The family for semibold text: SF Pro at weight 590, or egui's font without it.
 const SEMIBOLD_FAMILY: &str = "Semibold";
+/// The families for text of 20 pt and more (Title 1, the hero's state): SF Pro at its
+/// display optical size, regular and semibold.
+const DISPLAY_FAMILY: &str = "Display";
+const DISPLAY_SEMIBOLD_FAMILY: &str = "Display Semibold";
 
 /// The regular and semibold weights, on the fonts' `wght` axis. SF Mono's own default
 /// is lighter than regular, so it is set too.
@@ -44,9 +50,15 @@ const SEMIBOLD_WEIGHT: f32 = 590.0;
 /// which is what macOS draws such text with. The font's own default is a display size,
 /// too tight for 11 and 13 pt.
 const TEXT_OPTICAL_SIZE: f32 = 17.0;
+/// SF Pro's optical size for text of 20 pt and more: the display design, with its
+/// tighter spacing, as macOS draws titles.
+const DISPLAY_OPTICAL_SIZE: f32 = 28.0;
 
-/// The name of the Headline text style.
+/// The names of the text styles egui has no style of its own for.
 const HEADLINE: &str = "Headline";
+const HERO: &str = "Hero";
+const TITLE2: &str = "Title 2";
+const TITLE3: &str = "Title 3";
 
 /// The main window's size when it first opens, and the least it can be resized to.
 pub const WINDOW_SIZE: [f32; 2] = [1100.0, 720.0];
@@ -69,11 +81,19 @@ pub const SIDEBAR_WIDTH: f32 = 260.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 200.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 360.0;
 
-/// Corner radii: grouped boxes, notices, and controls (push buttons, the sidebar's
-/// selection, segmented controls).
+/// Corner radii, by place in the hierarchy: the diffusion hero card, grouped boxes,
+/// notices, and controls (push buttons, the sidebar's selection and glyph tiles,
+/// segmented controls).
+pub const HERO_RADIUS: u8 = 14;
 pub const BOX_RADIUS: u8 = 10;
 pub const NOTICE_RADIUS: u8 = 8;
 pub const CONTROL_RADIUS: u8 = 6;
+
+/// The widest the detail pane's column gets: it is centered in a wider window, so
+/// that rows stay readable.
+pub const CONTENT_MAX_WIDTH: f32 = 640.0;
+/// The space between the sections of the detail pane.
+pub const SECTION_GAP: f32 = 24.0;
 
 /// How long the motion that a person's action causes takes: the switch, the
 /// segmented control's selection, and the log pane opening.
@@ -82,7 +102,8 @@ pub const MOTION_SECS: f32 = 0.2;
 /// Apple's system colors for one appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
-    /// systemBlue: the selection, default buttons, switches that are on.
+    /// systemIndigo: the selection, default buttons, switches that are on, and the mist
+    /// arcs of a diffuser that is diffusing. Used sparingly.
     pub accent: Color32,
     /// systemGreen: answering.
     pub green: Color32,
@@ -120,7 +141,7 @@ const fn hex(rgb: u32) -> Color32 {
 
 impl Palette {
     pub const LIGHT: Palette = Palette {
-        accent: hex(0x007AFF),
+        accent: hex(0x5856D6),
         green: hex(0x34C759),
         orange: hex(0xFF9500),
         red: hex(0xFF3B30),
@@ -134,7 +155,7 @@ impl Palette {
     };
 
     pub const DARK: Palette = Palette {
-        accent: hex(0x0A84FF),
+        accent: hex(0x5E5CE6),
         green: hex(0x30D158),
         orange: hex(0xFF9F0A),
         red: hex(0xFF453A),
@@ -182,9 +203,24 @@ pub fn broker_color(palette: &Palette, broker: &BrokerState) -> Color32 {
     }
 }
 
+/// The hero's state, "Diffusing": 26 pt semibold, the largest text in the app.
+pub fn hero() -> TextStyle {
+    TextStyle::Name(HERO.into())
+}
+
 /// Title 1, 22 pt: the open diffuser's name.
 pub fn title1() -> TextStyle {
     TextStyle::Heading
+}
+
+/// Title 2, 17 pt: the line of an empty state.
+pub fn title2() -> TextStyle {
+    TextStyle::Name(TITLE2.into())
+}
+
+/// Title 3, 15 pt: the hero's intensity, under its state.
+pub fn title3() -> TextStyle {
+    TextStyle::Name(TITLE3.into())
 }
 
 /// Headline, 13 pt semibold: section headings.
@@ -203,11 +239,29 @@ pub fn semibold() -> FontFamily {
     FontFamily::Name(SEMIBOLD_FAMILY.into())
 }
 
+/// The family of text of 20 pt and more.
+pub fn display() -> FontFamily {
+    FontFamily::Name(DISPLAY_FAMILY.into())
+}
+
+/// The family of semibold text of 20 pt and more.
+pub fn display_semibold() -> FontFamily {
+    FontFamily::Name(DISPLAY_SEMIBOLD_FAMILY.into())
+}
+
+/// The families the app names, besides egui's own: a set of fonts must bind each.
+pub fn named_families() -> [FontFamily; 3] {
+    [semibold(), display(), display_semibold()]
+}
+
 /// The macOS text styles. Body and Button are 13 pt; Monospace is SF Mono 11 pt, for
-/// the log.
+/// the log's messages.
 pub fn text_styles() -> BTreeMap<TextStyle, FontId> {
     BTreeMap::from([
-        (title1(), FontId::proportional(22.0)),
+        (hero(), FontId::new(26.0, display_semibold())),
+        (title1(), FontId::new(22.0, display())),
+        (title2(), FontId::proportional(17.0)),
+        (title3(), FontId::proportional(15.0)),
         (headline(), FontId::new(13.0, semibold())),
         (TextStyle::Body, FontId::proportional(13.0)),
         (TextStyle::Button, FontId::proportional(13.0)),
@@ -228,19 +282,18 @@ fn instance(weight: f32, optical_size: Option<f32>) -> FontTweak {
     }
 }
 
-/// SF Pro twice over, from the bytes of `SFNS.ttf`: the regular instance and the
-/// semibold one, both at the optical size for text. They share the one copy of the
-/// bytes.
-fn sf_pro(bytes: &'static [u8]) -> [(&'static str, FontData); 2] {
-    let at = |weight| instance(weight, Some(TEXT_OPTICAL_SIZE));
+/// SF Pro four times over, from the bytes of `SFNS.ttf`: regular and semibold at the
+/// optical size for text, then regular and semibold at the display size. They share the
+/// one copy of the bytes.
+fn sf_pro(bytes: &'static [u8]) -> [(&'static str, FontData); 4] {
+    let font = |weight, size| FontData::from_static(bytes).tweak(instance(weight, Some(size)));
     [
+        (SF_PRO, font(REGULAR_WEIGHT, TEXT_OPTICAL_SIZE)),
+        (SF_PRO_SEMIBOLD, font(SEMIBOLD_WEIGHT, TEXT_OPTICAL_SIZE)),
+        (SF_PRO_DISPLAY, font(REGULAR_WEIGHT, DISPLAY_OPTICAL_SIZE)),
         (
-            SF_PRO,
-            FontData::from_static(bytes).tweak(at(REGULAR_WEIGHT)),
-        ),
-        (
-            SF_PRO_SEMIBOLD,
-            FontData::from_static(bytes).tweak(at(SEMIBOLD_WEIGHT)),
+            SF_PRO_DISPLAY_SEMIBOLD,
+            font(SEMIBOLD_WEIGHT, DISPLAY_OPTICAL_SIZE),
         ),
     ]
 }
@@ -273,19 +326,23 @@ fn font_file(path: &Path) -> Option<&'static [u8]> {
 /// and its families keep egui's fonts alone.
 pub fn font_definitions(fonts_dir: &Path) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    let mut semibold_fonts = fonts.families[&FontFamily::Proportional].clone();
-    if let Some(bytes) = font_file(&fonts_dir.join(SF_PRO_FILE)) {
-        let [(regular_name, regular), (semibold_name, semibold)] = sf_pro(bytes);
-        fonts
-            .font_data
-            .insert(regular_name.to_owned(), Arc::new(regular));
-        fonts
-            .font_data
-            .insert(semibold_name.to_owned(), Arc::new(semibold));
-        put_first(&mut fonts, FontFamily::Proportional, regular_name);
-        semibold_fonts.insert(0, semibold_name.to_owned());
+    // egui's own fonts, for each of the named families to fall back on.
+    let defaults = fonts.families[&FontFamily::Proportional].clone();
+    for family in named_families() {
+        fonts.families.insert(family, defaults.clone());
     }
-    fonts.families.insert(semibold(), semibold_fonts);
+    if let Some(bytes) = font_file(&fonts_dir.join(SF_PRO_FILE)) {
+        let families = [
+            FontFamily::Proportional,
+            semibold(),
+            display(),
+            display_semibold(),
+        ];
+        for ((name, font), family) in sf_pro(bytes).into_iter().zip(families) {
+            fonts.font_data.insert(name.to_owned(), Arc::new(font));
+            put_first(&mut fonts, family, name);
+        }
+    }
     if let Some(bytes) = font_file(&fonts_dir.join(SF_MONO_FILE)) {
         fonts
             .font_data
@@ -422,7 +479,6 @@ mod tests {
     #[test]
     fn palette_matches_the_spec() {
         let light = Palette::for_dark(false);
-        assert_eq!(light.accent, rgb(0x007AFF));
         assert_eq!(light.green, rgb(0x34C759));
         assert_eq!(light.orange, rgb(0xFF9500));
         assert_eq!(light.red, rgb(0xFF3B30));
@@ -436,7 +492,6 @@ mod tests {
         assert_eq!(rgba(light.separator), [0, 0, 0, 26]);
 
         let dark = Palette::for_dark(true);
-        assert_eq!(dark.accent, rgb(0x0A84FF));
         assert_eq!(dark.green, rgb(0x30D158));
         assert_eq!(dark.orange, rgb(0xFF9F0A));
         assert_eq!(dark.red, rgb(0xFF453A));
@@ -448,6 +503,13 @@ mod tests {
         assert_eq!(rgba(dark.label), [255, 255, 255, 217]);
         assert_eq!(rgba(dark.secondary_label), [255, 255, 255, 140]);
         assert_eq!(rgba(dark.separator), [255, 255, 255, 26]);
+    }
+
+    #[test]
+    fn accent_is_indigo() {
+        // systemIndigo, the app's own accent (HIG lets an app set one).
+        assert_eq!(Palette::for_dark(false).accent, rgb(0x5856D6));
+        assert_eq!(Palette::for_dark(true).accent, rgb(0x5E5CE6));
     }
 
     #[test]
@@ -499,11 +561,13 @@ mod tests {
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             assert_eq!(fonts.families[&family], defaults.families[&family]);
         }
-        // The semibold family is still there, so the headline style has fonts to use.
-        assert_eq!(
-            fonts.families[&semibold()],
-            defaults.families[&FontFamily::Proportional]
-        );
+        // The named families are still there, so the styles that use them have fonts.
+        for family in named_families() {
+            assert_eq!(
+                fonts.families[&family],
+                defaults.families[&FontFamily::Proportional]
+            );
+        }
         assert!(
             fonts.font_data.keys().all(|name| !name.starts_with("SF")),
             "{:?}",
@@ -525,15 +589,24 @@ mod tests {
     #[test]
     fn semibold_uses_weight_590() {
         // The bytes are not looked at until a font is drawn with, so any will do here.
-        let [(regular_name, regular), (semibold_name, semibold)] = sf_pro(&[0; 4]);
+        let [
+            (regular_name, regular),
+            (semibold_name, semibold),
+            (_, display),
+            (_, display_semibold),
+        ] = sf_pro(&[0; 4]);
         assert_eq!(coord(&regular, b"wght"), Some(400.0));
         assert_eq!(coord(&semibold, b"wght"), Some(590.0));
         assert_ne!(regular_name, semibold_name);
-        // Both at the optical size for text; SF Mono at its regular weight.
+        // The text instances at the optical size for text, the display ones at 28.
         assert_eq!(coord(&regular, b"opsz"), Some(17.0));
         assert_eq!(coord(&semibold, b"opsz"), Some(17.0));
-        // The two SF Pro instances are one copy of the font.
+        assert_eq!(coord(&display, b"wght"), Some(400.0));
+        assert_eq!(coord(&display_semibold, b"wght"), Some(590.0));
+        assert_eq!(coord(&display_semibold, b"opsz"), Some(28.0));
+        // The SF Pro instances are one copy of the font.
         assert!(std::ptr::eq(regular.font.as_ptr(), semibold.font.as_ptr()));
+        assert!(std::ptr::eq(regular.font.as_ptr(), display.font.as_ptr()));
         let mono = sf_mono(&[0; 4]);
         assert_eq!(coord(&mono, b"wght"), Some(400.0));
         assert_eq!(coord(&mono, b"opsz"), None);
@@ -556,7 +629,11 @@ mod tests {
     fn the_text_styles_are_the_macos_ones() {
         let styles = text_styles();
         let size = |style: &TextStyle| styles[style].size;
+        assert_eq!(size(&hero()), 26.0);
+        assert_eq!(styles[&hero()].family, display_semibold());
         assert_eq!(size(&title1()), 22.0);
+        assert_eq!(size(&title2()), 17.0);
+        assert_eq!(size(&title3()), 15.0);
         assert_eq!(size(&headline()), 13.0);
         assert_eq!(styles[&headline()].family, semibold());
         assert_eq!(size(&TextStyle::Body), 13.0);

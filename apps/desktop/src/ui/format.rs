@@ -5,10 +5,10 @@
 //! and so [`reading_text`]: for "at HH:MM" they look up the Mac's time zone (see
 //! `clock`).
 
-use scent_core::{DeviceInfo, Expected, Online, Source, Via, is_stale};
+use scent_core::{Expected, Online, Source, Via, is_stale, parse_name};
 
 use super::clock::{local_utc_offset_secs, time_of_day};
-use crate::state::{BrokerState, Reading};
+use crate::state::{BrokerState, DeviceView, Reading};
 
 const NOT_REPORTED: &str = "not reported yet";
 
@@ -104,6 +104,155 @@ pub fn power_source(charging: Option<i64>, battery: Option<i64>) -> String {
     }
 }
 
+/// The models this app knows, which pick a diffuser's glyph and its name until it is
+/// given one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    Air2,
+    Hvac2,
+    /// A model this app has no driver for, or one that hasn't said.
+    Other,
+}
+
+impl Model {
+    /// The model from what it says about itself: "Diffuser" (or "Diffuser Air 2") is the
+    /// Air 2, "Hvac" the HVAC 2.
+    pub fn from_info(model: &str) -> Model {
+        let lower = model.to_ascii_lowercase();
+        if lower.contains("hvac") {
+            Model::Hvac2
+        } else if lower.contains("air") || lower == "diffuser" {
+            Model::Air2
+        } else {
+            Model::Other
+        }
+    }
+
+    /// The model of a diffuser, from its info.
+    pub fn of(device: &DeviceView) -> Model {
+        device
+            .info
+            .as_ref()
+            .map_or(Model::Other, |info| Model::from_info(&info.model_name))
+    }
+
+    /// The model from a Bluetooth name, which says it by a letter.
+    pub fn from_scan(scan_name: &str) -> Model {
+        match parse_name(scan_name).model_code.as_deref() {
+            Some("D") => Model::Air2,
+            Some("H") => Model::Hvac2,
+            _ => Model::Other,
+        }
+    }
+
+    /// The model's name, as Scentiment sells it; `None` for one this app doesn't know.
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            Model::Air2 => Some("Air 2"),
+            Model::Hvac2 => Some("HVAC 2"),
+            Model::Other => None,
+        }
+    }
+}
+
+/// The name for a diffuser from its Bluetooth name, which says its model by a letter.
+pub fn name_from_scan(scan_name: &str) -> String {
+    match Model::from_scan(scan_name).name() {
+        Some(name) => name.to_owned(),
+        None => parse_name(scan_name)
+            .model
+            .unwrap_or_else(|| "Diffuser".to_owned()),
+    }
+}
+
+/// The name for a diffuser from the model it gave in its info: "Diffuser" is the Air 2,
+/// "Hvac" the HVAC 2.
+pub fn name_from_model(model: &str) -> String {
+    match Model::from_info(model).name() {
+        Some(name) => name.to_owned(),
+        None if model.is_empty() => "Diffuser".to_owned(),
+        None => model.to_owned(),
+    }
+}
+
+/// What a diffuser is called on screen: the name it was given, else its model ("Air 2",
+/// "HVAC 2"), else "Diffuser" and the last four characters of its ID. Never the raw ID.
+pub fn display_name(device: &DeviceView) -> String {
+    let named = !device.label.trim().is_empty() && device.label != device.id;
+    if named {
+        return device.label.clone();
+    }
+    match Model::of(device).name() {
+        Some(model) => model.to_owned(),
+        None => unknown_name(&device.id),
+    }
+}
+
+/// "Diffuser" and the end of `id`: the name of a diffuser this app knows only by its ID.
+pub fn unknown_name(id: &str) -> String {
+    let tail: String = id
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("Diffuser {tail}")
+}
+
+/// `text` with its first letter in capitals, for a value that starts a line: "Plugged
+/// in" for "plugged in".
+pub fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// How strong a signal is, in four steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quality {
+    Excellent,
+    Good,
+    Fair,
+    Weak,
+}
+
+impl Quality {
+    pub fn words(self) -> &'static str {
+        match self {
+            Quality::Excellent => "Excellent",
+            Quality::Good => "Good",
+            Quality::Fair => "Fair",
+            Quality::Weak => "Weak",
+        }
+    }
+
+    /// How many of the four signal bars are filled.
+    pub fn bars(self) -> u8 {
+        match self {
+            Quality::Excellent => 4,
+            Quality::Good => 3,
+            Quality::Fair => 2,
+            Quality::Weak => 1,
+        }
+    }
+}
+
+/// A signal in dBm, WiFi or Bluetooth, in words. The steps follow common WiFi guidance:
+/// from -55 dBm up is excellent; down to -67, the usual floor for a steady link, good;
+/// down to -75 fair; below that weak. Bluetooth links hold to about -80, so the same
+/// steps are, if anything, cautious for it.
+pub fn signal_quality(dbm: i64) -> Quality {
+    match dbm {
+        -55.. => Quality::Excellent,
+        -67..=-56 => Quality::Good,
+        -75..=-68 => Quality::Fair,
+        _ => Quality::Weak,
+    }
+}
+
 /// What the schedule this app last sent says the diffuser should be doing now. It
 /// says where that comes from, because the diffuser may hold a different one (the
 /// Scentiment app, or another copy of this one, could have sent its own).
@@ -112,9 +261,9 @@ pub fn expected_text(expected: &Expected) -> String {
     if !expected.power {
         return format!("{BASED_ON} off now.");
     }
-    let level = expected
-        .level
-        .map_or_else(String::new, |level| format!(" at level {}", level.get()));
+    let level = expected.level.map_or_else(String::new, |level| {
+        format!(" at {}", intensity(i64::from(level.get())))
+    });
     let until = expected
         .until
         .map_or_else(String::new, |until| format!(" until {until}"));
@@ -153,28 +302,6 @@ pub fn broker_text(broker: &BrokerState) -> String {
         BrokerState::LoginRefused(why) => format!("Broker login refused: {why}"),
         BrokerState::Disconnected(why) => format!("Not connected to the broker: {why}"),
     }
-}
-
-/// What the Bluetooth scan heard of a diffuser's signal.
-pub fn scan_signal(rssi: Option<i16>) -> String {
-    rssi.map_or_else(|| "signal unknown".to_owned(), |dbm| signal(dbm.into()))
-}
-
-/// The model and firmware a diffuser told us, such as "Diffuser Air 2, firmware
-/// 2.30"; empty when it told us neither.
-pub fn model_text(info: Option<&DeviceInfo>) -> String {
-    let Some(info) = info else {
-        return String::new();
-    };
-    let firmware = (!info.firmware.is_empty()).then(|| format!("firmware {}", info.firmware));
-    [
-        Some(info.model_name.clone()).filter(|m| !m.is_empty()),
-        firmware,
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(", ")
 }
 
 #[cfg(test)]
@@ -319,12 +446,12 @@ mod tests {
         };
         assert_eq!(
             expected_text(&expected(true, 1, entry, Some("22:30"))),
-            "Based on the schedule this app last sent, it should be on at level 1 until 22:30 (schedule 21:30–22:30)."
+            "Based on the schedule this app last sent, it should be on at Low until 22:30 (schedule 21:30–22:30)."
         );
         // The always-on entry has no end.
         assert_eq!(
             expected_text(&expected(true, 2, Source::AlwaysOn, None)),
-            "Based on the schedule this app last sent, it should be on at level 2 (always-on entry)."
+            "Based on the schedule this app last sent, it should be on at Medium (always-on entry)."
         );
     }
 
@@ -384,27 +511,81 @@ mod tests {
     }
 
     #[test]
-    fn signal_strength_of_a_scan_hit() {
-        assert_eq!(scan_signal(Some(-62)), "-62 dBm");
-        assert_eq!(scan_signal(None), "signal unknown");
+    fn display_name_never_shows_a_raw_id() {
+        let unnamed = |model: Option<&str>| {
+            let mut device = crate::state::DeviceView::new("TESTDEVICE01");
+            device.info = model.map(|model| DeviceInfo {
+                manufacturer_id: "01".into(),
+                model_name: model.into(),
+                variant_name: "Black".into(),
+                device_id: "TESTDEVICE01".into(),
+                firmware: "2.30".into(),
+                wifi_configured: true,
+                wifi_status: 3,
+            });
+            device
+        };
+        // The Air 2 calls itself "Diffuser", the HVAC 2 "Hvac".
+        assert_eq!(display_name(&unnamed(Some("Diffuser"))), "Air 2");
+        assert_eq!(display_name(&unnamed(Some("Diffuser Air 2"))), "Air 2");
+        assert_eq!(display_name(&unnamed(Some("Hvac"))), "HVAC 2");
+        // A model this app doesn't know, or none: "Diffuser" and the end of its ID.
+        assert_eq!(display_name(&unnamed(None)), "Diffuser CE01");
+        assert_eq!(display_name(&unnamed(Some(""))), "Diffuser CE01");
+        assert_eq!(display_name(&unnamed(Some("Mini"))), "Diffuser CE01");
+        // A name the person gave wins.
+        let mut named = unnamed(Some("Hvac"));
+        named.label = "Hallway".to_owned();
+        assert_eq!(display_name(&named), "Hallway");
+        // Nothing in the app shows the raw ID as a name.
+        for device in [
+            unnamed(None),
+            unnamed(Some("Diffuser")),
+            unnamed(Some("Hvac")),
+        ] {
+            assert!(!display_name(&device).contains("TESTDEVICE01"));
+        }
     }
 
     #[test]
-    fn the_model_line_leaves_out_what_the_diffuser_did_not_say() {
-        let mut info = DeviceInfo {
-            manufacturer_id: "01".into(),
-            model_name: "Diffuser Air 2".into(),
-            variant_name: "Black".into(),
-            device_id: "TESTDEVICE01".into(),
-            firmware: "2.30".into(),
-            wifi_configured: true,
-            wifi_status: 3,
-        };
-        assert_eq!(model_text(Some(&info)), "Diffuser Air 2, firmware 2.30");
-        info.model_name.clear();
-        assert_eq!(model_text(Some(&info)), "firmware 2.30");
-        info.firmware.clear();
-        assert_eq!(model_text(Some(&info)), "");
-        assert_eq!(model_text(None), "");
+    fn signal_strength_in_words() {
+        // Thresholds: -55 dBm and up is excellent, -67 good, -75 fair, below that weak.
+        assert_eq!(signal_quality(-40), Quality::Excellent);
+        assert_eq!(signal_quality(-55), Quality::Excellent);
+        assert_eq!(signal_quality(-56), Quality::Good);
+        assert_eq!(signal_quality(-67), Quality::Good);
+        assert_eq!(signal_quality(-68), Quality::Fair);
+        assert_eq!(signal_quality(-75), Quality::Fair);
+        assert_eq!(signal_quality(-76), Quality::Weak);
+        assert_eq!(signal_quality(-100), Quality::Weak);
+        let words: Vec<&str> = [-50, -60, -70, -80]
+            .into_iter()
+            .map(|dbm| signal_quality(dbm).words())
+            .collect();
+        assert_eq!(words, ["Excellent", "Good", "Fair", "Weak"]);
+        // As bars, out of four.
+        assert_eq!(signal_quality(-50).bars(), 4);
+        assert_eq!(signal_quality(-80).bars(), 1);
+    }
+
+    #[test]
+    fn the_name_comes_from_the_model() {
+        assert_eq!(name_from_scan("Scentiment-D B n 0A1B2C3D4E5F"), "Air 2");
+        assert_eq!(name_from_scan("Scentiment-H B n 0A1B2C3D4E5F"), "HVAC 2");
+        assert_eq!(name_from_scan("Scentiment-M W"), "Mini");
+        assert_eq!(name_from_scan("Scentiment"), "Diffuser");
+        // From what the diffuser told us about itself.
+        assert_eq!(name_from_model("Diffuser"), "Air 2");
+        assert_eq!(name_from_model("Diffuser Air 2"), "Air 2");
+        assert_eq!(name_from_model("Hvac"), "HVAC 2");
+        assert_eq!(name_from_model("Diffuser HVAC 2"), "HVAC 2");
+        assert_eq!(name_from_model(""), "Diffuser");
+    }
+
+    #[test]
+    fn a_value_that_starts_a_line_has_a_capital() {
+        assert_eq!(capitalized("plugged in"), "Plugged in");
+        assert_eq!(capitalized("3 min ago"), "3 min ago");
+        assert_eq!(capitalized(""), "");
     }
 }

@@ -3,7 +3,9 @@
 //! sending it replaces the whole table, over WiFi (see `hub::UiCommand::SendSchedule`).
 //!
 //! What is typed is a [`Draft`]; [`check`] says whether it makes a [`Profile`], and
-//! what is wrong where when it doesn't. "Send Schedule" waits until it does.
+//! what is wrong where when it doesn't. "Send Schedule" waits until it does. Above the
+//! times, a week grid previews the draft as it is typed ([`preview`]), so that overlaps
+//! and gaps show before it is sent.
 
 use eframe::egui::{self, Align, Id, Key, KeyboardShortcut, Modifiers, RichText, ScrollArea};
 use scent_core::{
@@ -12,9 +14,10 @@ use scent_core::{
 
 use super::clock::local_utc_offset_secs;
 use super::theme::{GRID, Palette, TOOLBAR_HEIGHT, headline};
+use super::timeline::week_grid;
 use super::widgets::{
-    alert, day_toggles, default_button, footnote, grouped, grouped_with, plain_button, problem,
-    row, secondary, segmented, sheet, switch,
+    alert, day_toggles, default_button, footnote, free_row, grouped, grouped_with, plain_button,
+    problem, row, secondary, segmented, sheet, switch,
 };
 use crate::hub::UiCommand;
 use crate::state::{AppState, DeviceView};
@@ -22,6 +25,10 @@ use crate::state::{AppState, DeviceView};
 /// The sheet's width, and the confirmation's.
 pub const WIDTH: f32 = 560.0;
 const ALERT_WIDTH: f32 = 360.0;
+
+/// What the sheet holds besides its scrolling part: its title and note, the week grid,
+/// and the buttons.
+const WEEK_ROOM: f32 = 410.0;
 
 /// The width of a time field (`HH:MM`) and of a number field.
 const TIME_FIELD: f32 = 52.0;
@@ -131,6 +138,26 @@ impl Draft {
             test_minutes: TEST_MINUTES.to_owned(),
         }
     }
+}
+
+/// The draft as the week grid shows it while it is typed: the times that make sense so
+/// far (one with a mistake is left out until it is fixed), switched on or off, and the
+/// always-on entry. `None` only if no level can be made.
+pub fn preview(draft: &Draft) -> Option<Profile> {
+    let level = Level::new(draft.always_level).or_else(|| Level::new(DEFAULT_LEVEL))?;
+    Some(Profile {
+        always_on: AlwaysOn {
+            enable: draft.always_on,
+            level,
+        },
+        entries: draft
+            .entries
+            .iter()
+            .filter_map(|entry| check_entry(entry).ok())
+            .collect(),
+        timezone_hours: parse_offset(&draft.offset).unwrap_or(0.0),
+        flag: ScheduleFlag::Replace,
+    })
 }
 
 /// What is wrong with a [`Draft`], where. Each is the first problem found there.
@@ -516,11 +543,18 @@ impl ScheduleEditor {
             ),
         );
         ui.add_space(2.0 * GRID);
+        // The week, as typed so far: it stays in view while the times scroll.
+        if let Some(week) = preview(&self.draft) {
+            grouped(ui, "Week", |ui| {
+                free_row(ui, |ui| week_grid(ui, &week, palette.grouped));
+            });
+            ui.add_space(2.0 * GRID);
+        }
         // The sheet fits the window; what doesn't fit scrolls. A sheet lays out in the
         // size it had the frame before, so the scrolling part is told its height outright
         // (`min_scrolled_height`) rather than taking the room it is given, or it would
         // grow a little each frame from the first guess.
-        let room = (ui.ctx().content_rect().height() - TOOLBAR_HEIGHT - 220.0).max(160.0);
+        let room = (ui.ctx().content_rect().height() - TOOLBAR_HEIGHT - WEEK_ROOM).max(160.0);
         ScrollArea::vertical()
             .max_height(room)
             .min_scrolled_height(room)
@@ -967,6 +1001,30 @@ mod tests {
             zone_note("+1", 0.0),
             "The times are in this zone. This Mac is at UTC now."
         );
+    }
+
+    #[test]
+    fn the_week_previews_the_draft_as_it_is_typed() {
+        let mut d = draft(vec![
+            entry("07:00", "09:00", &[1, 2, 3, 4, 5]),
+            entry("22:00", "06:00", &[0]),
+        ]);
+        d.entries[0].level = 2;
+        d.always_on = true;
+        let week = preview(&d).unwrap();
+        // The time with a mistake waits until it is fixed; the other shows at once.
+        assert_eq!(week.entries.len(), 1);
+        assert_eq!(week.entries[0].weekdays, [1, 2, 3, 4, 5]);
+        assert!(week.always_on.enable);
+        // A time switched off is still shown (fainter), as the diffuser keeps it.
+        d.entries[1].end = "23:00".to_owned();
+        d.entries[1].runs = false;
+        let week = preview(&d).unwrap();
+        assert_eq!(week.entries.len(), 2);
+        assert!(!week.entries[1].enable);
+        // A level that can't be is shown at Low until it is fixed.
+        d.always_level = 0;
+        assert_eq!(preview(&d).unwrap().always_on.level.get(), 1);
     }
 
     #[test]

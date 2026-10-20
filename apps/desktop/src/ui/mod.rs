@@ -1,8 +1,9 @@
 //! The screens, as a Mac split view: the sidebar (the diffuser list) on the left under
-//! the traffic lights, and on the right a toolbar, the open diffuser, and the log pane
-//! along the bottom. Settings is a window of its own; Add Diffuser and Edit Schedule are
-//! sheets over the main window. Each file is one screen; the look is in `theme` and the
-//! controls they share in `widgets`. This one lays them out and holds what they ask of
+//! the traffic lights, and on the right a toolbar, the open diffuser in a centered
+//! column, and the log pane along the bottom. Settings is a window of its own; Add
+//! Diffuser and Edit Schedule are sheets over the main window. Each file is one screen;
+//! the look is in `theme`, the controls they share in `widgets`, and the drawn glyphs in
+//! `glyphs`. This one lays them out, with the empty states, and holds what they ask of
 //! the app.
 //!
 //! The screens only read the state they are given and hand back what they want done
@@ -13,10 +14,14 @@ pub mod clock;
 pub mod device_list;
 pub mod device_panel;
 pub mod format;
+pub mod glyphs;
+pub mod hero;
+pub mod log_summary;
 pub mod log_view;
 pub mod schedule_editor;
 pub mod settings;
 pub mod theme;
+pub mod timeline;
 pub mod widgets;
 
 #[cfg(test)]
@@ -25,22 +30,22 @@ mod screen_tests;
 mod snapshots;
 
 use eframe::egui::{
-    self, Align, Frame, Id, Key, KeyboardShortcut, Layout, Margin, RichText, Sense, ViewportCommand,
+    self, Align, Frame, Id, Key, KeyboardShortcut, Layout, Margin, Sense, ViewportCommand,
 };
 
 use self::add_sheet::{AddSheet, Target};
-use self::device_list::DeviceList;
+use self::device_list::{DeviceList, Selection, unknown_hits};
 use self::device_panel::DevicePanel;
-use self::format::{broker_summary, broker_text};
+use self::format::{Model, name_from_scan};
 use self::log_view::LogView;
 use self::schedule_editor::ScheduleEditor;
 use self::settings::{SettingsWindow, Submitted};
 use self::theme::{
-    GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_TOP_INSET, SIDEBAR_WIDTH,
-    TOOLBAR_HEIGHT, broker_color,
+    CONTENT_MAX_WIDTH, GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+    SIDEBAR_TOP_INSET, SIDEBAR_WIDTH, TOOLBAR_HEIGHT,
 };
 use self::widgets::{
-    NoticeKind, gear_button, hairline, notice_with, plain_button, status_dot, toolbar_button,
+    NoticeKind, empty_state, gear_button, hairline, notice_with, plain_button, toolbar_button,
 };
 use crate::add_flow::AddStep;
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
@@ -50,10 +55,6 @@ use crate::state::{AppState, BrokerState, Event};
 /// ⌘, opens Settings, as in every Mac app.
 const SETTINGS_SHORTCUT: KeyboardShortcut =
     KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::Comma);
-
-/// The widest the open diffuser's boxes get, so that rows stay readable in a wide
-/// window.
-const CONTENT_MAX_WIDTH: f32 = 640.0;
 
 /// A sheet a screen asks to open.
 pub enum OpenSheet {
@@ -76,6 +77,8 @@ pub struct Requests {
 pub struct Screens {
     /// The diffuser whose panel is open.
     selected: Option<String>,
+    /// A diffuser found nearby that is selected instead, by its Bluetooth ID.
+    found: Option<String>,
     list: DeviceList,
     panel: DevicePanel,
     log: LogView,
@@ -90,6 +93,7 @@ impl Screens {
     pub fn new(notice: Option<String>) -> Screens {
         Screens {
             selected: None,
+            found: None,
             list: DeviceList::default(),
             panel: DevicePanel::default(),
             log: LogView::default(),
@@ -120,10 +124,12 @@ impl Screens {
             && self.add_sheet.is_for(ble_id)
         {
             self.selected = Some(device_id.clone());
+            self.found = None;
         }
     }
 
-    /// Opens the first diffuser when none is open.
+    /// Opens the first diffuser when none is open, and lets go of a diffuser found
+    /// nearby once it isn't (it was added, or a new scan missed it).
     fn keep_selection(&mut self, state: &AppState) {
         let open = self
             .selected
@@ -131,6 +137,12 @@ impl Screens {
             .is_some_and(|id| state.devices.contains_key(id));
         if !open {
             self.selected = state.devices.keys().next().cloned();
+        }
+        let hits = unknown_hits(state);
+        if let Some(ble_id) = &self.found
+            && !hits.iter().any(|hit| &hit.ble_id == ble_id)
+        {
+            self.found = None;
         }
     }
 
@@ -172,9 +184,11 @@ impl Screens {
             .show_separator_line(false)
             .frame(sidebar)
             .show(ui, |ui| {
-                let commands = self
-                    .list
-                    .show(ui, state, &mut self.selected, now, &mut sheet);
+                let selection = Selection {
+                    device: &mut self.selected,
+                    found: &mut self.found,
+                };
+                let commands = self.list.show(ui, state, selection, now);
                 requests.commands.extend(commands);
             })
             .response
@@ -187,7 +201,7 @@ impl Screens {
             .exact_size(TOOLBAR_HEIGHT)
             .show_separator_line(false)
             .frame(toolbar)
-            .show(ui, |ui| self.toolbar(ui, state, broker))
+            .show(ui, |ui| self.toolbar(ui, broker))
             .response
             .rect;
 
@@ -200,25 +214,16 @@ impl Screens {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.set_max_width(CONTENT_MAX_WIDTH.min(ui.available_width()));
-                    self.notices(ui, state, broker);
-                    match self.selected.as_ref().and_then(|id| state.devices.get(id)) {
-                        Some(device) => {
-                            let commands = self.panel.show(ui, state, device, now, &mut sheet);
-                            requests.commands.extend(commands);
-                        }
-                        None => {
-                            ui.add_space(4.0 * GRID);
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    RichText::new(
-                                        "Diffusers appear on the left once they are added or heard on the broker.",
-                                    )
-                                    .color(palette.secondary_label),
-                                );
-                            });
-                        }
-                    }
+                    // One column, centered, no wider than reads well.
+                    let width = CONTENT_MAX_WIDTH.min(ui.available_width());
+                    let side = ((ui.available_width() - width) / 2.0).max(0.0);
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(side);
+                        ui.vertical(|ui| {
+                            ui.set_width(width);
+                            self.detail(ui, state, broker, now, &mut requests, &mut sheet);
+                        });
+                    });
                 });
         });
 
@@ -250,10 +255,90 @@ impl Screens {
         requests
     }
 
-    /// The toolbar along the top of the detail pane: the broker's state on the left, and
-    /// Show Log or Hide Log and the gear for Settings on the right.
-    fn toolbar(&mut self, ui: &mut egui::Ui, state: &AppState, broker: &BrokerSettings) {
-        let palette = Palette::of(ui);
+    /// What the detail pane holds: the notices, then the open diffuser, or the diffuser
+    /// found nearby that is selected, or an empty state.
+    fn detail(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        broker: &BrokerSettings,
+        now: i64,
+        requests: &mut Requests,
+        sheet: &mut Option<OpenSheet>,
+    ) {
+        self.notices(ui, state, broker);
+        let hits = unknown_hits(state);
+        let found = self
+            .found
+            .as_ref()
+            .and_then(|ble_id| hits.iter().find(|hit| &hit.ble_id == ble_id));
+        if let Some(hit) = found {
+            let name = name_from_scan(&hit.name);
+            let model = Model::from_scan(&hit.name);
+            let draw = move |painter: &egui::Painter, rect, color, ground| {
+                let ink = glyphs::Ink {
+                    body: color,
+                    arcs: color,
+                    ground,
+                    track: None,
+                };
+                let at = glyphs::still(rect, 0.0);
+                match model {
+                    Model::Hvac2 => glyphs::hvac2(painter, at, &ink, 0.0),
+                    _ => glyphs::air2(painter, at, &ink, 0.0),
+                }
+            };
+            let add = empty_state(
+                ui,
+                draw,
+                &format!("{name} is nearby"),
+                "Add it to put it on your broker and control it from this Mac.",
+                "Add Diffuser…",
+            );
+            if add {
+                *sheet = Some(OpenSheet::Add(Target {
+                    ble_id: hit.ble_id.clone(),
+                    name,
+                }));
+            }
+            return;
+        }
+        if let Some(device) = self.selected.as_ref().and_then(|id| state.devices.get(id)) {
+            let commands = self.panel.show(ui, state, device, now, sheet);
+            requests.commands.extend(commands);
+            return;
+        }
+        let (title, sentence) = if state.devices.is_empty() {
+            (
+                "No diffusers yet",
+                "Scan to find the diffusers in Bluetooth range.",
+            )
+        } else {
+            (
+                "No diffuser selected",
+                "Choose one on the left, or scan for more nearby.",
+            )
+        };
+        let scanning = self.list.is_scanning();
+        let scan = ui
+            .add_enabled_ui(!scanning, |ui| {
+                empty_state(
+                    ui,
+                    glyphs::empty_diffuser,
+                    title,
+                    sentence,
+                    "Scan for Diffusers",
+                )
+            })
+            .inner;
+        if scan {
+            requests.commands.push(self.list.scan());
+        }
+    }
+
+    /// The toolbar along the top of the detail pane: Show Log or Hide Log and the gear
+    /// for Settings, on the right. The broker's state is at the foot of the sidebar.
+    fn toolbar(&mut self, ui: &mut egui::Ui, broker: &BrokerSettings) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if gear_button(ui, "Settings")
                 .on_hover_text("Settings (⌘,)")
@@ -269,19 +354,6 @@ impl Screens {
             if toolbar_button(ui, log).clicked() {
                 self.log.toggle();
             }
-            // The state in short; the whole sentence, with the reason, is in the tooltip
-            // and is what accessibility reads.
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                let text = broker_text(&state.broker);
-                status_dot(ui, broker_color(&palette, &state.broker), &text);
-                let summary =
-                    RichText::new(broker_summary(&state.broker)).color(palette.secondary_label);
-                let summary = ui
-                    .add(egui::Label::new(summary).truncate())
-                    .on_hover_text(&text);
-                ui.ctx()
-                    .accesskit_node_builder(summary.id, |node| node.set_value(text));
-            });
         });
     }
 
@@ -407,13 +479,13 @@ mod tests {
                 Direction::ToDevice,
                 Some(Via::Wifi),
                 "TURN_ON",
-                r#"{"action":"TURN_ON"}"#,
+                r#"{"action":"TURN_ON","payload":{"on":1}}"#,
             ),
             (
                 Direction::ToDevice,
                 Some(Via::Wifi),
                 "TURN_ON",
-                r#"{"action":"TURN_ON"}"#,
+                r#"{"action":"TURN_ON","payload":{"on":1}}"#,
             ),
             (
                 Direction::FromDevice,
@@ -442,7 +514,9 @@ mod tests {
         theme::install(&ctx, Path::new("/nonexistent"));
         // No fonts to load, to save time: the families are there with nothing in them.
         let mut fonts = FontDefinitions::empty();
-        fonts.families.insert(theme::semibold(), vec![]);
+        for family in theme::named_families() {
+            fonts.families.insert(family, vec![]);
+        }
         ctx.set_fonts(fonts);
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 720.0))),

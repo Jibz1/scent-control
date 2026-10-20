@@ -1,24 +1,28 @@
-//! The open diffuser: whether it answers, what it last reported, what its schedule
-//! says it should be doing, and the controls. As in System Settings, the readings, the
-//! controls and the schedule are each a grouped box: "Status" (with Read Status at the
-//! end of its heading), "Controls", and "Schedule" (with Edit Schedule…).
+//! The open diffuser: its name and whether it answers, then the diffusion hero (what it
+//! is doing, and the power and intensity to change it), then grouped boxes, as in
+//! System Settings: "Schedule" (what this app sent, today's times, and Edit Schedule…),
+//! "Details" (the power source, the WiFi signal, the last report, the firmware and the
+//! ID) and "Connection" (Send Over, and Read Status).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, RichText};
-use scent_core::{Command, Level, Profile, Via, expected_state};
+use eframe::egui::{self, Id, RichText, Sense, vec2};
+use scent_core::{Command, Level, Online, Via, expected_state, is_stale};
 
 use super::OpenSheet;
-use super::add_sheet::{Target, name_from_model};
+use super::add_sheet::Target;
 use super::format::{
-    expected_text, intensity, model_text, on_off, online_text, pending_text, power_source,
-    reading_text, signal,
+    Model, ago, capitalized, display_name, expected_text, intensity, name_from_model, on_off,
+    pending_text, power_source, reading_text, signal, signal_quality, via_name,
 };
-use super::theme::{GRID, Palette, status_color, title1};
+use super::glyphs::signal_bars;
+use super::hero::{self, HeroState};
+use super::theme::{GRID, Palette, SECTION_GAP, title1};
+use super::timeline::today_strip;
 use super::widgets::{
-    NoticeKind, footnote, grouped, grouped_with, notice, notice_with, plain_button, row, secondary,
-    segmented, status_dot, switch, value_with_note,
+    NoticeKind, footnote, free_row, grouped, grouped_with, notice, notice_with, plain_button, row,
+    segmented, value_with_note,
 };
 use crate::hub::{UiCommand, on_our_broker};
 use crate::route::TransportPref;
@@ -28,15 +32,15 @@ use crate::state::{AppState, DeviceView, Event, Field, Reading};
 /// well under this, and the hub gives up on one itself after 30 s.
 const SENDING_GIVE_UP: Duration = Duration::from_secs(40);
 
-/// The three intensities and what the segments call them.
-const LEVELS: [(Option<u8>, &str); 3] = [(Some(1), "Low"), (Some(2), "Medium"), (Some(3), "High")];
-
 /// The "Send Over" choices.
 const ROUTES: [(TransportPref, &str); 3] = [
     (TransportPref::Auto, "Auto"),
     (TransportPref::Wifi, "WiFi"),
     (TransportPref::Bluetooth, "Bluetooth"),
 ];
+
+/// What the hero says under the state while what was sent is waited for.
+const WAITING: &str = "Sent, waiting for the diffuser";
 
 /// How a line of the readings looks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,25 +129,6 @@ pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     Some(expected_text(&expected_state(profile, now)))
 }
 
-/// The schedule this app last sent, in a few words: how many times, and the always-on
-/// entry when it is on. `profile` is `None` when none was sent since the app started.
-pub fn schedule_summary(profile: Option<&Profile>) -> String {
-    let Some(profile) = profile else {
-        return "Nothing sent yet".to_owned();
-    };
-    let times = match profile.entries.len() {
-        0 => "No times".to_owned(),
-        1 => "1 time".to_owned(),
-        n => format!("{n} times"),
-    };
-    if profile.always_on.enable {
-        let level = intensity(i64::from(profile.always_on.level.get()));
-        format!("{times} · always on at {level}")
-    } else {
-        times
-    }
-}
-
 /// The add sheet for a diffuser known over Bluetooth that isn't on our broker yet, named
 /// as it is, or after its model.
 fn add_target(device: &DeviceView) -> Option<Target> {
@@ -172,15 +157,55 @@ fn shown_intensity(device: &DeviceView) -> Option<i64> {
     })
 }
 
-/// The power to show on the switch: the one we sent and is not yet reported, else the
-/// one reported, else off.
-fn shown_power(device: &DeviceView) -> bool {
-    device.pending_power().unwrap_or_else(|| {
+/// The power to show: the one we sent and is not yet reported, else the one reported.
+/// `None` when there is neither.
+fn shown_power(device: &DeviceView) -> Option<bool> {
+    device.pending_power().or_else(|| {
         device
             .readings
             .get(&Field::Power)
-            .is_some_and(|reading| reading.value != 0)
+            .map(|reading| reading.value != 0)
     })
+}
+
+/// What the hero shows for `device`: what the person set and is on its way (`asked`)
+/// first, then what was sent and not yet reported on, then what it reported; whether a
+/// command is on its way (`sending`); and where the state comes from.
+fn hero_state(device: &DeviceView, asked: Option<Asked>, sending: bool, now: i64) -> HeroState {
+    let power = asked
+        .and_then(|asked| asked.power)
+        .or_else(|| shown_power(device));
+    let level = asked.and_then(|asked| asked.intensity).or_else(|| {
+        shown_intensity(device)
+            .and_then(|level| u8::try_from(level).ok())
+            .filter(|level| (1..=3).contains(level))
+    });
+    let power_reading = device.readings.get(&Field::Power);
+    let pending = device.pending_power().is_some() || device.pending_intensity().is_some();
+    let newest = [power_reading, device.readings.get(&Field::Intensity)]
+        .into_iter()
+        .flatten()
+        .max_by_key(|reading| reading.at);
+    let note = match newest {
+        _ if pending => WAITING.to_owned(),
+        Some(reading) => format!(
+            "Reported {} over {}",
+            ago(reading.at, now),
+            via_name(reading.via)
+        ),
+        None => "Read Status asks it what it is doing".to_owned(),
+    };
+    HeroState {
+        name: display_name(device),
+        model: Some(Model::of(device)),
+        power,
+        level,
+        sending,
+        pending,
+        stale: device.pending_power().is_none()
+            && power_reading.is_some_and(|reading| is_stale(reading.at, now)),
+        note,
+    }
 }
 
 /// What the person just set with the switch or the intensity segments, for the
@@ -319,6 +344,19 @@ impl DevicePanel {
             .copied()
     }
 
+    /// What the person set on `device_id` and is on its way, for the snapshots.
+    #[cfg(test)]
+    pub fn as_sending(&mut self, device_id: &str, power: Option<bool>, intensity: Option<u8>) {
+        let at = Instant::now();
+        self.sending.insert(device_id.to_owned(), at);
+        let asked = Asked {
+            power,
+            intensity,
+            at,
+        };
+        self.asked.insert(device_id.to_owned(), asked);
+    }
+
     /// Shows the diffuser and returns the commands the controls asked for. `sheet` is set
     /// when Edit Schedule… or Add to Broker… was clicked.
     pub fn show(
@@ -331,10 +369,10 @@ impl DevicePanel {
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         let mut pref = self.prefs.get(&device.id).copied().unwrap_or_default();
-        let palette = Palette::of(ui);
 
-        header(ui, state, device, now);
+        header(ui, state.online(&device.id, now), device);
         if !on_our_broker(device) {
+            ui.add_space(2.0 * GRID);
             let text = "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.";
             match add_target(device) {
                 Some(target) => {
@@ -350,7 +388,44 @@ impl DevicePanel {
                 }
             }
         }
-        ui.add_space(GRID / 2.0);
+        ui.add_space(SECTION_GAP);
+
+        let send = |cmd: Command, pref: TransportPref| UiCommand::Send {
+            device_id: device.id.clone(),
+            cmd,
+            pref,
+        };
+        let asked = self.asked(&device.id);
+        let shown = hero_state(device, asked, self.is_sending(&device.id), now);
+        let changed = hero::show(ui, &shown, Id::new("hero").with(&device.id));
+        let mut now_asked = asked.unwrap_or(Asked {
+            power: None,
+            intensity: None,
+            at: Instant::now(),
+        });
+        if let Some(on) = changed.power {
+            commands.push(send(Command::TurnOn { on }, pref));
+            now_asked.power = Some(on);
+        }
+        if let Some(number) = changed.level
+            && let Some(chosen) = Level::new(number)
+        {
+            commands.push(send(Command::SetLevel(chosen), pref));
+            now_asked.intensity = Some(number);
+        }
+        if !commands.is_empty() {
+            self.sending.insert(device.id.clone(), Instant::now());
+            now_asked.at = Instant::now();
+            self.asked.insert(device.id.clone(), now_asked);
+        }
+        ui.add_space(SECTION_GAP);
+
+        if schedule_box(ui, device, now) {
+            *sheet = Some(OpenSheet::Schedule(device.id.clone()));
+        }
+        ui.add_space(SECTION_GAP);
+        details_box(ui, device, now);
+        ui.add_space(SECTION_GAP);
 
         let read_status = |ui: &mut egui::Ui| {
             plain_button(ui, "Read Status")
@@ -362,137 +437,197 @@ impl DevicePanel {
         let mut read = false;
         grouped_with(
             ui,
-            "Status",
+            "Connection",
             |ui| read = read_status(ui),
             |ui| {
-                for reading in reading_rows(device, now) {
-                    row(ui, reading.name, |ui| {
-                        let (value, note) = reading.parts();
-                        let color = match reading.tone {
-                            Tone::Fresh => palette.label,
-                            Tone::Stale => palette.secondary_label,
-                            Tone::Pending => palette.orange,
-                        };
-                        value_with_note(ui, RichText::new(value).color(color), note);
-                    });
-                }
+                row(ui, "Send Over", |ui| {
+                    segmented(ui, &mut pref, &ROUTES, "Send Over")
+                        .response
+                        .on_hover_text(
+                            "Auto: Bluetooth when the diffuser is in range, otherwise WiFi",
+                        );
+                });
             },
         );
+        // A read writes nothing and may say nothing, so it isn't waited for.
         if read {
             commands.push(UiCommand::ReadStatus {
                 device_id: device.id.clone(),
                 pref,
             });
         }
-        if let Some(line) = expected_line(device, now) {
-            footnote(ui, &line);
-        }
-        ui.add_space(GRID);
-
-        let send = |cmd: Command, pref: TransportPref| UiCommand::Send {
-            device_id: device.id.clone(),
-            cmd,
-            pref,
-        };
-        let asked = self.asked(&device.id);
-        let mut power = asked
-            .and_then(|asked| asked.power)
-            .unwrap_or_else(|| shown_power(device));
-        let mut level = asked
-            .and_then(|asked| asked.intensity)
-            .or_else(|| shown_intensity(device).and_then(|level| u8::try_from(level).ok()));
-        let mut now_asked = asked.unwrap_or(Asked {
-            power: None,
-            intensity: None,
-            at: Instant::now(),
-        });
-        grouped(ui, "Controls", |ui| {
-            row(ui, "Send Over", |ui| {
-                segmented(ui, &mut pref, &ROUTES, "Send Over")
-                    .response
-                    .on_hover_text("Auto: Bluetooth when the diffuser is in range, otherwise WiFi");
-            });
-            row(ui, "Power", |ui| {
-                if switch(ui, &mut power, "Power").changed() {
-                    commands.push(send(Command::TurnOn { on: power }, pref));
-                    now_asked.power = Some(power);
-                }
-            });
-            row(ui, "Intensity", |ui| {
-                if let Some(Some(number)) = segmented(ui, &mut level, &LEVELS, "Intensity").clicked
-                    && let Some(chosen) = Level::new(number)
-                {
-                    commands.push(send(Command::SetLevel(chosen), pref));
-                    now_asked.intensity = Some(number);
-                }
-            });
-        });
-        // A read writes nothing and may say nothing, so only a send is waited for.
-        if commands
-            .iter()
-            .any(|command| matches!(command, UiCommand::Send { .. }))
-        {
-            self.sending.insert(device.id.clone(), Instant::now());
-            now_asked.at = Instant::now();
-            self.asked.insert(device.id.clone(), now_asked);
-        }
-        if self.is_sending(&device.id) {
-            ui.add_space(GRID);
-            ui.horizontal(|ui| {
-                ui.spinner();
-                secondary(ui, "Sending…");
-            });
-        }
-        ui.add_space(GRID);
-
-        let mut edit = false;
-        grouped_with(
-            ui,
-            "Schedule",
-            |ui| edit = plain_button(ui, "Edit Schedule…").clicked(),
-            |ui| {
-                row(ui, "Sent from this Mac", |ui| {
-                    ui.label(schedule_summary(device.sent_profile.as_ref()));
-                });
-            },
-        );
-        footnote(
-            ui,
-            "The diffuser keeps its schedule and runs it on its own.",
-        );
-        if edit {
-            *sheet = Some(OpenSheet::Schedule(device.id.clone()));
-        }
+        ui.add_space(SECTION_GAP);
 
         self.prefs.insert(device.id.clone(), pref);
         commands
     }
 }
 
-/// The diffuser's name, whether it answers, and its model and ID.
-fn header(ui: &mut egui::Ui, state: &AppState, device: &DeviceView, now: i64) {
+/// The diffuser's name in Title 1 and, under it, its model and whether it answers, in
+/// words: "Air 2, answering over WiFi". The model is left out when it is the name.
+fn header(ui: &mut egui::Ui, online: Online, device: &DeviceView) {
     let palette = Palette::of(ui);
-    let online = state.online(&device.id, now);
+    let name = display_name(device);
+    // The two lines close, as a title and its subtitle.
+    ui.spacing_mut().item_spacing.y = 2.0;
     ui.label(
-        RichText::new(&device.label)
+        RichText::new(&name)
             .text_style(title1())
             .color(palette.label),
     );
-    let model = model_text(device.info.as_ref());
-    let meta = match (model.is_empty(), device.label == device.id) {
-        (true, true) => String::new(),
-        (true, false) => device.id.clone(),
-        (false, true) => model,
-        (false, false) => format!("{model} · {}", device.id),
+    ui.label(RichText::new(header_line(device, &name, online)).color(palette.secondary_label));
+    ui.spacing_mut().item_spacing.y = GRID;
+}
+
+/// The line under the name: the model, then whether it answers its pings.
+fn header_line(device: &DeviceView, name: &str, online: Online) -> String {
+    let answers = match online {
+        Online::Online => "answering over WiFi",
+        Online::Waiting => "pinged, waiting for an answer",
+        Online::Offline => "not answering pings",
+        Online::Unknown => "not pinged yet",
     };
-    ui.horizontal(|ui| {
-        let words = online_text(online);
-        status_dot(ui, status_color(&palette, online), words);
-        ui.label(RichText::new(words).color(palette.label));
-        if !meta.is_empty() {
-            ui.label(RichText::new(format!("· {meta}")).color(palette.secondary_label));
-        }
+    let model = match Model::of(device).name() {
+        Some(model) => model.to_owned(),
+        None => device
+            .info
+            .as_ref()
+            .map_or_else(String::new, |info| info.model_name.clone()),
+    };
+    if model.is_empty() || model == name {
+        capitalized(answers)
+    } else {
+        format!("{model}, {answers}")
+    }
+}
+
+/// "Schedule": today's times when this app knows them (it sent the schedule this
+/// session), and what they say it should be doing now. True when Edit Schedule… was
+/// clicked.
+fn schedule_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) -> bool {
+    let palette = Palette::of(ui);
+    let mut edit = false;
+    grouped_with(
+        ui,
+        "Schedule",
+        |ui| edit = plain_button(ui, "Edit Schedule…").clicked(),
+        |ui| {
+            // Today's times when this app knows them; else why it doesn't.
+            match &device.sent_profile {
+                Some(profile) => {
+                    free_row(ui, |ui| today_strip(ui, profile, now, palette.grouped));
+                }
+                None => {
+                    row(ui, "Sent from this Mac", |ui| {
+                        ui.label(RichText::new("Nothing yet").color(palette.secondary_label));
+                    });
+                }
+            }
+        },
+    );
+    let line = expected_line(device, now)
+        .unwrap_or_else(|| "The diffuser keeps its schedule and runs it on its own.".to_owned());
+    footnote(ui, &line);
+    edit
+}
+
+/// A reading's color: the label's, the secondary color once it is old, orange while what
+/// was sent is waited for.
+fn tone_color(palette: &Palette, tone: Tone) -> egui::Color32 {
+    match tone {
+        Tone::Fresh => palette.label,
+        Tone::Stale => palette.secondary_label,
+        Tone::Pending => palette.orange,
+    }
+}
+
+/// "Details": what the diffuser runs on, its WiFi signal (bars and words, the dBm in the
+/// tooltip), when it last said anything, its firmware and its ID.
+fn details_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
+    let palette = Palette::of(ui);
+    let [_, _, source, _] = reading_rows(device, now);
+    grouped(ui, "Details", |ui| {
+        row(ui, "Power source", |ui| {
+            let (value, note) = source.parts();
+            let value = RichText::new(capitalized(value)).color(tone_color(&palette, source.tone));
+            value_with_note(ui, value, note);
+        });
+        row(ui, "WiFi signal", |ui| wifi_signal(ui, device, now));
+        row(ui, "Last report", |ui| {
+            let heard = [
+                device.heard_wifi.map(|at| (at, Via::Wifi)),
+                device.heard_ble.map(|at| (at, Via::Bluetooth)),
+            ]
+            .into_iter()
+            .flatten()
+            .max_by_key(|(at, _)| *at);
+            match heard {
+                Some((at, via)) => {
+                    let value = RichText::new(capitalized(&ago(at, now))).color(palette.label);
+                    let note = format!("over {}", via_name(via));
+                    value_with_note(ui, value, Some(&note));
+                }
+                None => {
+                    let value = RichText::new("Nothing heard yet").color(palette.secondary_label);
+                    value_with_note(ui, value, None);
+                }
+            }
+        });
+        row(ui, "Firmware", |ui| {
+            let firmware = device
+                .info
+                .as_ref()
+                .map(|info| info.firmware.as_str())
+                .filter(|firmware| !firmware.is_empty());
+            let (text, color) = match firmware {
+                Some(firmware) => (firmware, palette.label),
+                None => ("Not reported yet", palette.secondary_label),
+            };
+            value_with_note(ui, RichText::new(text).color(color), None);
+        });
+        row(ui, "Device ID", |ui| {
+            value_with_note(ui, RichText::new(&device.id).color(palette.label), None);
+        });
     });
+}
+
+/// The WiFi signal's row value: the words and when they were reported, then four bars
+/// before them. The dBm are in the tooltip.
+fn wifi_signal(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
+    let palette = Palette::of(ui);
+    let Some(reading) = device.readings.get(&Field::Rssi) else {
+        let value = RichText::new("Not reported yet").color(palette.secondary_label);
+        value_with_note(ui, value, None);
+        return;
+    };
+    let quality = signal_quality(reading.value);
+    let (text, stale) = reading_text(Some(reading), now, |dbm| {
+        signal_quality(dbm).words().to_owned()
+    });
+    let note = text.split_once(" · ").map(|(_, note)| note);
+    let color = if stale {
+        palette.secondary_label
+    } else {
+        palette.label
+    };
+    let words = value_with_note(ui, RichText::new(quality.words()).color(color), note);
+    let (rect, bars) = ui.allocate_exact_size(vec2(18.0, words.rect.height()), Sense::hover());
+    let first_line = ui.text_style_height(&egui::TextStyle::Body);
+    let bars_rect = egui::Rect::from_min_size(
+        rect.min + vec2(0.0, (first_line - 11.0) / 2.0 + 0.5),
+        vec2(16.0, 11.0),
+    );
+    let on = if stale { palette.gray } else { palette.label };
+    signal_bars(
+        ui.painter(),
+        bars_rect,
+        super::glyphs::solid(on, palette.grouped),
+        Palette::tint(palette.label, 15),
+        quality.bars(),
+    );
+    let dbm = signal(reading.value);
+    words.on_hover_text(&dbm);
+    bars.on_hover_text(dbm);
 }
 
 #[cfg(test)]
@@ -633,38 +768,6 @@ mod tests {
             expected_line(&d, NOW).as_deref(),
             Some("Based on the schedule this app last sent, it should be off now.")
         );
-    }
-
-    #[test]
-    fn the_schedule_is_summed_up_in_a_few_words() {
-        assert_eq!(schedule_summary(None), "Nothing sent yet");
-        let mut profile = Profile {
-            always_on: AlwaysOn {
-                enable: false,
-                level: Level::new(1).unwrap(),
-            },
-            entries: vec![],
-            timezone_hours: -5.0,
-            flag: ScheduleFlag::Replace,
-        };
-        assert_eq!(schedule_summary(Some(&profile)), "No times");
-        profile.always_on.enable = true;
-        assert_eq!(
-            schedule_summary(Some(&profile)),
-            "No times · always on at Low"
-        );
-        let entry = scent_core::Entry {
-            start: scent_core::HhMm::parse("07:00").unwrap(),
-            end: scent_core::HhMm::parse("08:00").unwrap(),
-            weekdays: vec![1],
-            level: Level::new(2).unwrap(),
-            enable: true,
-        };
-        profile.entries = vec![entry.clone()];
-        profile.always_on.enable = false;
-        assert_eq!(schedule_summary(Some(&profile)), "1 time");
-        profile.entries = vec![entry.clone(), entry];
-        assert_eq!(schedule_summary(Some(&profile)), "2 times");
     }
 
     #[test]
@@ -874,15 +977,79 @@ mod tests {
     #[test]
     fn the_switch_shows_the_power_sent_then_the_power_reported() {
         let mut d = device();
-        assert!(!shown_power(&d));
+        assert_eq!(shown_power(&d), None);
         read(&mut d, Field::Power, 1, 60, Via::Wifi);
-        assert!(shown_power(&d));
+        assert_eq!(shown_power(&d), Some(true));
         d.sent = Some(Sent {
             power: Some(false),
             intensity: None,
             at: NOW - 5,
         });
-        assert!(!shown_power(&d));
+        assert_eq!(shown_power(&d), Some(false));
+    }
+
+    #[test]
+    fn the_hero_shows_what_is_on_its_way_then_what_was_sent_then_what_was_reported() {
+        let mut d = device();
+        d.label = "Bedroom".to_owned();
+        read(&mut d, Field::Power, 1, 20, Via::Wifi);
+        read(&mut d, Field::Intensity, 2, 60, Via::Bluetooth);
+        let hero = hero_state(&d, None, false, NOW);
+        assert_eq!(hero.sentence(), "Bedroom, diffusing at Medium intensity");
+        assert_eq!(hero.note, "Reported just now over WiFi");
+        assert!(!hero.pending && !hero.sending && !hero.stale);
+        // Sent and not reported on: shown, and waited for.
+        d.sent = Some(Sent {
+            power: None,
+            intensity: Some(3),
+            at: NOW - 2,
+        });
+        let hero = hero_state(&d, None, false, NOW);
+        assert_eq!((hero.level, hero.pending), (Some(3), true));
+        assert_eq!(hero.note, "Sent, waiting for the diffuser");
+        // On its way: what the person set, and "Sending…".
+        let asked = Asked {
+            power: Some(false),
+            intensity: None,
+            at: Instant::now(),
+        };
+        let hero = hero_state(&d, Some(asked), true, NOW);
+        assert_eq!(hero.state_words(), "Sending…");
+        assert_eq!((hero.power, hero.level), (Some(false), Some(3)));
+        // An old report is greyed; an intensity of 0 (it is off) is no intensity.
+        let mut old = device();
+        read(&mut old, Field::Power, 0, 900, Via::Wifi);
+        read(&mut old, Field::Intensity, 0, 900, Via::Wifi);
+        let hero = hero_state(&old, None, false, NOW);
+        assert!(hero.stale);
+        assert_eq!((hero.power, hero.level), (Some(false), None));
+        assert_eq!(hero.note, "Reported 15 min ago over WiFi");
+    }
+
+    #[test]
+    fn the_header_names_the_model_unless_it_is_the_name() {
+        let mut d = device();
+        d.info = Some(scent_core::DeviceInfo {
+            manufacturer_id: "01".into(),
+            model_name: "Diffuser".into(),
+            variant_name: "Black".into(),
+            device_id: ID.into(),
+            firmware: "2.30".into(),
+            wifi_configured: true,
+            wifi_status: 3,
+        });
+        assert_eq!(
+            header_line(&d, "Air 2", Online::Online),
+            "Answering over WiFi"
+        );
+        assert_eq!(
+            header_line(&d, "Bedroom", Online::Offline),
+            "Air 2, not answering pings"
+        );
+        assert_eq!(
+            header_line(&device(), "Diffuser CE01", Online::Unknown),
+            "Not pinged yet"
+        );
     }
 
     #[test]

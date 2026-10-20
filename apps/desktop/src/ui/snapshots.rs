@@ -1,19 +1,26 @@
 //! Renders the screens to `target/snapshots/*.png`, so that the look can be judged
-//! without a screen: the main window in light and dark with the first diffuser open,
-//! the Settings window, the notices, the Add Diffuser sheet as it opens, asks for a
-//! network, waits, is done, fails and asks for the network again, and the Edit Schedule sheet
-//! with a valid schedule and a mistake. Uses the Mac's own fonts; the PNGs stay
-//! under `target/` and are never committed. Run it with
+//! without a screen: the main window in light and dark with the first diffuser
+//! diffusing at Medium and its Today strip, then with a command on its way; a diffuser
+//! that is off; the log open with one row open to its message; the empty state; a
+//! diffuser found nearby; the Settings window; the notices; the Add Diffuser sheet as it
+//! opens, asks for a network, waits, is done, fails and asks for the network again; the
+//! Edit Schedule sheet with its week grid, valid and with a mistake; and the glyphs on
+//! their own at 1x and 2x. Uses the Mac's own fonts; the PNGs stay under `target/` and
+//! are never committed. Run it with
 //! `cargo test -p scent-desktop render_screens -- --ignored`.
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, Theme, Vec2, os::OperatingSystem, pos2, vec2};
+use eframe::egui::{self, Color32, Rect, Theme, Vec2, os::OperatingSystem, pos2, vec2};
 use egui_kittest::Harness;
-use scent_core::{AlwaysOn, DeviceInfo, Direction, Level, Profile, ScheduleFlag, Via};
+use scent_core::{
+    AlwaysOn, Command, DeviceInfo, Direction, Entry, HhMm, Level, Profile, ScheduleFlag, Secret,
+    Via,
+};
 
 use super::Screens;
 use super::add_sheet::Target;
+use super::glyphs::{self, Ink, Pointing};
 use super::schedule_editor::{DraftEntry, test_time};
 use super::settings::{self, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
@@ -22,16 +29,28 @@ use crate::add_flow::{AddStep, wait_outcome};
 use crate::hub::NO_BROKER_PASSWORD;
 use crate::mqtt::BrokerSettings;
 use crate::state::{
-    Adding, AppState, BrokerState, DeviceView, Event, Field, LogEntry, Reading, ScanHit, Sent,
+    Adding, AppState, BrokerState, DeviceView, Event, Field, LogEntry, Reading, ScanHit,
 };
 
 fn out_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/snapshots")
 }
 
-/// The diffusers the brief asks for: an Air 2 that answers, with fresh
-/// readings, an intensity sent and not yet reported, and a stale WiFi signal;
-/// an HVAC 2 that is silent; one diffuser found nearby; and a short log.
+/// A timed entry for the snapshots' schedule.
+fn entry(start: &str, end: &str, weekdays: &[u8], level: u8, enable: bool) -> Entry {
+    Entry {
+        start: HhMm::parse(start).unwrap(),
+        end: HhMm::parse(end).unwrap(),
+        weekdays: weekdays.to_vec(),
+        level: Level::new(level).unwrap(),
+        enable,
+    }
+}
+
+/// The diffusers the brief asks for: an Air 2 that answers, diffusing at Medium, with
+/// fresh readings and a schedule sent this session (it is 10:30 on a Tuesday in its zone,
+/// inside a time); an HVAC 2 that is silent and off; one diffuser found nearby; and a
+/// short log in the shapes the app really logs.
 fn snapshot_state() -> AppState {
     let info = |id: &str, model: &str| DeviceInfo {
         manufacturer_id: "TEST".into(),
@@ -49,55 +68,75 @@ fn snapshot_state() -> AppState {
     let mut one = DeviceView::new(ONE);
     one.label = "Bedroom".to_owned();
     one.ble_id = Some("ble-1".to_owned());
-    one.info = Some(info(ONE, "Diffuser Air 2"));
+    one.info = Some(info(ONE, "Diffuser"));
     one.ping_at = Some(NOW - 6);
     one.heard_wifi = Some(NOW - 5);
     for (field, value, age, via) in [
         (Field::Power, 1, 20, Via::Wifi),
-        (Field::Intensity, 1, 60, Via::Wifi),
+        (Field::Intensity, 2, 20, Via::Wifi),
         (Field::Charging, 2, 20, Via::Wifi),
         (Field::Battery, 200, 20, Via::Wifi),
-        (Field::Rssi, -66, 420, Via::Bluetooth),
+        (Field::Rssi, -61, 20, Via::Wifi),
     ] {
         let at = NOW - age;
         one.readings.insert(field, Reading { value, at, via });
     }
-    one.sent = Some(Sent {
-        power: None,
-        intensity: Some(3),
-        at: NOW - 2,
-    });
     one.sent_profile = Some(Profile {
         always_on: AlwaysOn {
-            enable: true,
+            enable: false,
             level: Level::new(1).unwrap(),
         },
-        entries: vec![],
+        entries: vec![
+            entry("07:00", "09:00", &[1, 2, 3, 4, 5], 2, true),
+            entry("10:00", "12:00", &[2], 2, true),
+            entry("13:00", "14:00", &[2, 4], 3, false),
+            entry("21:30", "23:00", &[0, 1, 2, 3, 4, 5, 6], 1, true),
+        ],
         timezone_hours: -5.0,
         flag: ScheduleFlag::Replace,
     });
     let mut two = DeviceView::new(TWO);
-    two.info = Some(info(TWO, "Diffuser HVAC 2"));
+    two.info = Some(info(TWO, "Hvac"));
+    two.ble_id = Some("ble-2".to_owned());
     two.ping_at = Some(NOW - 40);
     two.heard_wifi = Some(NOW - 900);
-    two.readings.insert(
-        Field::Power,
-        Reading {
-            value: 0,
+    for (field, value) in [(Field::Power, 0), (Field::Charging, 2), (Field::Rssi, -74)] {
+        let reading = Reading {
+            value,
             at: NOW - 900,
             via: Via::Wifi,
-        },
-    );
+        };
+        two.readings.insert(field, reading);
+    }
     state.devices.insert(ONE.to_owned(), one);
     state.devices.insert(TWO.to_owned(), two);
     state.scan = vec![ScanHit {
         ble_id: "ble-7".into(),
-        name: "Scentiment".into(),
+        name: "Scentiment-D B n 0A1B2C3D4E5F".into(),
         rssi: Some(-58),
     }];
+    let save = Command::SaveMqtt {
+        broker: "wss://broker.example/mqtt".to_owned(),
+        username: "scent-test".to_owned(),
+        password: Secret::new("hunter2".to_owned()),
+    };
+    let sent = |cmd: &Command, via| (cmd.redacted(via), cmd.action(via));
+    let (on, turn_on) = sent(&Command::TurnOn { on: true }, Via::Wifi);
+    let (medium, set_level) = sent(&Command::SetLevel(Level::new(2).unwrap()), Via::Bluetooth);
+    let (saved, save_mqtt) = sent(&save, Via::Bluetooth);
+    let status = r#"{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-61}}"#;
     let log = [
         (
-            NOW - 40,
+            NOW - 600,
+            Some(TWO),
+            Some(Via::Bluetooth),
+            Direction::ToDevice,
+            save_mqtt,
+            saved.as_str(),
+            true,
+        ),
+        (
+            NOW - 120,
             None,
             Some(Via::Wifi),
             Direction::FromDevice,
@@ -110,8 +149,8 @@ fn snapshot_state() -> AppState {
             Some(ONE),
             Some(Via::Wifi),
             Direction::ToDevice,
-            "TURN_ON",
-            r#"{"action":"TURN_ON","data":{"enable":1}}"#,
+            turn_on,
+            on.as_str(),
             true,
         ),
         (
@@ -119,9 +158,18 @@ fn snapshot_state() -> AppState {
             Some(ONE),
             Some(Via::Wifi),
             Direction::ToDevice,
-            "TURN_ON",
-            r#"{"action":"TURN_ON","data":{"enable":1}}"#,
+            turn_on,
+            on.as_str(),
             false,
+        ),
+        (
+            NOW - 26,
+            Some(ONE),
+            Some(Via::Bluetooth),
+            Direction::ToDevice,
+            set_level,
+            medium.as_str(),
+            true,
         ),
         (
             NOW - 20,
@@ -129,17 +177,8 @@ fn snapshot_state() -> AppState {
             Some(Via::Wifi),
             Direction::FromDevice,
             "update_status",
-            r#"{"action":"update_status","device_id":"TESTDEVICE01","data":{"power":1,"charging":2,"battery":200,"intensity":1}}"#,
+            status,
             false,
-        ),
-        (
-            NOW - 2,
-            Some(ONE),
-            Some(Via::Bluetooth),
-            Direction::ToDevice,
-            "SET_LEVEL",
-            r#"{"action":"SET_LEVEL","data":{"level":3}}"#,
-            true,
         ),
         (
             NOW - 1,
@@ -147,7 +186,7 @@ fn snapshot_state() -> AppState {
             None,
             Direction::ToDevice,
             "Bluetooth TURN_ON",
-            "No answer.",
+            "The diffuser didn't answer.",
             false,
         ),
     ];
@@ -158,7 +197,7 @@ fn snapshot_state() -> AppState {
             via,
             direction,
             action: action.to_owned(),
-            text: text.to_owned(),
+            text: crate::state::mask_passwords(text),
             sent,
         });
     }
@@ -168,12 +207,23 @@ fn snapshot_state() -> AppState {
 /// Draws `draw` at `size` points, twice the pixels, in the light or dark look,
 /// and writes `target/snapshots/<name>.png`. The first frame installs the
 /// theme; the fonts it loads are in use from the next.
-fn render(name: &str, size: Vec2, dark: bool, mut draw: impl FnMut(&mut egui::Ui)) -> Pixels {
+fn render(name: &str, size: Vec2, dark: bool, draw: impl FnMut(&mut egui::Ui)) -> Pixels {
+    render_at(name, size, dark, 2.0, draw)
+}
+
+/// [`render`] at `scale` pixels to the point: 2 as on a Retina screen, 1 as on others.
+fn render_at(
+    name: &str,
+    size: Vec2,
+    dark: bool,
+    scale: f32,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> Pixels {
     let theme = if dark { Theme::Dark } else { Theme::Light };
     let mut frames = 0;
     let mut harness = Harness::builder()
         .with_size(size)
-        .with_pixels_per_point(2.0)
+        .with_pixels_per_point(scale)
         .with_theme(theme)
         .with_os(OperatingSystem::Mac)
         .wgpu()
@@ -224,7 +274,7 @@ fn save<S>(name: &str, harness: &mut Harness<'_, S>) -> Pixels {
     pixels
 }
 
-/// A render's pixels, two to the point, for checking what was drawn.
+/// A render's pixels, for checking what was drawn.
 struct Pixels {
     name: String,
     width: u32,
@@ -288,9 +338,9 @@ fn across(from: f32, to: f32) -> impl Iterator<Item = f32> {
     (0..=((to - from) * 2.0) as u32).map(move |i| from + i as f32 / 2.0)
 }
 
-/// The sidebar's edge, the line under the toolbar and the line above the log are each
-/// the separator color, over an opaque window.
-fn assert_seams(pixels: &Pixels, dark: bool) {
+/// The sidebar's edge and the line under the toolbar, and the line above the log when
+/// it is shown, are each the separator color, over an opaque window.
+fn assert_seams(pixels: &Pixels, dark: bool, log: bool) {
     let palette = Palette::for_dark(dark);
     let [_, height] = theme::WINDOW_SIZE;
     let edge = theme::SIDEBAR_WIDTH;
@@ -305,12 +355,14 @@ fn assert_seams(pixels: &Pixels, dark: bool) {
         palette.separator,
         &[palette.window],
     );
-    let log = height - super::log_view::OPEN_HEIGHT;
-    pixels.assert_seam(
-        across(log - 2.0, log + 2.0).map(|y| (750.0, y)),
-        palette.separator,
-        &[palette.window, palette.grouped],
-    );
+    if log {
+        let log = height - super::log_view::OPEN_HEIGHT;
+        pixels.assert_seam(
+            across(log - 2.0, log + 2.0).map(|y| (750.0, y)),
+            palette.separator,
+            &[palette.window, palette.grouped],
+        );
+    }
 }
 
 /// Where the traffic lights are, drawn into the snapshot only: the real ones are
@@ -441,6 +493,7 @@ fn schedule_editor(name: &str, dark: bool, entries: Vec<DraftEntry>) {
             screens.schedule.open(&state.devices[ONE], NOW);
             let draft = screens.schedule.draft_mut();
             draft.offset = "-4".to_owned();
+            draft.always_on = true;
             draft.entries = entries;
         },
     );
@@ -490,13 +543,184 @@ fn settings_window(name: &str, dark: bool) {
     let _ = save(name, &mut harness);
 }
 
+/// The glyphs on their own, at `scale` pixels to the point: the sidebar's tiles (grey,
+/// tinted at each level, and on a selected row), the hero's glyphs on and off, the
+/// log's chevrons, the signal bars at each strength, and the empty state's diffuser.
+fn glyph_sheet(name: &str, dark: bool, scale: f32) {
+    let _ = render_at(name, vec2(560.0, 330.0), dark, scale, |ui| {
+        let palette = Palette::of(ui);
+        let painter = ui.painter();
+        let window = palette.window;
+        let card = Rect::from_min_size(pos2(16.0, 16.0), vec2(528.0, 298.0));
+        painter.rect_filled(card, 10, palette.grouped);
+        let ground = palette.grouped;
+        // Tiles: grey then lit at levels 0 to 3, the Air 2 and then the HVAC 2.
+        let tile_ink = |lit: bool| {
+            if lit {
+                (Palette::tint(palette.accent, 16), palette.accent)
+            } else {
+                (Palette::tint(palette.gray, 18), palette.gray)
+            }
+        };
+        for (row, hvac) in [(0, false), (1, true)] {
+            for (i, (lit, level)) in [
+                (false, 0.0),
+                (true, 0.0),
+                (true, 1.0),
+                (true, 2.0),
+                (true, 3.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let at = pos2(32.0 + 40.0 * i as f32, 32.0 + 40.0 * row as f32);
+                let tile = Rect::from_min_size(at, vec2(28.0, 28.0));
+                let (fill, glyph) = tile_ink(lit);
+                let fill = glyphs::solid(fill, ground);
+                glyphs::tile(painter, tile, fill);
+                let ink = Ink {
+                    body: glyph,
+                    arcs: glyph,
+                    ground: fill,
+                    track: None,
+                };
+                let at = glyphs::still(tile, level);
+                if hvac {
+                    glyphs::hvac2(painter, at, &ink, level);
+                } else {
+                    glyphs::air2(painter, at, &ink, level);
+                }
+            }
+            // On a selected row.
+            let row_rect =
+                Rect::from_min_size(pos2(232.0, 26.0 + 40.0 * row as f32), vec2(80.0, 40.0));
+            painter.rect_filled(row_rect, 6, palette.accent);
+            let tile = Rect::from_min_size(row_rect.min + vec2(6.0, 6.0), vec2(28.0, 28.0));
+            let fill = glyphs::solid(Color32::from_white_alpha(56), palette.accent);
+            glyphs::tile(painter, tile, fill);
+            let ink = Ink {
+                body: Color32::WHITE,
+                arcs: Color32::WHITE,
+                ground: fill,
+                track: None,
+            };
+            if hvac {
+                glyphs::hvac2(painter, tile, &ink, 2.0);
+            } else {
+                glyphs::air2(painter, tile, &ink, 3.0);
+            }
+        }
+        // The hero's glyphs: diffusing, then off.
+        for (i, (hvac, on, level)) in [
+            (false, true, 2.0),
+            (false, false, 0.0),
+            (true, true, 3.0),
+            (true, false, 1.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rect = Rect::from_min_size(pos2(32.0 + 84.0 * i as f32, 120.0), vec2(72.0, 72.0));
+            let (body, arcs) = if on {
+                (palette.label, palette.accent)
+            } else {
+                (palette.gray, palette.gray)
+            };
+            let ink = Ink {
+                body,
+                arcs,
+                ground,
+                track: Some(Palette::tint(palette.label, 12)),
+            };
+            if hvac {
+                glyphs::hvac2(painter, rect, &ink, level);
+            } else {
+                glyphs::air2(painter, rect, &ink, level);
+            }
+        }
+        // The empty state's diffuser.
+        let empty = Rect::from_min_size(pos2(392.0, 110.0), vec2(96.0, 96.0));
+        glyphs::empty_diffuser(painter, empty, palette.gray, ground);
+        // Chevrons: sent, heard, failed.
+        for (i, (pointing, color)) in [
+            (Pointing::Out, palette.gray),
+            (Pointing::In, palette.gray),
+            (Pointing::Out, palette.orange),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rect = Rect::from_min_size(pos2(32.0 + 24.0 * i as f32, 230.0), vec2(14.0, 14.0));
+            glyphs::chevron(painter, rect, glyphs::solid(color, ground), pointing);
+        }
+        // Signal bars, weak to excellent.
+        for filled in 1..=4 {
+            let rect = Rect::from_min_size(
+                pos2(120.0 + 28.0 * f32::from(filled), 232.0),
+                vec2(16.0, 11.0),
+            );
+            let on = glyphs::solid(palette.label, ground);
+            glyphs::signal_bars(painter, rect, on, Palette::tint(palette.label, 15), filled);
+        }
+        let _ = window;
+    });
+}
+
+/// The main window with the first diffuser open and a command on its way to it: the
+/// person has just set High.
+fn sending(name: &str, dark: bool) {
+    let size = theme::WINDOW_SIZE.into();
+    let _ = main_window_with(name, dark, size, snapshot_state(), None, |screens, _| {
+        screens.panel.as_sending(ONE, None, Some(3));
+    });
+}
+
 #[test]
 #[ignore = "writes PNGs to look at; run on demand"]
 fn render_screens() {
     let light = main_window("main_light", false, snapshot_state(), None);
-    assert_seams(&light, false);
+    assert_seams(&light, false, false);
     let dark = main_window("main_dark", true, snapshot_state(), None);
-    assert_seams(&dark, true);
+    assert_seams(&dark, true, false);
+    sending("sending_light", false);
+    sending("sending_dark", true);
+
+    // The HVAC 2, off and not answering.
+    let size = theme::WINDOW_SIZE.into();
+    let _ = main_window_with(
+        "off_light",
+        false,
+        size,
+        snapshot_state(),
+        None,
+        |screens, _| {
+            screens.selected = Some(TWO.to_owned());
+        },
+    );
+
+    // The log open, with the broker login's row open to its masked message.
+    for (name, dark) in [("log_light", false), ("log_dark", true)] {
+        let pixels = main_window_with(
+            name,
+            dark,
+            size,
+            snapshot_state(),
+            None,
+            |screens, state| {
+                screens
+                    .log
+                    .as_open(state, |entry| entry.action == "SAVE_MQTT");
+            },
+        );
+        assert_seams(&pixels, dark, true);
+    }
+
+    // The diffuser found nearby, selected.
+    for (name, dark) in [("found_light", false), ("found_dark", true)] {
+        let _ = main_window_with(name, dark, size, snapshot_state(), None, |screens, _| {
+            screens.found = Some("ble-7".to_owned());
+        });
+    }
 
     let mut refused = snapshot_state();
     refused.broker = BrokerState::LoginRefused("Not authorized.".to_owned());
@@ -509,8 +733,9 @@ fn render_screens() {
         broker: BrokerState::Disconnected(NO_BROKER_PASSWORD.to_owned()),
         ..AppState::default()
     };
-    let empty = main_window("empty_light", false, empty, None);
-    assert_seams(&empty, false);
+    let empty_light = main_window("empty_light", false, empty.clone(), None);
+    assert_seams(&empty_light, false, false);
+    let _ = main_window("empty_dark", true, empty, None);
 
     for (name, dark) in [("settings_light", false), ("settings_dark", true)] {
         settings_window(name, dark);
@@ -556,12 +781,16 @@ fn render_screens() {
         AddRender::Retrying("ExampleWiFi"),
     );
 
-    // Two times and a test time starting in 3 minutes (11:33 at UTC-4); then a time
-    // that ends before it starts.
+    // Two times, one of them switched off, and a test time starting in 3 minutes (11:33
+    // at UTC-4), with always on; then a time that ends before it starts, which the week
+    // leaves out until it is fixed.
     let test = test_time(NOW, -4.0, 3).expect("a test time");
+    let mut evening = time("18:30", "22:00", &[0, 6], 1);
+    evening.runs = false;
     let valid = vec![
         time("07:00", "09:00", &[1, 2, 3, 4, 5], 2),
-        time("18:30", "22:00", &[0, 6], 1),
+        time("08:30", "10:00", &[1], 3),
+        evening,
         test,
     ];
     schedule_editor("schedule_valid_light", false, valid.clone());
@@ -574,4 +803,9 @@ fn render_screens() {
             time("22:00", "06:00", &[0, 6], 1),
         ],
     );
+
+    // The glyphs on their own, as a screen without Retina shows them and as one with.
+    glyph_sheet("glyphs_1x", false, 1.0);
+    glyph_sheet("glyphs_2x", false, 2.0);
+    glyph_sheet("glyphs_dark_2x", true, 2.0);
 }
