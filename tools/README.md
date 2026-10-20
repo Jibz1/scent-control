@@ -88,3 +88,19 @@ B=wss://<domain>/mqtt
 .venv/bin/python broker.py sync-time --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId>
 .venv/bin/python broker.py publish-profile --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId> --file ../captures/sched.json --timezone -4
 ```
+
+### Test bench (web page)
+
+A local page for clicking through commands and watching every reply, before the
+real app exists:
+
+```bash
+.venv/bin/python control_server.py --url wss://test-broker-production.up.railway.app/mqtt --username scent-test
+# open http://127.0.0.1:8765
+```
+
+The helper listens only on 127.0.0.1 and holds the broker password, taken from
+`.env.local` or a prompt. The page never sees the password. Every command goes
+through the same allow-list as the command-line tools. It works over MQTT only, so a
+diffuser must already be pointed at the test broker with `session.py save-mqtt`.
+

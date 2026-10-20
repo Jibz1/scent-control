@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
     log = CaptureLog(captures_dir() / f"broker-{stamp()}.jsonl")
     try:
-        client = _connect(target, args.username, _password())
+        client = connect(target, args.username, password_from_env())
     except (OSError, ConnectionError) as err:
         print(f"error: could not connect to {target.host}:{target.port}: {err}", file=sys.stderr)
         return 1
@@ -114,7 +114,7 @@ def _envelope(args: argparse.Namespace) -> dict | None:
     raise ValueError(f"unknown command {args.command}")
 
 
-def _password() -> str:
+def password_from_env() -> str:
     if os.environ.get("SCENT_BROKER_PASSWORD"):
         return os.environ["SCENT_BROKER_PASSWORD"]
     if ENV_LOCAL.exists():
@@ -125,7 +125,7 @@ def _password() -> str:
     return getpass.getpass("Broker password: ")
 
 
-def _connect(target: BrokerTarget, username: str, password: str) -> mqtt.Client:
+def connect(target: BrokerTarget, username: str, password: str) -> mqtt.Client:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"scent-tools-{uuid.uuid4().hex[:8]}", transport=target.transport)
     client.username_pw_set(username, password)
     if target.tls:
