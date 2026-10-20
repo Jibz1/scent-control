@@ -18,6 +18,14 @@ server.
 > it.** A diffuser keeps the broker address it was given. Before removing the
 > service, move every diffuser off it with `SAVE_MQTT`.
 
+## Where it runs
+
+- Railway project `scent-control`, service `test-broker`, in the owner's personal
+  workspace (to be transferred to a dedicated workspace later).
+- Address: `wss://test-broker-production.up.railway.app/mqtt` (port 443, Railway
+  certificate), routed to container port 8080.
+- Deployed and checked with a wss round trip on 2026-10-20.
+
 ## Deploy
 
 ```bash
