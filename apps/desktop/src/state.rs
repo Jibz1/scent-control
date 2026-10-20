@@ -260,6 +260,11 @@ pub struct LogEntry {
     pub direction: Direction,
     pub action: String,
     pub text: String,
+    /// Whether this app sent the command (an `Event::Sent`), as against something it
+    /// heard on the broker. A command we publish over WiFi comes back as a second
+    /// entry, the broker's copy, which is not `sent`; so is a command someone else
+    /// published to the diffuser's topic.
+    pub sent: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -303,6 +308,7 @@ impl AppState {
                     direction: Direction::ToDevice,
                     action: action_of(&summary),
                     text: summary,
+                    sent: true,
                 });
                 if let Some(device) = self.devices.get_mut(&device_id) {
                     if power.is_some() || intensity.is_some() {
@@ -331,6 +337,7 @@ impl AppState {
                 direction: Direction::ToDevice,
                 action: what,
                 text: error,
+                sent: false,
             }),
             Event::BrokerConnected => self.set_broker(BrokerState::Connected, now),
             Event::BrokerLoginRefused(why) => self.set_broker(BrokerState::LoginRefused(why), now),
@@ -364,6 +371,7 @@ impl AppState {
             direction,
             action: action.unwrap_or_else(|| NO_ACTION.to_owned()),
             text: raw,
+            sent: false,
         });
         // Our own commands come back to us too (we hear everything under the
         // prefix). They are logged above and tell us nothing about the diffuser.
@@ -408,6 +416,7 @@ impl AppState {
             direction: Direction::FromDevice,
             action: action.to_owned(),
             text: note.raw,
+            sent: false,
         });
     }
 
@@ -430,6 +439,7 @@ impl AppState {
             direction: Direction::FromDevice,
             action: "info".to_owned(),
             text,
+            sent: false,
         });
     }
 
@@ -453,6 +463,7 @@ impl AppState {
             direction: Direction::FromDevice,
             action: "broker".to_owned(),
             text,
+            sent: false,
         });
     }
 

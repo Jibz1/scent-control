@@ -80,8 +80,13 @@ pub enum UiCommand {
     },
     /// Replaces the schedule table on a diffuser, then tells it the time. Over WiFi
     /// only: setting a schedule over Bluetooth is unconfirmed (see `docs/findings.md`).
-    // Nothing sends it until the schedule editor exists.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the schedule editor (Task 10) is the first to send it"
+        )
+    )]
     SendSchedule { device_id: String, profile: Profile },
     /// Drops the broker connection and makes a new one, with these settings and the
     /// password just read from (or saved to) the Keychain. This is also how a refused

@@ -389,6 +389,23 @@ mod tests {
     }
 
     #[test]
+    fn a_battery_level_alone_and_a_charging_value_we_cannot_read() {
+        let mut d = device();
+        read(&mut d, Field::Battery, 80, 90, Via::Wifi);
+        let rows = reading_rows(&d, NOW);
+        assert_eq!(
+            row(&rows, "Power source").text,
+            "battery 80% · reported 2 min ago over WiFi"
+        );
+
+        let mut d = device();
+        read(&mut d, Field::Charging, 7, 600, Via::Wifi);
+        let rows = reading_rows(&d, NOW);
+        assert_eq!(row(&rows, "Power source").text, "not reported yet");
+        assert_eq!(row(&rows, "Power source").tone, Tone::Fresh);
+    }
+
+    #[test]
     fn the_expected_line_is_only_about_a_schedule_this_app_sent() {
         let mut d = device();
         assert_eq!(expected_line(&d, NOW), None);

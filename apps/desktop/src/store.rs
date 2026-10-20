@@ -13,13 +13,16 @@ use std::path::PathBuf;
 use scent_core::{DeviceInfo, Via, valid_device_id};
 use serde::{Deserialize, Serialize};
 
-use crate::mqtt::BrokerSettings;
+use crate::mqtt::{BrokerSettings, BrokerUrl};
 use crate::state::{AppState, DeviceView, Field, Reading};
 
 const FILE_NAME: &str = "desktop.json";
 const TEMP_NAME: &str = "desktop.json.tmp";
 /// A file we could not read is moved here so the next save doesn't overwrite it.
 const CORRUPT_NAME: &str = "desktop.json.corrupt";
+
+const BAD_BROKER_ADDRESS: &str =
+    "The saved broker address wasn't valid, so the default is used. Check it in Settings.";
 
 pub struct Store {
     pub dir: PathBuf,
@@ -110,17 +113,29 @@ impl Store {
         }
     }
 
-    /// Writes the devices and the broker settings. The file is written whole under
-    /// another name and then renamed over the old one, so a crash leaves the old file
-    /// or the new one.
+    /// What [`save`](Self::save) writes for this state: the devices and the broker
+    /// settings, as JSON. Only what the file holds is in it, so two states give the
+    /// same bytes exactly when what would be saved is the same.
+    pub fn contents(state: &AppState, broker: &BrokerSettings) -> io::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(&Stored::from_state(state, broker)).map_err(io::Error::other)
+    }
+
+    /// Writes the devices and the broker settings (see [`contents`](Self::contents)).
+    /// The app writes through `contents` and `write` instead, so as to leave the file
+    /// alone when it would not change.
+    #[cfg(test)]
     pub fn save(&self, state: &AppState, broker: &BrokerSettings) -> io::Result<()> {
+        self.write(&Self::contents(state, broker)?)
+    }
+
+    /// Writes the file. It is written whole under another name and then renamed over
+    /// the old one, so a crash leaves the old file or the new one.
+    pub fn write(&self, json: &[u8]) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
-        let json = serde_json::to_vec_pretty(&Stored::from_state(state, broker))
-            .map_err(io::Error::other)?;
         let temp = self.dir.join(TEMP_NAME);
         let written = (|| {
             let mut file = File::create(&temp)?;
-            file.write_all(&json)?;
+            file.write_all(json)?;
             file.sync_all()?;
             fs::rename(&temp, self.path())
         })();
@@ -260,10 +275,18 @@ impl Stored {
             }
             state.devices.insert(stored.id, device);
         }
+        let mut broker = BrokerSettings::from(self.broker);
+        // A hand-edited address that can't be used would otherwise surface later as a
+        // missing password. The default is no worse than none.
+        let notice = BrokerUrl::parse(&broker.url).err().map(|error| {
+            eprintln!("scent-control: the saved broker address is not usable: {error}");
+            broker = BrokerSettings::default();
+            BAD_BROKER_ADDRESS.to_owned()
+        });
         Loaded {
             state,
-            broker: self.broker.into(),
-            notice: None,
+            broker,
+            notice,
         }
     }
 }
@@ -515,6 +538,82 @@ mod tests {
         assert_eq!(loaded.broker.url, defaults.url);
         assert_eq!(loaded.broker.route_id, defaults.route_id);
         assert_eq!(loaded.notice, None);
+    }
+
+    #[test]
+    fn a_saved_broker_address_that_is_not_valid_is_replaced_and_the_notice_says_so() {
+        for bad in [
+            "ws://broker.example/mqtt",
+            "",
+            "wss://bad host/mqtt",
+            "wss://x:0/mqtt",
+        ] {
+            let dir = TempDir::new("bad-broker-address");
+            let file = format!(
+                r#"{{"devices":[],"broker":{{"url":{bad:?},"username":"someone","route_id":"route-9"}}}}"#
+            );
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            // All of it goes back to the defaults, not just the address.
+            assert_eq!(loaded.broker, BrokerSettings::default(), "{bad:?}");
+            let notice = loaded.notice.expect("a notice");
+            assert!(notice.contains("broker address"), "{notice}");
+            assert!(notice.contains("Settings"), "{notice}");
+            // The devices are fine and the file stays where it is.
+            assert!(dir.path().join("desktop.json").exists());
+            assert!(!dir.path().join("desktop.json.corrupt").exists());
+        }
+    }
+
+    #[test]
+    fn what_is_written_changes_only_when_what_is_saved_changes() {
+        let broker = BrokerSettings::default();
+        let mut s = AppState::default();
+        s.apply_at(
+            Event::Mqtt {
+                topic: "scentiment-mqtt-prod/user/route-test-1".into(),
+                body: br#"{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":"S:1,L:2"}}"#.to_vec(),
+                at: 10,
+            },
+            10,
+        );
+        let before = Store::contents(&s, &broker).unwrap();
+        assert_eq!(Store::contents(&s.clone(), &broker).unwrap(), before);
+
+        // Live things the file doesn't hold.
+        let device = s.devices.get_mut(ID1).unwrap();
+        device.ping_at = Some(99);
+        device.heard_wifi = Some(99);
+        device.heard_ble = Some(99);
+        s.apply_at(Event::BrokerConnected, 99);
+        s.apply_at(
+            Event::Pinged {
+                device_id: ID1.into(),
+                at: 100,
+            },
+            100,
+        );
+        assert_eq!(Store::contents(&s, &broker).unwrap(), before);
+
+        // A reading, a name or the broker's address does change it.
+        let mut changed = s.clone();
+        changed
+            .devices
+            .get_mut(ID1)
+            .unwrap()
+            .readings
+            .get_mut(&Field::Power)
+            .unwrap()
+            .value = 0;
+        assert_ne!(Store::contents(&changed, &broker).unwrap(), before);
+        let mut renamed = s.clone();
+        renamed.devices.get_mut(ID1).unwrap().label = "Bedroom".into();
+        assert_ne!(Store::contents(&renamed, &broker).unwrap(), before);
+        let elsewhere = BrokerSettings {
+            username: "someone".into(),
+            ..BrokerSettings::default()
+        };
+        assert_ne!(Store::contents(&s, &elsewhere).unwrap(), before);
     }
 
     #[test]

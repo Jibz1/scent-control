@@ -141,19 +141,28 @@ impl SettingsSheet {
         if !save {
             return None;
         }
-        match validate(&self.url, &self.username, &self.route_id) {
-            Ok(settings) => {
+        match self.submit(ctx) {
+            Ok(submitted) => {
                 self.error = None;
-                let typed = std::mem::take(&mut self.password);
-                self.forget_password(ctx);
-                let password = (!typed.is_empty()).then(|| Secret::new(typed));
-                Some(Submitted { settings, password })
+                Some(submitted)
             }
             Err(error) => {
                 self.error = Some(error);
                 None
             }
         }
+    }
+
+    /// What Save hands over: the settings as typed and the password typed this time, if
+    /// any. The password moves out of the field into the [`Secret`] and the field and
+    /// the text box's undo copy are emptied. If the settings can't be used nothing is
+    /// handed over and the password stays, so that it needn't be typed again.
+    fn submit(&mut self, ctx: &egui::Context) -> Result<Submitted, String> {
+        let settings = validate(&self.url, &self.username, &self.route_id)?;
+        let typed = std::mem::take(&mut self.password);
+        self.forget_password(ctx);
+        let password = (!typed.is_empty()).then(|| Secret::new(typed));
+        Ok(Submitted { settings, password })
     }
 }
 
@@ -204,6 +213,50 @@ mod tests {
             validate(url, "someone", "").unwrap_err(),
             "Enter the route ID."
         );
+    }
+
+    fn open_sheet() -> SettingsSheet {
+        let mut sheet = SettingsSheet::default();
+        sheet.open(&BrokerSettings::default());
+        sheet
+    }
+
+    #[test]
+    fn saving_hands_over_the_password_and_empties_the_field() {
+        let ctx = egui::Context::default();
+        let mut sheet = open_sheet();
+        sheet.password = "hunter2".to_owned();
+        let submitted = sheet.submit(&ctx).unwrap();
+        assert_eq!(submitted.settings, BrokerSettings::default());
+        assert_eq!(submitted.password.unwrap().expose(), "hunter2");
+        // Not in the sheet any more, in any field.
+        assert!(sheet.password.is_empty());
+        let everywhere = format!(
+            "{} {} {} {:?}",
+            sheet.url, sheet.username, sheet.route_id, sheet.error
+        );
+        assert!(!everywhere.contains("hunter2"), "{everywhere}");
+    }
+
+    #[test]
+    fn saving_with_nothing_typed_leaves_the_saved_password_alone() {
+        let ctx = egui::Context::default();
+        let mut sheet = open_sheet();
+        let submitted = sheet.submit(&ctx).unwrap();
+        assert!(submitted.password.is_none());
+        assert!(sheet.password.is_empty());
+    }
+
+    #[test]
+    fn settings_that_do_not_validate_say_why_and_keep_what_was_typed() {
+        let ctx = egui::Context::default();
+        let mut sheet = open_sheet();
+        sheet.url = "ws://broker.example/mqtt".to_owned();
+        sheet.password = "hunter2".to_owned();
+        let error = sheet.submit(&ctx).err().expect("not valid");
+        assert!(error.contains("broker address"), "{error}");
+        // Nothing was saved, so the password does not need typing again.
+        assert_eq!(sheet.password, "hunter2");
     }
 
     #[test]

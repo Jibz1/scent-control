@@ -1,40 +1,16 @@
 //! The words the screens use: ages, readings, the power source, the expected state.
 //! Ported from the Phase 0 test bench (`tools/control.html`), so the two say the same
-//! things. Pure: nothing here draws, reads the clock or touches the network.
+//! things. Nothing here draws or touches the network, and none of it reads the clock:
+//! the time is always passed in. The one thing that asks the system anything is [`ago`],
+//! and so [`reading_text`]: for "at HH:MM" they look up the Mac's time zone (see
+//! `clock`).
 
 use scent_core::{DeviceInfo, Expected, Online, Source, Via, is_stale};
 
+use super::clock::{local_utc_offset_secs, time_of_day};
 use crate::state::{BrokerState, Reading};
 
 const NOT_REPORTED: &str = "not reported yet";
-
-/// The Mac's offset from UTC, in seconds, at the moment `at` (seconds since 1970),
-/// so that daylight saving is the one in force then. 0 if the system can't say.
-pub fn local_utc_offset_secs(at: i64) -> i64 {
-    let time = at as libc::time_t;
-    // SAFETY: an all-zero `tm` is valid (numbers, and a null zone name pointer).
-    let mut local: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `localtime_r` reads `time` and writes only to `local`; both are valid
-    // and exclusively ours for the call.
-    let filled = unsafe { libc::localtime_r(&time, &mut local) };
-    if filled.is_null() {
-        0
-    } else {
-        local.tm_gmtoff as i64
-    }
-}
-
-/// Hours, minutes and seconds of the day at `utc_offset_secs` from UTC.
-fn time_of_day(at: i64, utc_offset_secs: i64) -> (i64, i64, i64) {
-    let secs = at.saturating_add(utc_offset_secs).rem_euclid(86_400);
-    (secs / 3600, secs / 60 % 60, secs % 60)
-}
-
-/// `HH:MM:SS` at `utc_offset_secs` from UTC.
-pub fn clock_hms(at: i64, utc_offset_secs: i64) -> String {
-    let (hour, minute, second) = time_of_day(at, utc_offset_secs);
-    format!("{hour:02}:{minute:02}:{second:02}")
-}
 
 /// How long ago `at` was, as the bench says it: "just now", "N min ago" (whole
 /// minutes, rounded), or from an hour on the clock time it was, "at HH:MM", on this
@@ -66,7 +42,8 @@ pub fn via_name(via: Via) -> &'static str {
 /// A reading as one line: the value, when it was reported and over what, such as
 /// "On · reported 3 min ago over WiFi". The flag is whether it is stale (see
 /// `scent_core::is_stale`), for the screen to grey it out. `format` turns the number
-/// into words. Nothing reported yet says so, and is not stale.
+/// into words. Nothing reported yet, or nothing that `format` can word, says "not
+/// reported yet" with no age, and is not stale.
 pub fn reading_text(
     reading: Option<&Reading>,
     now: i64,
@@ -75,9 +52,13 @@ pub fn reading_text(
     let Some(reading) = reading else {
         return (NOT_REPORTED.to_owned(), false);
     };
+    let value = format(reading.value);
+    if value == NOT_REPORTED {
+        // A value we can't put in words has no age worth giving, and nothing to grey.
+        return (value, false);
+    }
     let text = format!(
-        "{} · reported {} over {}",
-        format(reading.value),
+        "{value} · reported {} over {}",
         ago(reading.at, now),
         via_name(reading.via)
     );
@@ -109,13 +90,14 @@ pub fn signal(dbm: i64) -> String {
     format!("{dbm} dBm")
 }
 
-/// What the diffuser runs on. Charging 2 or battery 200 is plugged in; the bench has
-/// no other reading for a battery that is not charging than charging 0.
+/// What the diffuser runs on. Charging 2 or battery 200 is plugged in, charging 1 is
+/// charging, and otherwise a battery level is the battery's. Without a level, charging
+/// 0 is just "battery"; anything else is not something we can word.
 pub fn power_source(charging: Option<i64>, battery: Option<i64>) -> String {
     match (charging, battery) {
         (Some(2), _) | (_, Some(200)) => "plugged in".to_owned(),
         (Some(1), _) => "charging".to_owned(),
-        (Some(0), Some(percent)) => format!("battery {percent}%"),
+        (_, Some(percent)) => format!("battery {percent}%"),
         (Some(0), None) => "battery".to_owned(),
         _ => NOT_REPORTED.to_owned(),
     }
@@ -224,8 +206,6 @@ mod tests {
         // A saved file can hold anything.
         let _ = ago_in(i64::MIN, i64::MAX, 0);
         let _ = ago_in(i64::MAX, i64::MIN, 0);
-        let _ = clock_hms(i64::MAX, i64::MAX);
-        let _ = clock_hms(i64::MIN, i64::MIN);
     }
 
     #[test]
@@ -234,21 +214,6 @@ mod tests {
         let clock = text.strip_prefix("at ").expect(&text);
         assert!(HhMm::parse(clock).is_some(), "{text}");
         assert_eq!(ago(NOW - 180, NOW), "3 min ago");
-    }
-
-    #[test]
-    fn the_time_zone_offset_is_a_real_one() {
-        let offset = local_utc_offset_secs(NOW);
-        assert!((-14 * 3600..=14 * 3600).contains(&offset), "{offset}");
-    }
-
-    #[test]
-    fn clock_times_use_the_offset() {
-        assert_eq!(clock_hms(NOW, 0), "15:30:00");
-        assert_eq!(clock_hms(NOW + 7, UTC_MINUS_5), "10:30:07");
-        // Across midnight in both directions.
-        assert_eq!(clock_hms(NOW + 9 * 3600, 0), "00:30:00");
-        assert_eq!(clock_hms(NOW - 16 * 3600, UTC_MINUS_5), "18:30:00");
     }
 
     #[test]
@@ -261,7 +226,10 @@ mod tests {
         assert_eq!(power_source(None, Some(200)), "plugged in");
         assert_eq!(power_source(Some(2), None), "plugged in");
         assert_eq!(power_source(Some(0), None), "battery");
-        assert_eq!(power_source(None, Some(80)), "not reported yet");
+        // A battery level with no charging flag is still a battery level.
+        assert_eq!(power_source(None, Some(80)), "battery 80%");
+        assert_eq!(power_source(Some(7), Some(80)), "battery 80%");
+        assert_eq!(power_source(Some(7), None), "not reported yet");
     }
 
     #[test]
@@ -286,6 +254,16 @@ mod tests {
             reading_text(None, NOW, on_off),
             ("not reported yet".to_owned(), false)
         );
+    }
+
+    #[test]
+    fn nothing_to_say_is_not_given_an_age() {
+        // A reading we can't put in words is "not reported yet", with no "reported ..."
+        // after it, and nothing to grey out.
+        let odd = reading(7, 600, Via::Wifi);
+        let (text, stale) = reading_text(Some(&odd), NOW, |_| power_source(Some(7), None));
+        assert_eq!(text, "not reported yet");
+        assert!(!stale);
     }
 
     #[test]

@@ -4,6 +4,10 @@
 //! The state is shared with the hub, which only reads it. The lock is held to fold
 //! events in and to copy the state out; the screens draw and the store writes from the
 //! copies.
+//!
+//! The saved file is written only when what it holds has changed (new readings, a new
+//! name, other broker settings), not for every ping and reply: a write is a full
+//! flush to disk, and it is done here, on the thread that draws.
 
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -34,8 +38,10 @@ pub struct ScentApp {
     /// Where the broker is, as last saved. The password is in the Keychain.
     broker: BrokerSettings,
     screens: Screens,
-    /// Whether something that is saved has changed since the last save.
-    dirty: bool,
+    /// What `desktop.json` holds as far as we know: what was loaded or last written.
+    /// `None` when the file is to be rewritten whatever it holds (it wasn't usable).
+    written: Option<Vec<u8>>,
+    /// When we last looked at whether to save.
     saved_at: Instant,
     /// The error of the last failed save, so that it is told once and not every time.
     save_error: Option<String>,
@@ -53,6 +59,10 @@ impl ScentApp {
         } = store.load();
         // The Keychain may ask the person before it answers; nothing is drawn until it has.
         let password = broker_password(&broker);
+        let written = notice
+            .is_none()
+            .then(|| Store::contents(&state, &broker).ok())
+            .flatten();
         let state = Arc::new(Mutex::new(state));
         let ctx = cc.egui_ctx.clone();
         let (hub, events) = Hub::start(broker.clone(), password, Arc::clone(&state), move || {
@@ -65,7 +75,7 @@ impl ScentApp {
             store,
             broker,
             screens: Screens::new(notice),
-            dirty: false,
+            written,
             saved_at: Instant::now(),
             save_error: None,
         }
@@ -84,50 +94,62 @@ impl ScentApp {
         for event in events {
             state.apply(event);
         }
-        drop(state);
-        self.dirty = true;
     }
 
-    /// Stores the settings, the password and the new connection, in that order, then
-    /// tells the sheet how it went.
+    /// Stores the password, the settings and the new connection, in that order, then
+    /// tells the sheet how it went. If the Keychain won't take a typed password,
+    /// nothing is changed: the settings are not saved and the connection that works is
+    /// left alone. The password is not kept, so the sheet says to type it again.
     fn apply_settings(&mut self, ctx: &egui::Context, submitted: Submitted) {
         let Submitted { settings, password } = submitted;
+        if let Some(password) = &password
+            && let Err(error) = set_broker_password(&settings, password)
+        {
+            let error = error.trim_end_matches('.');
+            self.screens.settings.fail(format!(
+                "{error}. Nothing was saved and the connection is unchanged. Type the password again to try again."
+            ));
+            return;
+        }
         self.broker = settings.clone();
         self.save();
-        let keychain = password
-            .as_ref()
-            .and_then(|password| set_broker_password(&settings, password).err());
         // With nothing typed, the saved password: it may belong to other settings now.
         let password = password.or_else(|| broker_password(&settings));
         // The hub doesn't announce a connection attempt, so say so here.
         lock(&self.state).broker = BrokerState::Connecting;
         self.hub.submit(UiCommand::Reconnect { settings, password });
-        match keychain {
-            // The typed password is still used, for this run.
-            Some(error) => self.screens.settings.fail(error),
-            None => self.screens.settings.close(ctx),
-        }
+        self.screens.settings.close(ctx);
     }
 
-    /// Writes `desktop.json` when something changed and it has been long enough.
+    /// Writes `desktop.json` if it is time to look and something saved has changed.
     fn save_if_due(&mut self) {
-        if self.dirty && self.saved_at.elapsed() >= SAVE_EVERY {
+        if self.saved_at.elapsed() >= SAVE_EVERY {
             self.save();
         }
     }
 
-    /// Writes `desktop.json` now. Copies the devices under the lock and writes outside
-    /// it. A failure is told to the person once, until a save works again.
+    /// Writes `desktop.json` if what it would hold differs from what it holds. Copies
+    /// the devices under the lock and writes outside it. A failure is told to the
+    /// person once, until a save works again.
     fn save(&mut self) {
         let devices = lock(&self.state).devices.clone();
         let snapshot = AppState {
             devices,
             ..AppState::default()
         };
-        self.dirty = false;
         self.saved_at = Instant::now();
-        match self.store.save(&snapshot, &self.broker) {
-            Ok(()) => self.save_error = None,
+        let written = Store::contents(&snapshot, &self.broker).and_then(|json| {
+            if self.written.as_ref() == Some(&json) {
+                return Ok(None);
+            }
+            self.store.write(&json).map(|()| Some(json))
+        });
+        match written {
+            Ok(Some(json)) => {
+                self.written = Some(json);
+                self.save_error = None;
+            }
+            Ok(None) => {}
             Err(error) => {
                 let error = format!(
                     "Scent Control couldn't save its diffusers to {}: {error}",
@@ -138,7 +160,6 @@ impl ScentApp {
                     self.screens.set_notice(error.clone());
                 }
                 self.save_error = Some(error);
-                self.dirty = true;
             }
         }
     }

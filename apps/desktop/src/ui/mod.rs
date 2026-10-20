@@ -6,6 +6,7 @@
 //! The screens only read the state they are given and hand back what they want done
 //! ([`Requests`]); the app sends the commands to the hub and saves the settings.
 
+pub mod clock;
 pub mod device_list;
 pub mod device_panel;
 pub mod format;
@@ -318,6 +319,7 @@ mod tests {
                 direction,
                 action: action.to_owned(),
                 text: text.to_owned(),
+                sent: direction == Direction::ToDevice && via.is_some(),
             });
         }
         state
