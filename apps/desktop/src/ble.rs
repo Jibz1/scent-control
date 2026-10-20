@@ -196,7 +196,8 @@ impl Chars {
 
 /// How a request ended: `Ok` when it was done, `Err` with what went wrong. The reply
 /// resolves with a receive error, not an answer, only if the worker stopped first or
-/// the task that held the request panicked.
+/// the task that held the request panicked. Dropping the reply withdraws a request
+/// that has not started yet: the worker skips it, without a word.
 pub type Reply = oneshot::Receiver<Result<(), String>>;
 
 /// A reply that is already answered.
@@ -221,6 +222,13 @@ impl Done {
             what: what.into(),
         };
         (done, reply)
+    }
+
+    /// Whether the caller has stopped waiting: it dropped the [`Reply`]. The hub does
+    /// that when it gives up on a request and sends the command another way, so a job
+    /// in this state must not run: it could land after something newer and undo it.
+    fn is_abandoned(&self) -> bool {
+        self.answer.is_closed()
     }
 
     /// Answers the caller. A failure that nobody is waiting to hear (the reply was
@@ -897,6 +905,11 @@ impl Link {
     /// jobs queued behind this one.
     async fn serve(&mut self, job: LinkJob, jobs: &mut mpsc::Receiver<LinkJob>) -> bool {
         let LinkJob { op, done } = job;
+        // Skipped quietly if the caller gave up already: it has reported its own
+        // timeout, and doing this now could undo something newer.
+        if done.is_abandoned() {
+            return true;
+        }
         let open = match ensure_open(&mut self.open, &self.shared, self.id).await {
             Ok(open) => open,
             Err(error) => {
@@ -908,6 +921,11 @@ impl Link {
             }
         };
 
+        // Connecting can take long enough for the caller to give up. Look again before
+        // anything is written or read.
+        if done.is_abandoned() {
+            return true;
+        }
         let work = open.perform(&op, &self.ble_id, &self.shared.emitter);
         let result = match tokio::time::timeout(IO_TIMEOUT, work).await {
             Ok(result) => result,
@@ -1224,6 +1242,16 @@ mod tests {
         drop(reply);
         done.finish(&emitter, Ok(()));
         assert!(received.try_recv().is_err());
+    }
+
+    // `serve` has no seam to run against without a peripheral, so the decision is a
+    // predicate on the job's `Done`, and this is what it turns on.
+    #[test]
+    fn a_job_whose_caller_stopped_waiting_is_not_wanted() {
+        let (done, reply) = Done::new("Bluetooth send TURN_ON");
+        assert!(!done.is_abandoned(), "someone is waiting for the answer");
+        drop(reply);
+        assert!(done.is_abandoned(), "the caller gave up on it");
     }
 
     fn handle_with_room_for(n: usize) -> (BleHandle, mpsc::Receiver<Job>) {

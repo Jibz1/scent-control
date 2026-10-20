@@ -90,7 +90,8 @@ impl Transport for Radios {
     }
 
     fn reconnect(&self, settings: BrokerSettings, password: Option<Secret>) {
-        // The old worker is told to stop first, so it is not left logged in beside the new one.
+        // The old worker is told to stop first, so it is not left logged in beside the
+        // new one.
         let old = lock(&self.broker).take();
         drop(old);
         let Some(password) = password else { return };

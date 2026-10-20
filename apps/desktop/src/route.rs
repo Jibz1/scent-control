@@ -30,12 +30,13 @@ impl TransportPref {
 }
 
 /// The transports to try, in order. `ble_known` is whether Bluetooth is worth trying
-/// for this diffuser (see [`ble_known`]); `on_broker` is whether WiFi is a way to it
-/// (see [`wifi_available`]: the broker is connected, and this diffuser can use it). Only available transports are
-/// kept. Auto is Bluetooth first, then WiFi; a forced transport has no fallback.
-pub fn route(pref: TransportPref, ble_known: bool, on_broker: bool) -> Vec<Via> {
+/// for this diffuser (see [`ble_known`]); `wifi` is whether WiFi is a way to it (see
+/// [`wifi_available`]: the broker is connected, and this diffuser is on it). Only
+/// available transports are kept. Auto is Bluetooth first, then WiFi; a forced
+/// transport has no fallback.
+pub fn route(pref: TransportPref, ble_known: bool, wifi: bool) -> Vec<Via> {
     let bluetooth = ble_known.then_some(Via::Bluetooth);
-    let wifi = on_broker.then_some(Via::Wifi);
+    let wifi = wifi.then_some(Via::Wifi);
     match pref {
         TransportPref::Auto => [bluetooth, wifi].into_iter().flatten().collect(),
         TransportPref::Wifi => wifi.into_iter().collect(),
@@ -58,19 +59,20 @@ pub fn ble_worth_trying(failed_at: Option<i64>, heard_ble: Option<i64>, now: i64
     }
 }
 
-/// Whether WiFi is a way to this diffuser, the `on_broker` argument of [`route`] and
-/// [`ble_known`]. The broker must be connected. A forced WiFi is the person's call.
-/// For Auto the diffuser must also be on WiFi (`device_on_wifi`), or have no Bluetooth
-/// ID: the broker is up whether or not this diffuser is on it, and a publish to the
-/// topic of a diffuser that is not would be accepted, reported as sent, and heard by
+/// Whether WiFi is a way to this diffuser, the `wifi` argument of [`route`] and
+/// [`ble_known`]. The broker must be up (`broker_up`). A forced WiFi is the person's
+/// call. For Auto the diffuser must also be on our broker (`device_on_broker`: it has
+/// been heard there), or have no Bluetooth ID. The broker is up whether or not this
+/// diffuser is on it, and a publish to the topic of one that is not (not on WiFi yet,
+/// or still on Scentiment's cloud) would be accepted, reported as sent, and heard by
 /// nobody.
 pub fn wifi_available(
     pref: TransportPref,
-    on_broker: bool,
-    device_on_wifi: bool,
+    broker_up: bool,
+    device_on_broker: bool,
     has_ble_id: bool,
 ) -> bool {
-    on_broker && (pref == TransportPref::Wifi || device_on_wifi || !has_ble_id)
+    broker_up && (pref == TransportPref::Wifi || device_on_broker || !has_ble_id)
 }
 
 /// The `ble_known` argument of [`route`]: whether to count Bluetooth as available.

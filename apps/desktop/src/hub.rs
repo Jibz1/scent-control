@@ -218,8 +218,8 @@ struct Target {
     ble_id: Option<String>,
     /// When it was last heard over Bluetooth.
     heard_ble: Option<i64>,
-    /// Whether it is known to be on WiFi (the rule for pinging it, `on_wifi`).
-    on_wifi: bool,
+    /// Whether it has been heard on our broker (see [`on_our_broker`]).
+    on_our_broker: bool,
 }
 
 /// What every task of the hub shares.
@@ -272,7 +272,7 @@ impl<T: Transport> Shared<T> {
             .map_or_else(Target::default, |device| Target {
                 ble_id: device.ble_id.clone(),
                 heard_ble: device.heard_ble,
-                on_wifi: on_wifi(device),
+                on_our_broker: on_our_broker(device),
             })
     }
 
@@ -283,12 +283,12 @@ impl<T: Transport> Shared<T> {
         let Target {
             ble_id,
             heard_ble,
-            on_wifi,
+            on_our_broker,
         } = self.target(device_id);
         let failed_at = lock(&self.ble_failed).get(device_id).copied();
         // The broker being up does not mean this diffuser is on it.
-        let on_broker = self.transport.broker_route_id().is_some();
-        let wifi = wifi_available(pref, on_broker, on_wifi, ble_id.is_some());
+        let broker_up = self.transport.broker_route_id().is_some();
+        let wifi = wifi_available(pref, broker_up, on_our_broker, ble_id.is_some());
         let bluetooth = ble_known(
             pref,
             ble_id.is_some(),
@@ -454,7 +454,7 @@ async fn answer(reply: Reply) -> Result<(), String> {
     match tokio::time::timeout(BLUETOOTH_BACKSTOP, reply).await {
         Ok(answered) => answered.unwrap_or_else(|_| Err(BLUETOOTH_STOPPED.to_owned())),
         Err(_) => Err(format!(
-            "Bluetooth didn't answer in {} s.",
+            "Bluetooth didn't answer in {} s; it may still go through.",
             BLUETOOTH_BACKSTOP.as_secs()
         )),
     }
@@ -535,25 +535,38 @@ fn schedule_steps(profile: Profile, now: i64) -> [(Duration, Command); 2] {
     ]
 }
 
-/// The diffusers to ping: those known to be on WiFi. `heard_wifi` is not enough, as
-/// it is not saved, so after a restart nothing would be pinged until a diffuser spoke
-/// of its own accord, which can take its whole 1200 s keepalive. What the saved state
-/// does hold is the info string (`wifi_configured`) and the readings with their source.
+/// The diffusers to ping: those worth pinging (see [`worth_pinging`]).
 fn ping_targets(state: &AppState) -> Vec<String> {
     state
         .devices
         .values()
-        .filter(|device| valid_device_id(&device.id) && on_wifi(device))
+        .filter(|device| valid_device_id(&device.id) && worth_pinging(device))
         .map(|device| device.id.clone())
         .collect()
 }
 
-fn on_wifi(device: &DeviceView) -> bool {
+/// Whether to ping a diffuser: it is on our broker, or its info says WiFi is set up.
+/// `heard_wifi` alone is not enough, as it is not saved, so after a restart nothing
+/// would be pinged until a diffuser spoke of its own accord, which can take its whole
+/// 1200 s keepalive. What the saved state does hold is the info string
+/// (`wifi_configured`) and the readings with their source. A ping to a diffuser that
+/// is on some other broker (it may still be on Scentiment's cloud) is harmless, and it
+/// is how a diffuser that has just been moved to ours first gets heard.
+fn worth_pinging(device: &DeviceView) -> bool {
     device
         .info
         .as_ref()
         .is_some_and(|info| info.wifi_configured)
-        || device.heard_wifi.is_some()
+        || on_our_broker(device)
+}
+
+/// Whether a diffuser has been heard on our broker: a message from it, or a reading
+/// that came over WiFi (the saved state keeps the readings' source, not when it was
+/// last heard). This, not `wifi_configured`, decides whether WiFi is a way to it,
+/// since a diffuser with WiFi set up may still be on Scentiment's cloud, where a
+/// publish to our broker would be heard by nobody.
+fn on_our_broker(device: &DeviceView) -> bool {
+    device.heard_wifi.is_some()
         || device
             .readings
             .values()
@@ -830,6 +843,49 @@ mod tests {
     }
 
     #[test]
+    fn only_a_diffuser_heard_on_our_broker_is_reached_over_it() {
+        // WiFi set up, and nothing heard here: it may still be on Scentiment's cloud,
+        // where a publish to our broker would reach nobody. It is still pinged, which
+        // is harmless and lets a diffuser that has just been moved get heard.
+        let mut configured = DeviceView::new(ONE);
+        configured.info = Some(info(ONE, true));
+        assert!(!on_our_broker(&configured));
+        assert!(worth_pinging(&configured));
+
+        let mut heard = DeviceView::new(ONE);
+        heard.heard_wifi = Some(100);
+        assert!(on_our_broker(&heard));
+        assert!(worth_pinging(&heard));
+
+        // `heard_wifi` is not saved, but a reading that came over WiFi is.
+        let mut read = DeviceView::new(ONE);
+        read.readings.insert(
+            Field::Battery,
+            Reading {
+                value: 80,
+                at: 50,
+                via: Via::Wifi,
+            },
+        );
+        assert!(on_our_broker(&read));
+        assert!(worth_pinging(&read));
+
+        // Bluetooth only.
+        let mut bluetooth = DeviceView::new(ONE);
+        bluetooth.heard_ble = Some(100);
+        bluetooth.readings.insert(
+            Field::Battery,
+            Reading {
+                value: 80,
+                at: 100,
+                via: Via::Bluetooth,
+            },
+        );
+        assert!(!on_our_broker(&bluetooth));
+        assert!(!worth_pinging(&bluetooth));
+    }
+
+    #[test]
     fn one_failed_line_per_job() {
         let name = |_: Via| "TURN_ON".to_owned();
         let bluetooth = (Via::Bluetooth, "Timed out.".to_owned());
@@ -1038,9 +1094,10 @@ mod tests {
             self
         }
 
-        /// Says the diffuser has WiFi set up, as its info string does.
-        fn on_wifi(self, id: &str) -> Rig {
-            lock(&self.state).devices.get_mut(id).unwrap().info = Some(info(id, true));
+        /// Says the diffuser has been heard on our broker, which is what makes it
+        /// reachable over WiFi.
+        fn heard_on_broker(self, id: &str) -> Rig {
+            lock(&self.state).devices.get_mut(id).unwrap().heard_wifi = Some(100);
             self
         }
 
@@ -1237,7 +1294,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_bluetooth_failure_falls_back_to_wifi_with_one_failed_line() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         rig.fake().script_ble([Ble::After(
             secs(13),
@@ -1286,7 +1343,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn after_a_bluetooth_failure_auto_skips_it_for_a_while_but_forced_bluetooth_does_not() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         rig.fake()
             .script_ble([Ble::After(Duration::ZERO, Err("Timed out.".to_owned()))]);
@@ -1340,11 +1397,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_diffuser_that_is_not_on_wifi_is_never_sent_to_over_the_broker() {
-        // Found by a scan and not on WiFi yet. The broker is up, but this diffuser is
-        // not on it: a publish to its topic would be accepted and heard by nobody, and
-        // reported as sent.
-        for wifi_configured in [None, Some(false)] {
+    async fn a_diffuser_not_heard_on_our_broker_is_never_sent_to_over_it() {
+        // The broker is up, but this diffuser is not on it: a publish to its topic would
+        // be accepted and heard by nobody, and reported as sent. That holds for one
+        // found by a scan, one not on WiFi yet, and one whose WiFi is set up but that
+        // may still be on Scentiment's cloud (its info says so, and nothing has been
+        // heard from it here).
+        for wifi_configured in [None, Some(false), Some(true)] {
             let rig = Rig::new().device(ONE, Some("ble-1"));
             lock(&rig.state).devices.get_mut(ONE).unwrap().info =
                 wifi_configured.map(|configured| info(ONE, configured));
@@ -1381,8 +1440,37 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_diffuser_with_no_bluetooth_id_is_sent_to_over_the_broker_even_if_not_known_on_wifi()
-    {
+    async fn a_diffuser_with_a_wifi_reading_falls_back_to_wifi() {
+        // A reading that came over WiFi shows it is on our broker, even when the
+        // time it was last heard was not kept (`heard_wifi` is not saved).
+        let rig = Rig::new().device(ONE, Some("ble-1"));
+        rig.broker_up();
+        {
+            let mut state = lock(&rig.state);
+            let device = state.devices.get_mut(ONE).unwrap();
+            assert_eq!(device.heard_wifi, None);
+            device.readings.insert(
+                Field::Power,
+                Reading {
+                    value: 1,
+                    at: 50,
+                    via: Via::Wifi,
+                },
+            );
+        }
+        rig.fake()
+            .script_ble([Ble::After(Duration::ZERO, Err("Timed out.".to_owned()))]);
+
+        let on = Work::send(Command::TurnOn { on: true });
+        assert!(rig.shared.deliver(ONE, &on, TransportPref::Auto).await);
+
+        let events = rig.events();
+        assert_eq!(sent(&events)[0].0, Via::Wifi);
+        assert_eq!(failed(&events).len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_diffuser_with_no_bluetooth_id_is_sent_to_over_the_broker_even_if_not_known_on_it() {
         // Nothing else could reach it, and the broker is how it first shows up.
         let rig = Rig::new().device(ONE, None);
         rig.broker_up();
@@ -1393,7 +1481,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_bluetooth_reply_that_never_comes_is_a_failure_after_30_s() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         rig.fake().script_ble([Ble::Never]);
         let started = Instant::now();
@@ -1409,6 +1497,11 @@ mod tests {
         let lines = failed(&rig.events());
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].2.contains("didn't answer"), "{}", lines[0].2);
+        assert!(
+            lines[0].2.contains("it may still go through"),
+            "{}",
+            lines[0].2
+        );
         assert!(lines[0].2.contains("went over WiFi"), "{}", lines[0].2);
     }
 
@@ -1459,7 +1552,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn when_both_routes_fail_it_is_one_failed_line() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         rig.fake()
             .script_ble([Ble::After(Duration::ZERO, Err("No answer.".to_owned()))]);
@@ -1549,7 +1642,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_bluetooth_worker_that_went_away_counts_as_a_failure() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         rig.fake().script_ble([Ble::Dies]);
 
@@ -1571,7 +1664,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn reading_the_status_follows_the_same_route() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         let hub = rig.serve();
         // The diffuser is on WiFi, so it is pinged now and then; leave those out.
@@ -1617,7 +1710,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn sent_events_never_carry_a_password() {
-        let rig = Rig::new().device(ONE, Some("ble-1")).on_wifi(ONE);
+        let rig = Rig::new().device(ONE, Some("ble-1")).heard_on_broker(ONE);
         rig.broker_up();
         rig.fake()
             .script_ble([Ble::After(Duration::ZERO, Err("No answer.".to_owned()))]);
