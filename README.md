@@ -21,6 +21,20 @@ contacts Scentiment's servers.
 
 Other brands may follow later.
 
+## Development
+
+This is a Bun + Turborepo monorepo. The Rust crates are members of the Cargo workspace
+at the repo root, and the Python tools live in `tools/`. You need Bun, a Rust toolchain
+and Python 3.11 or newer.
+
+```sh
+bun install
+bunx turbo run build test lint fmt:check
+```
+
+That one command builds, tests, lints and format-checks every package, including the
+Python tools' tests (it creates `tools/.venv` on first run).
+
 ## Docs
 
 - [docs/findings.md](docs/findings.md): what we know about the devices and their

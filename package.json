@@ -1,0 +1,14 @@
+{
+  "name": "@scent-control/monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "workspaces": ["apps/*", "packages/*", "tools"],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "fmt:check": "turbo run fmt:check"
+  },
+  "devDependencies": { "turbo": "2.11.7" }
+}
