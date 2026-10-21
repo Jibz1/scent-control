@@ -639,7 +639,8 @@ app's accent. HIG lets an app set its own accent.
 - The raw (masked) JSON shows in SF Mono only when a row is expanded.
 
 **Schedules.**
-- When the app knows the schedule (one sent this session), the detail pane shows a "Today"
+- When the app knows the schedule (the last one this Mac sent, saved with the diffusers), the
+  detail pane shows a "Today"
   strip: 24 hours, scheduled windows filled with the accent, and a marker for now.
 - The schedule editor shows a week grid (7 rows × 24 h) previewing its entries, so overlaps
   and gaps show before sending.
