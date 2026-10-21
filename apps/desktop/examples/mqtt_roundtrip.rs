@@ -1,9 +1,13 @@
-//! Live check of the MQTT worker against the test broker. Needs no Bluetooth, so it
-//! runs from a plain shell:
+//! Live check of the MQTT worker against the broker this build was given: the one in
+//! `SCENT_BROKER_URL`, `SCENT_BROKER_USERNAME` and `SCENT_ROUTE_ID` when it was built
+//! (see `.env.example`). Needs no Bluetooth, so it runs from a plain shell:
 //!
 //! ```text
+//! source scripts/broker-env.sh && load_broker_env .env   # or export the three yourself
 //! cargo run -p scent-desktop --example mqtt_roundtrip -- <deviceId>
 //! ```
+//!
+//! Built without them there is no broker, and it says so and stops.
 //!
 //! It connects, sends a `PING` with the route ID to that diffuser's device topic and
 //! prints what the broker delivers for 10 s: your own publish coming back, and the
@@ -20,8 +24,18 @@ mod add_flow;
 mod mqtt;
 #[path = "../src/secrets.rs"]
 mod secrets;
+#[path = "../src/shared_schedule.rs"]
+mod shared_schedule;
 #[path = "../src/state.rs"]
 mod state;
+#[path = "../src/store.rs"]
+mod store;
+#[path = "../src/ui/theme.rs"]
+mod theme;
+/// Only the theme, for the appearance the store saves.
+mod ui {
+    pub(crate) use super::theme;
+}
 
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -52,6 +66,13 @@ fn main() -> ExitCode {
     }
 
     let settings = BrokerSettings::default();
+    if !settings.is_set() {
+        eprintln!(
+            "no broker: export SCENT_BROKER_URL, SCENT_BROKER_USERNAME and SCENT_ROUTE_ID \
+             before building (see .env.example)"
+        );
+        return ExitCode::from(2);
+    }
     let password = secrets::broker_password(&settings)
         .or_else(|| std::env::var("SCENT_BROKER_PASSWORD").ok().map(Secret::new));
     let Some(password) = password else {

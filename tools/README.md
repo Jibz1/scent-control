@@ -3,6 +3,9 @@
 Command-line tools for checking the Scentiment diffusers over Bluetooth and MQTT. See
 `docs/superpowers/plans/2026-10-20-phase-0-device-verification.md`.
 
+Everyday control has moved to the desktop app (`apps/desktop`). These tools and the web
+test bench stay for protocol experiments and for checking device behaviour.
+
 ## Setup
 
 ```bash
@@ -68,7 +71,7 @@ RT="$HOME/Library/Application Support/ScentControl/tools-runtime"
 .venv/bin/python session.py make-test-schedule --start-in 3 --duration 4 > "$RT/captures/sched.json"
 ./bt session.py profile air2 captures/sched.json --timezone -4   # path relative to the runtime copy
 ./bt session.py restart air2              # soft restart only
-./bt session.py save-mqtt air2 --broker wss://<domain>/mqtt --username scent-test   # password from .env.local
+./bt session.py save-mqtt air2 --broker wss://<your-broker-host>/mqtt --username <username>   # password from .env.local
 .venv/bin/python session.py wifi air2     # from Terminal.app: prompts for the WiFi name and password
 ```
 
@@ -81,12 +84,17 @@ masked.
 `wss://` or `mqtts://`. The password comes from `SCENT_BROKER_PASSWORD`, from
 `.env.local`, or from a prompt.
 
+`--url` and `--username` default to `SCENT_BROKER_URL` and `SCENT_BROKER_USERNAME`,
+taken from the environment, then the repo-root `.env` (copy `../.env.example`), then
+`.env.local`. Give them on the command line to use another broker. The password never
+goes in the repo-root `.env`.
+
 ```bash
-B=wss://<domain>/mqtt
-.venv/bin/python broker.py watch --url $B --username scent-test
-.venv/bin/python broker.py publish --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId> --json '{"action":"PING","payload":{"userid":"route-test-1"}}'
-.venv/bin/python broker.py sync-time --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId>
-.venv/bin/python broker.py publish-profile --url $B --username scent-test --topic scentiment-mqtt-prod/device/<deviceId> --file ../captures/sched.json --timezone -4
+.venv/bin/python broker.py watch
+.venv/bin/python broker.py watch --url wss://<your-broker-host>/mqtt --username <username>
+.venv/bin/python broker.py publish --topic scentiment-mqtt-prod/device/<deviceId> --json '{"action":"PING","payload":{"userid":"route-test-1"}}'
+.venv/bin/python broker.py sync-time --topic scentiment-mqtt-prod/device/<deviceId>
+.venv/bin/python broker.py publish-profile --topic scentiment-mqtt-prod/device/<deviceId> --file ../captures/sched.json --timezone -4
 ```
 
 ### Test bench (web page)
@@ -95,9 +103,12 @@ A local page for clicking through commands and watching every reply, before the
 real app exists:
 
 ```bash
-.venv/bin/python control_server.py --url wss://test-broker-production.up.railway.app/mqtt --username scent-test
+.venv/bin/python control_server.py   # the broker from SCENT_BROKER_URL and SCENT_BROKER_USERNAME, as above
+.venv/bin/python control_server.py --url wss://<your-broker-host>/mqtt --username <username>
 # open http://127.0.0.1:8765
 ```
+
+`--route-id` defaults to `SCENT_ROUTE_ID` the same way, else `route-test-1`.
 
 The helper listens only on 127.0.0.1 and holds the broker password, taken from
 `.env.local` or a prompt. The page never sees the password. Every command goes

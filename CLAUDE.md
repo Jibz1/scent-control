@@ -8,7 +8,8 @@ at any point.
 
 - Design (approved): `docs/superpowers/specs/2026-10-20-scent-control-design.md`
 - Device facts, with dates and sources: `docs/findings.md`
-- Current plan: `docs/superpowers/plans/2026-10-20-phase-0-device-verification.md`
+- Current plan: `docs/superpowers/plans/2026-10-20-phase-1-desktop-app.md` (desktop app built;
+  the owner's acceptance session, `docs/phase-1-owner-session.md`, is in progress)
 
 ## Devices
 
@@ -67,7 +68,7 @@ Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconci
 package.json         Bun workspace root (apps/*, packages/*, tools)
 turbo.json           Turborepo tasks: build, test, lint, fmt:check
 Cargo.toml           Cargo workspace root (the Rust crates)
-apps/desktop         Rust desktop app for macOS (Phase 1)
+apps/desktop         Rust desktop app for macOS (Phase 1, on main)
 apps/home-assistant  headless Rust adapter for Home Assistant MQTT Discovery
 apps/mobile          Expo app (Phase 1+)
 apps/server          API, MQTT client, reconciler (Phase 1+)
@@ -112,6 +113,9 @@ docs/                findings, design, plans
    ask the owner.
 1. **One diffuser end to end for the owner:** protocol package, server and broker on
    Railway, app setup and manual control. Android first.
+   The owner chose a Rust desktop app for macOS first (spec addendum). It is built and on
+   `main`: Bluetooth-first control with WiFi fallback, adding a diffuser, schedules
+   kept on the Mac, rooms, and Apple's design language.
 2. **Schedules, status, resilience:** the reconciler, Bluetooth-first control,
    and the HVAC 2.
 3. **Other people:** sign-up with an emailed code, homes and invites, TestFlight and

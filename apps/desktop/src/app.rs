@@ -66,10 +66,13 @@ impl ScentApp {
             broker,
             appearance,
             notice,
+            first_run,
         } = store.load();
         theme::set_appearance(&cc.egui_ctx, appearance);
         // The Keychain may ask the person before it answers; nothing is drawn until it has.
-        let password = broker_password(&broker);
+        // With no broker there is nothing to ask it about (nor for an address that isn't
+        // one: see `secrets`).
+        let password = broker.is_set().then(|| broker_password(&broker)).flatten();
         let written = notice
             .is_none()
             .then(|| Store::contents(&state, &broker, appearance).ok())
@@ -80,6 +83,9 @@ impl ScentApp {
         let (hub, events) = Hub::start(broker.clone(), password, Arc::clone(&state), move || {
             ctx.request_repaint();
         });
+        let mut screens = Screens::new(notice);
+        // The first run, with no broker: Settings, to add one.
+        screens.ask_for_broker(&broker, first_run);
         ScentApp {
             state,
             view,
@@ -88,7 +94,7 @@ impl ScentApp {
             store,
             broker,
             appearance,
-            screens: Screens::new(notice),
+            screens,
             written,
             saved_at: Instant::now(),
             save_error: None,

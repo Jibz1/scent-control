@@ -416,11 +416,11 @@ mod tests {
         saved: Option<Submitted>,
     }
 
-    /// The window open with the default settings and "hunter2" typed in the password
+    /// The window open with the example settings and "hunter2" typed in the password
     /// field, so that the text box's undo copy holds it too.
     fn typed_in() -> Harness<'static, Rig> {
         let mut window = SettingsWindow::default();
-        window.open(&BrokerSettings::default());
+        window.open(&BrokerSettings::example());
         let mut frames = 0;
         let mut harness = Harness::builder()
             .with_size(egui::vec2(WIDTH, 640.0))
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn return_with_nothing_focused_saves() {
         let mut window = SettingsWindow::default();
-        window.open(&BrokerSettings::default());
+        window.open(&BrokerSettings::example());
         let mut frames = 0;
         let mut harness = Harness::builder()
             .with_size(egui::vec2(WIDTH, 480.0))
@@ -540,20 +540,20 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run_steps(2);
         let saved = harness.state().saved.as_ref().expect("Return saves");
-        assert_eq!(saved.settings, BrokerSettings::default());
+        assert_eq!(saved.settings, BrokerSettings::example());
         assert!(saved.password.is_none());
     }
 
     #[test]
     fn good_settings_are_trimmed_and_kept() {
-        let defaults = BrokerSettings::default();
+        let example = BrokerSettings::example();
         assert_eq!(
             validate(
-                &format!(" {} ", defaults.url),
-                " scent-test ",
+                &format!(" {} ", example.url),
+                " example-user ",
                 " route-test-1 "
             ),
-            Ok(defaults)
+            Ok(example)
         );
     }
 
@@ -585,7 +585,7 @@ mod tests {
 
     fn open_window() -> SettingsWindow {
         let mut window = SettingsWindow::default();
-        window.open(&BrokerSettings::default());
+        window.open(&BrokerSettings::example());
         window
     }
 
@@ -596,7 +596,7 @@ mod tests {
         commit: Some("abc1234"),
     };
 
-    /// The window open with the default settings and [`BUILD`], drawn and settled.
+    /// The window open with the example settings and [`BUILD`], drawn and settled.
     fn shown() -> Harness<'static, Rig> {
         let mut window = open_window();
         window.set_build(BUILD);
@@ -708,7 +708,7 @@ mod tests {
         let mut window = open_window();
         window.password = "hunter2".to_owned();
         let submitted = window.submit(&ctx).unwrap();
-        assert_eq!(submitted.settings, BrokerSettings::default());
+        assert_eq!(submitted.settings, BrokerSettings::example());
         assert_eq!(submitted.password.unwrap().expose(), "hunter2");
         // Not in the window any more, in any field.
         assert!(window.password.is_empty());

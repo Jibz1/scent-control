@@ -1,9 +1,11 @@
 //! The MQTT worker: one connection to the broker over `wss`, the subscription to
-//! everything under the Scentiment prefix, and the [`Event`]s that come out of it.
+//! everything under the Scentiment prefix and under our own, and the [`Event`]s that
+//! come out of it.
 //!
 //! The worker runs on its own thread. It reports through the same channel as the
 //! other workers and never touches the screens. [`MqttHandle::send`] queues a command
-//! without waiting for the network.
+//! without waiting for the network, and [`MqttHandle::store_retained`] the copy of a
+//! schedule that the app's other copies read.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,10 +13,13 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use rumqttc::{
-    AsyncClient, ConnectReturnCode, ConnectionError, EventLoop, MqttOptions, Packet, QoS,
-    Subscribe, Transport,
+    AsyncClient, ConnectReturnCode, ConnectionError, EventLoop, MqttOptions, Packet, Publish, QoS,
+    Subscribe, SubscribeFilter, Transport,
 };
-use scent_core::{Command, SUBSCRIBE_ALL, Secret, device_topic, valid_device_id};
+use scent_core::{
+    APP_PREFIX, Command, SUBSCRIBE_ALL, SUBSCRIBE_APP, Secret, device_topic, schedule_topic,
+    valid_device_id,
+};
 use tokio::sync::oneshot;
 
 use crate::state::{Event, unix_now};
@@ -51,13 +56,57 @@ pub struct BrokerSettings {
     pub route_id: String,
 }
 
-impl Default for BrokerSettings {
-    fn default() -> Self {
+impl BrokerSettings {
+    /// The settings from the values a build was given: each one trimmed, and empty when
+    /// there was none. An address that [`BrokerUrl::parse`] turns down is none either, so
+    /// that it never counts as a broker; the username and route ID stay, for Settings.
+    pub fn from_values(
+        url: Option<&str>,
+        username: Option<&str>,
+        route_id: Option<&str>,
+    ) -> BrokerSettings {
+        let value = |value: Option<&str>| value.unwrap_or_default().trim().to_owned();
+        let mut url = value(url);
+        if !url.is_empty() && BrokerUrl::parse(&url).is_err() {
+            url.clear();
+        }
         BrokerSettings {
-            url: "wss://test-broker-production.up.railway.app/mqtt".to_owned(),
-            username: "scent-test".to_owned(),
+            url,
+            username: value(username),
+            route_id: value(route_id),
+        }
+    }
+
+    /// Whether there is a broker at all: an empty address means none, as in a build given
+    /// none. In a saved file an empty address means none was saved, and the store takes
+    /// the build's whole default in its place (see `store`).
+    pub fn is_set(&self) -> bool {
+        !self.url.trim().is_empty()
+    }
+
+    /// A broker for the tests: an example host, and the synthetic route ID.
+    #[cfg(test)]
+    pub fn example() -> BrokerSettings {
+        BrokerSettings {
+            url: "wss://broker.example.test/mqtt".to_owned(),
+            username: "example-user".to_owned(),
             route_id: "route-test-1".to_owned(),
         }
+    }
+}
+
+/// The broker a build was given, for when nothing is saved: `SCENT_BROKER_URL`,
+/// `SCENT_BROKER_USERNAME` and `SCENT_ROUTE_ID` at build time, which
+/// `scripts/bundle-macos.sh` takes from the repo-root `.env`. Each is empty when the build
+/// had none, and then there is no broker until one is added in Settings. Never a password:
+/// that is in the Keychain.
+impl Default for BrokerSettings {
+    fn default() -> Self {
+        BrokerSettings::from_values(
+            option_env!("SCENT_BROKER_URL"),
+            option_env!("SCENT_BROKER_USERNAME"),
+            option_env!("SCENT_ROUTE_ID"),
+        )
     }
 }
 
@@ -73,11 +122,16 @@ impl BrokerUrl {
     /// Reads `wss://host[:port][/path]`. The port is 443 when left out and the path
     /// is `/`. Any other scheme is an error: the app only talks to the broker
     /// encrypted. So is a user name or password in the address, which would leak
-    /// into logs.
+    /// into logs, and whitespace or a control character anywhere, which no URL holds.
     pub fn parse(url: &str) -> Result<BrokerUrl, String> {
         let rest = url.strip_prefix("wss://").ok_or_else(|| {
             format!("The broker address must start with wss:// (encrypted only): {url:?}")
         })?;
+        if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!(
+                "The broker address has a space or another character no address can have: {url:?}"
+            ));
+        }
         let (authority, path) = match rest.find('/') {
             Some(at) => rest.split_at(at),
             None => (rest, "/"),
@@ -173,28 +227,86 @@ impl MqttHandle {
         if !valid_device_id(device_id) {
             return Err(format!("{device_id:?} is not a valid device ID."));
         }
-        let client = match &self.client {
-            Some(client) if self.connected.load(Ordering::SeqCst) => client,
-            _ => return Err("Not connected to the broker.".to_owned()),
-        };
-        client
+        self.connected_client()?
             .try_publish(
                 device_topic(device_id),
                 QoS::AtLeastOnce,
                 false,
                 cmd.mqtt_body(),
             )
-            .map_err(|_| "The broker connection is too busy to take this message.".to_owned())
+            .map_err(|_| TOO_BUSY.to_owned())
     }
+
+    /// Queues `body` (see `shared_schedule`) as the retained copy of the diffuser's
+    /// schedule, at QoS 1 on `scent-control/v1/schedule/<deviceId>`, and returns without
+    /// waiting for the network. It refuses a bad device ID and, as [`send`](Self::send)
+    /// does, while the broker isn't connected.
+    pub fn store_retained(&self, device_id: &str, body: Vec<u8>) -> Result<(), String> {
+        let topic = schedule_topic(device_id)
+            .ok_or_else(|| format!("{device_id:?} is not a valid device ID."))?;
+        self.publish_retained(&topic, body)
+    }
+
+    /// The one way the app publishes a retained message. Only to a topic under our own
+    /// prefix (see [`retained_publish`]): a retained message on a diffuser's topic would
+    /// be replayed to it every time it connects.
+    fn publish_retained(&self, topic: &str, body: Vec<u8>) -> Result<(), String> {
+        let publish = retained_publish(topic, body)?;
+        self.connected_client()?
+            .try_publish(
+                publish.topic,
+                publish.qos,
+                publish.retain,
+                publish.payload.to_vec(),
+            )
+            .map_err(|_| TOO_BUSY.to_owned())
+    }
+
+    /// The client, while the broker is connected.
+    fn connected_client(&self) -> Result<&AsyncClient, String> {
+        match &self.client {
+            Some(client) if self.connected.load(Ordering::SeqCst) => Ok(client),
+            _ => Err("Not connected to the broker.".to_owned()),
+        }
+    }
+}
+
+/// What a full queue makes `send` and `store_retained` say.
+const TOO_BUSY: &str = "The broker connection is too busy to take this message.";
+
+/// The retained QoS 1 message `publish_retained` sends, or why it won't: the topic must
+/// be under `scent-control/v1/`, with something after it and no wildcard in it.
+fn retained_publish(topic: &str, body: Vec<u8>) -> Result<Publish, String> {
+    let ours = topic
+        .strip_prefix(APP_PREFIX)
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(['+', '#', '\0']));
+    if !ours {
+        return Err(format!(
+            "{topic:?} is not a Scent Control topic, so nothing is stored there."
+        ));
+    }
+    let mut publish = Publish::new(topic, QoS::AtLeastOnce, body);
+    publish.retain = true;
+    Ok(publish)
+}
+
+/// What the worker subscribes to on every ConnAck, in one request: everything under
+/// Scentiment's prefix (the diffusers and our commands to them), and everything under
+/// ours (the stored schedules, which the broker hands over at once as they are retained).
+fn subscriptions() -> Subscribe {
+    Subscribe::new_many(
+        [SUBSCRIBE_ALL, SUBSCRIBE_APP]
+            .map(|filter| SubscribeFilter::new(filter.to_owned(), QoS::AtLeastOnce)),
+    )
 }
 
 /// Starts the worker on its own thread and returns at once. Events (`BrokerConnected`,
 /// `BrokerLoginRefused`, `BrokerDisconnected` and one `Mqtt` per message on the
 /// broker) go to `events`, each followed by a call to `repaint`.
 ///
-/// The worker subscribes to everything under the Scentiment prefix on every ConnAck.
-/// A refused login is reported once and the worker stops; start a new one with the
-/// corrected password. Any other failure is reported and retried every 5 s.
+/// The worker subscribes to everything under the Scentiment prefix and under ours on
+/// every ConnAck. A refused login is reported once and the worker stops; start a new one
+/// with the corrected password. Any other failure is reported and retried every 5 s.
 pub fn spawn(
     settings: BrokerSettings,
     password: Secret,
@@ -345,13 +457,11 @@ impl Worker {
     }
 
     /// A ConnAck means the login was accepted (rumqttc turns any other code into an
-    /// error). Subscribes again, as the session starts clean every time. The
-    /// subscription goes to the front of the event loop's own queue, so it can't be
-    /// held up behind commands and goes out before any of them.
+    /// error). Subscribes again (see [`subscriptions`]), as the session starts clean
+    /// every time. The subscription goes to the front of the event loop's own queue, so
+    /// it can't be held up behind commands and goes out before any of them.
     fn on_connected(&self, eventloop: &mut EventLoop) -> bool {
-        eventloop
-            .pending
-            .push_front(Subscribe::new(SUBSCRIBE_ALL, QoS::AtLeastOnce).into());
+        eventloop.pending.push_front(subscriptions().into());
         self.connected.store(true, Ordering::SeqCst);
         self.emit(Event::BrokerConnected)
     }
@@ -504,6 +614,100 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_stored_retained_outside_our_own_prefix() {
+        let (handle, _eventloop) = handle(true);
+        for foreign in [
+            "scentiment-mqtt-prod/device/TESTDEVICE01",
+            "scentiment-mqtt-prod/user/route-test-1",
+            "scentiment-mqtt-prod/#",
+            "",
+            "scent-control/v1",
+            "scent-control/v1/",
+            "scent-control/v2/schedule/TESTDEVICE01",
+            "Scent-Control/v1/schedule/TESTDEVICE01",
+            "/scent-control/v1/schedule/TESTDEVICE01",
+            "scent-control/v1/#",
+            "scent-control/v1/schedule/+",
+            "scent-control/v1/schedule/TESTDEVICE01/#",
+        ] {
+            let error = handle
+                .publish_retained(foreign, b"{}".to_vec())
+                .unwrap_err();
+            assert!(
+                error.contains("Scent Control topic"),
+                "{foreign:?}: {error}"
+            );
+            assert!(
+                retained_publish(foreign, b"{}".to_vec()).is_err(),
+                "{foreign:?}"
+            );
+        }
+        let ours = "scent-control/v1/schedule/TESTDEVICE01";
+        assert_eq!(handle.publish_retained(ours, b"{}".to_vec()), Ok(()));
+    }
+
+    #[test]
+    fn a_stored_schedule_goes_to_the_devices_schedule_topic_retained_at_qos_1() {
+        let publish =
+            retained_publish("scent-control/v1/schedule/TESTDEVICE01", b"{}".to_vec()).unwrap();
+        assert_eq!(publish.topic, "scent-control/v1/schedule/TESTDEVICE01");
+        assert!(publish.retain);
+        assert_eq!(publish.qos, QoS::AtLeastOnce);
+        assert_eq!(&publish.payload[..], b"{}");
+
+        let (handle, _eventloop) = handle(true);
+        assert_eq!(
+            handle.store_retained("TESTDEVICE01", b"{}".to_vec()),
+            Ok(())
+        );
+        // A device ID can't make it any other topic.
+        for bad in [
+            "#",
+            "TESTDEVICE01/x",
+            "",
+            "../scentiment-mqtt-prod/device/X",
+        ] {
+            let error = handle.store_retained(bad, b"{}".to_vec()).unwrap_err();
+            assert!(error.contains("device ID"), "{bad:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn storing_a_schedule_refuses_while_the_broker_is_not_connected() {
+        let (handle, _eventloop) = handle(false);
+        let error = handle
+            .store_retained("TESTDEVICE01", b"{}".to_vec())
+            .unwrap_err();
+        assert!(error.contains("Not connected"), "{error}");
+    }
+
+    #[test]
+    fn every_connack_subscribes_to_scentiments_prefix_and_ours() {
+        let filters: Vec<(String, QoS)> = subscriptions()
+            .filters
+            .into_iter()
+            .map(|filter| (filter.path, filter.qos))
+            .collect();
+        assert_eq!(
+            filters,
+            [
+                ("scentiment-mqtt-prod/#".to_owned(), QoS::AtLeastOnce),
+                ("scent-control/v1/#".to_owned(), QoS::AtLeastOnce),
+            ]
+        );
+        // The worker queues them at the front, ahead of any command, on each ConnAck.
+        let (worker, _handle, mut eventloop, _received, _repaints) = worker_and_handle();
+        for connack in 1..=2 {
+            assert!(worker.on_connected(&mut eventloop));
+            assert_eq!(
+                eventloop.pending.front(),
+                Some(&rumqttc::Request::Subscribe(subscriptions())),
+                "ConnAck {connack}"
+            );
+        }
+    }
+
+    #[test]
     fn is_connected_follows_the_connection_flag() {
         let (up, _eventloop) = handle(true);
         assert!(up.is_connected());
@@ -522,8 +726,8 @@ mod tests {
 
     #[test]
     fn broker_url_parsing() {
-        let url = BrokerUrl::parse("wss://test-broker-production.up.railway.app/mqtt").unwrap();
-        assert_eq!(url.host, "test-broker-production.up.railway.app");
+        let url = BrokerUrl::parse("wss://broker.example.test/mqtt").unwrap();
+        assert_eq!(url.host, "broker.example.test");
         assert_eq!(url.port, 443);
         assert_eq!(url.path, "/mqtt");
 
@@ -546,6 +750,12 @@ mod tests {
             "wss://broker.example:0/mqtt",
             "wss://broker.example:notaport/mqtt",
             "wss://user:secret@broker.example/mqtt",
+            // No whitespace or control characters, anywhere: a URL can't hold them, and
+            // a comment kept from a .env file would otherwise ride along in the path.
+            "wss://broker.example/mqtt # mine",
+            "wss://broker.example/mq tt",
+            "wss://broker.example/mqtt\r",
+            "wss://broker.example/mqtt\t",
         ] {
             assert!(BrokerUrl::parse(bad).is_err(), "{bad:?}");
         }
@@ -594,14 +804,66 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_the_test_broker() {
-        let settings = BrokerSettings::default();
-        assert_eq!(
-            settings.url,
-            "wss://test-broker-production.up.railway.app/mqtt"
+    fn without_a_broker_from_the_build_the_defaults_are_empty() {
+        let none = BrokerSettings::from_values(None, None, None);
+        assert_eq!(none.url, "");
+        assert_eq!(none.username, "");
+        assert_eq!(none.route_id, "");
+        assert!(!none.is_set());
+        // Empty or blank values from the build are none either.
+        let blank = BrokerSettings::from_values(Some(""), Some(" "), Some("\t"));
+        assert_eq!(blank, none);
+    }
+
+    #[test]
+    fn a_broker_from_the_build_is_the_default() {
+        let built = BrokerSettings::from_values(
+            Some(" wss://broker.example.test/mqtt "),
+            Some("example-user"),
+            Some("route-test-1"),
         );
-        assert_eq!(settings.username, "scent-test");
-        assert_eq!(settings.route_id, "route-test-1");
+        assert_eq!(built, BrokerSettings::example());
+        assert!(built.is_set());
+        // `default()` is what this build was given, and nothing else.
+        assert_eq!(
+            BrokerSettings::default(),
+            BrokerSettings::from_values(
+                option_env!("SCENT_BROKER_URL"),
+                option_env!("SCENT_BROKER_USERNAME"),
+                option_env!("SCENT_ROUTE_ID"),
+            )
+        );
+    }
+
+    #[test]
+    fn a_built_in_address_that_cannot_be_used_is_no_broker() {
+        for bad in [
+            // An inline comment that a .env loader kept.
+            "wss://broker.example.test/mqtt # mine",
+            "mqtt://broker.example.test",
+            "broker.example.test/mqtt",
+            "wss://someone:secret@broker.example.test/mqtt",
+        ] {
+            let built =
+                BrokerSettings::from_values(Some(bad), Some("example-user"), Some("route-test-1"));
+            assert_eq!(built.url, "", "{bad}");
+            assert!(!built.is_set(), "{bad}");
+            // Who we would be on the broker stays, for Settings to show.
+            assert_eq!(built.username, "example-user", "{bad}");
+            assert_eq!(built.route_id, "route-test-1", "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_broker_is_set_only_when_it_has_an_address() {
+        assert!(BrokerSettings::example().is_set());
+        for url in ["", "  "] {
+            let settings = BrokerSettings {
+                url: url.to_owned(),
+                ..BrokerSettings::example()
+            };
+            assert!(!settings.is_set(), "{url:?}");
+        }
     }
 
     /// The largest schedule the editor lets through on firmware 2.30: 99 times, each on
@@ -642,7 +904,7 @@ mod tests {
 
     #[test]
     fn the_connection_takes_packets_up_to_the_limit() {
-        let options = build_options(&BrokerSettings::default(), &Secret::new("x".into())).unwrap();
+        let options = build_options(&BrokerSettings::example(), &Secret::new("x".into())).unwrap();
         // rumqttc reads back only the incoming limit; the outgoing one is set in the same
         // call, from the same constant.
         assert_eq!(options.max_packet_size(), MAX_PACKET_SIZE);

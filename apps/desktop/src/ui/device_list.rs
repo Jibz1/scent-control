@@ -60,6 +60,9 @@ pub struct DeviceList {
     /// Whether a scan has come back in this session, so that "nothing found" can be
     /// told from "not scanned yet".
     scanned: bool,
+    /// Why the last scan didn't run, until the next one starts or a result comes in, so
+    /// that a failure is never told as "nothing found".
+    scan_error: Option<String>,
 }
 
 /// The scan's hits that are not diffusers we already know: no known diffuser has that
@@ -175,8 +178,12 @@ impl DeviceList {
             Event::Scanned(_) => {
                 self.scanning = None;
                 self.scanned = true;
+                self.scan_error = None;
             }
-            Event::Failed { what, .. } if what == SCAN_FAILED => self.scanning = None,
+            Event::Failed { what, error, .. } if what == SCAN_FAILED => {
+                self.scanning = None;
+                self.scan_error = Some(error.clone());
+            }
             _ => {}
         }
     }
@@ -186,9 +193,11 @@ impl DeviceList {
             .is_some_and(|since| since.elapsed() < SCAN_GIVE_UP)
     }
 
-    /// Starts a scan: the command to hand the hub. "Scanning…" shows until it ends.
+    /// Starts a scan: the command to hand the hub. "Scanning…" shows until it ends, in
+    /// place of why the last one failed.
     pub fn scan(&mut self) -> UiCommand {
         self.scanning = Some(Instant::now());
+        self.scan_error = None;
         UiCommand::Scan
     }
 
@@ -255,7 +264,8 @@ impl DeviceList {
                     }
                 }
                 let hits = unknown_hits(state);
-                if hits.is_empty() && !scanning && !self.scanned {
+                let failed = self.scan_error.as_deref().filter(|_| !scanning);
+                if hits.is_empty() && !scanning && !self.scanned && failed.is_none() {
                     return;
                 }
                 if !state.devices.is_empty() {
@@ -264,8 +274,10 @@ impl DeviceList {
                 section_heading(ui, "Found Nearby");
                 if scanning {
                     note(ui, "Scanning…");
-                }
-                if hits.is_empty() && self.scanned && !scanning {
+                } else if let Some(error) = failed {
+                    // Never "nothing found": the scan didn't run.
+                    problem_note(ui, &format!("Couldn't scan: {error}"));
+                } else if hits.is_empty() && self.scanned {
                     note(ui, "No new diffusers found nearby.");
                 }
                 for hit in hits {
@@ -296,6 +308,17 @@ fn note(ui: &mut egui::Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.add_space(TEXT_INSET);
         secondary(ui, text);
+    });
+}
+
+/// What went wrong, as a [`note`] in the red of an error, as a failure is shown
+/// elsewhere: in words, never in color alone.
+fn problem_note(ui: &mut egui::Ui, text: &str) {
+    let color = Palette::of(ui).red;
+    ui.horizontal(|ui| {
+        ui.add_space(TEXT_INSET);
+        let text = RichText::new(text).text_style(subheadline()).color(color);
+        ui.add(egui::Label::new(text).wrap());
     });
 }
 
@@ -719,11 +742,120 @@ mod tests {
         );
     }
 
+    fn scan_failed(error: &str) -> Event {
+        Event::Failed {
+            device_id: None,
+            what: SCAN_FAILED.to_owned(),
+            error: error.to_owned(),
+            at: 0,
+        }
+    }
+
+    #[test]
+    fn a_failed_scan_is_kept_until_the_next_result_or_the_next_scan() {
+        let mut list = DeviceList::default();
+        let _ = list.scan();
+        list.on_event(&scan_failed("Bluetooth is turned off on this Mac."));
+        assert_eq!(
+            list.scan_error.as_deref(),
+            Some("Bluetooth is turned off on this Mac.")
+        );
+        assert!(!list.is_scanning());
+        // Another failure is not the scan's.
+        list.on_event(&Event::Failed {
+            device_id: Some(ONE.to_owned()),
+            what: "TURN_ON".to_owned(),
+            error: "No answer.".to_owned(),
+            at: 0,
+        });
+        assert_eq!(
+            list.scan_error.as_deref(),
+            Some("Bluetooth is turned off on this Mac.")
+        );
+        // A result ends it...
+        list.on_event(&Event::Scanned(vec![]));
+        assert_eq!(list.scan_error, None);
+        // ...and so does the next scan, as it starts.
+        list.on_event(&scan_failed("Bluetooth isn't ready on this Mac."));
+        assert!(list.scan_error.is_some());
+        let _ = list.scan();
+        assert_eq!(list.scan_error, None);
+        assert!(list.is_scanning());
+    }
+
+    /// The sidebar's list with nothing known, driven by the events a test hands it.
+    fn found_nearby() -> Harness<'static, DeviceList> {
+        Harness::new_ui_state(
+            |ui, list: &mut DeviceList| {
+                let (mut device, mut found) = (None, None);
+                let selection = Selection {
+                    device: &mut device,
+                    found: &mut found,
+                };
+                let _ = list.show(ui, &AppState::default(), selection, 0);
+            },
+            DeviceList::default(),
+        )
+    }
+
+    const OFF: &str =
+        "Bluetooth is turned off on this Mac. Turn it on in System Settings, then try again.";
+
+    #[test]
+    fn a_failed_scan_says_why_in_found_nearby() {
+        // The first scan fails: Found Nearby shows, with the reason.
+        let mut harness = found_nearby();
+        let _ = harness.state_mut().scan();
+        harness.run_steps(2);
+        let _ = harness.get_by_label("Scanning…");
+        harness.state_mut().on_event(&scan_failed(OFF));
+        harness.run_steps(2);
+        let _ = harness.get_by_label("Found Nearby");
+        let _ = harness.get_by_label(&format!("Couldn't scan: {OFF}"));
+        assert!(harness.query_by_label("Scanning…").is_none());
+        assert!(
+            harness
+                .query_by_label("No new diffusers found nearby.")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_failed_scan_is_not_told_as_nothing_found() {
+        let mut harness = found_nearby();
+        // A scan that came back empty says so...
+        harness.state_mut().on_event(&Event::Scanned(vec![]));
+        harness.run_steps(2);
+        let _ = harness.get_by_label("No new diffusers found nearby.");
+        // ...but one that failed says why instead.
+        let _ = harness.state_mut().scan();
+        harness.state_mut().on_event(&scan_failed(OFF));
+        harness.run_steps(2);
+        let _ = harness.get_by_label(&format!("Couldn't scan: {OFF}"));
+        assert!(
+            harness
+                .query_by_label("No new diffusers found nearby.")
+                .is_none()
+        );
+        // The next scan shows "Scanning…" in its place, and its result replaces it.
+        let _ = harness.state_mut().scan();
+        harness.run_steps(2);
+        let _ = harness.get_by_label("Scanning…");
+        assert!(
+            harness
+                .query_by_label(&format!("Couldn't scan: {OFF}"))
+                .is_none()
+        );
+        harness.state_mut().on_event(&Event::Scanned(vec![]));
+        harness.run_steps(2);
+        let _ = harness.get_by_label("No new diffusers found nearby.");
+    }
+
     #[test]
     fn a_scan_ends_with_its_result_or_its_failure() {
         let mut list = DeviceList {
             scanning: Some(Instant::now()),
-            scanned: false,
+            ..DeviceList::default()
         };
         assert!(list.is_scanning());
         list.on_event(&Event::Scanned(vec![]));
