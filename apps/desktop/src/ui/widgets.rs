@@ -15,6 +15,8 @@
 //! - [`default_button`], [`plain_button`] and [`toolbar_button`]: push buttons. The
 //!   default one, filled in the accent color, is the one Return presses.
 //!   [`gear_button`] is the toolbar's way to Settings.
+//! - [`text_field`]: a one-line [`Field`], such as a diffuser's name. [`combo_field`] is
+//!   one with a list to pick from as well, as a Mac combo box, such as its room.
 //! - [`checkbox`]: for a choice that isn't a setting, such as a filter.
 //! - [`day_toggles`]: the days of the week, S M T W T F S, each on or off.
 //! - [`secondary`] and [`footnote`]: Subheadline text in the secondary label color, the
@@ -36,9 +38,9 @@ use eframe::egui::accesskit::Role;
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontSelection, Frame, Galley, Id, Margin, Rect, Response,
-    RichText, Sense, Stroke, StrokeKind, TextStyle, TextWrapMode, Ui, UiBuilder, WidgetInfo,
-    WidgetText, WidgetType, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontSelection, Frame, Galley, Id, Margin, Popup, Rect,
+    RectAlign, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, TextStyle, TextWrapMode,
+    Ui, UiBuilder, WidgetInfo, WidgetText, WidgetType, pos2, vec2,
 };
 
 use super::theme::{
@@ -82,6 +84,14 @@ const ROW_PADDING_Y: f32 = 4.0;
 /// Where [`row`] counts the rows of the box it is in, to draw a hairline above all but
 /// the first.
 const ROW_COUNT: &str = "grouped_rows";
+
+/// The space inside a text field around its text, as egui's own; and the width of the
+/// chevron at the end of a [`combo_field`].
+const FIELD_MARGIN: Margin = Margin::symmetric(4, 2);
+const CHEVRON_WIDTH: f32 = 20.0;
+
+/// Where a [`combo_field`] keeps whether its list is open, under the field's ID.
+const CHOICES: &str = "choices";
 
 /// A hairline: one physical pixel.
 pub fn hairline(ui: &Ui) -> f32 {
@@ -201,6 +211,148 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         focus_ring(ui, &response, rect, CornerRadius::from(radius));
     }
     response
+}
+
+/// A one-line text field for a [`row`]: what accessibility calls it (`label`, which isn't
+/// drawn, as the row shows it), what it shows while it is empty (`hint`), how wide it is,
+/// and how many characters it takes.
+pub struct Field<'a> {
+    pub id: Id,
+    pub label: &'a str,
+    pub hint: &'a str,
+    pub width: f32,
+    pub max_chars: usize,
+}
+
+impl Field<'_> {
+    fn edit<'t>(&self, text: &'t mut String) -> TextEdit<'t> {
+        TextEdit::singleline(text)
+            .id(self.id)
+            .hint_text(self.hint)
+            .desired_width(self.width)
+            .char_limit(self.max_chars)
+    }
+}
+
+/// A [`Field`] holding `text`. To accessibility it is a text input named by the field's
+/// label, its value the text and its placeholder the hint.
+pub fn text_field(ui: &mut Ui, text: &mut String, field: &Field<'_>) -> Response {
+    let response = ui.add(field.edit(text));
+    let label = field.label;
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_label(label));
+    response
+}
+
+/// What a [`combo_field`] did this frame.
+pub struct Combo {
+    /// The text field.
+    pub field: Response,
+    /// What was picked from the list, which is now in the field.
+    pub picked: Option<String>,
+}
+
+/// A combo box, as on the Mac: a [`text_field`] that takes any text, with a chevron at its
+/// trailing end that lists `choices`, the one in the field checked. Picking one puts it
+/// in the field. The chevron is a button named `chooser`, which says whether the list is
+/// open. With no choices it is a plain text field.
+pub fn combo_field(
+    ui: &mut Ui,
+    text: &mut String,
+    field: &Field<'_>,
+    choices: &[String],
+    chooser: &str,
+) -> Combo {
+    if choices.is_empty() {
+        let field = text_field(ui, text, field);
+        return Combo {
+            field,
+            picked: None,
+        };
+    }
+    let palette = Palette::of(ui);
+    // The text stops short of the chevron.
+    let margin = Margin {
+        right: FIELD_MARGIN.right + CHEVRON_WIDTH as i8,
+        ..FIELD_MARGIN
+    };
+    let response = ui.add(field.edit(text).margin(margin));
+    let label = field.label;
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_label(label));
+
+    let menu = field.id.with(CHOICES);
+    let open = Popup::is_id_open(ui.ctx(), menu);
+    let rect = Rect::from_min_max(
+        pos2(response.rect.right() - CHEVRON_WIDTH, response.rect.top()),
+        response.rect.max,
+    );
+    // Over the field's end, so that it takes the clicks there.
+    let button = ui.interact(rect, field.id.with("chevron"), Sense::click());
+    // Opening the list doesn't end the typing: the field keeps the focus, as on the Mac.
+    if button.clicked() && ui.memory(|memory| memory.had_focus_last_frame(field.id)) {
+        response.request_focus();
+    }
+    let enabled = ui.is_enabled();
+    button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, chooser));
+    ui.ctx()
+        .accesskit_node_builder(button.id, |node| node.set_expanded(open));
+    if ui.is_rect_visible(rect) {
+        let color = if !enabled {
+            palette.gray
+        } else if open || button.hovered() {
+            palette.label
+        } else {
+            palette.secondary_label
+        };
+        let center = rect.center();
+        let stroke = Stroke::new(1.5, color);
+        let painter = ui.painter();
+        painter.line_segment(
+            [center + vec2(-3.5, -1.75), center + vec2(0.0, 1.75)],
+            stroke,
+        );
+        painter.line_segment(
+            [center + vec2(0.0, 1.75), center + vec2(3.5, -1.75)],
+            stroke,
+        );
+        focus_ring(ui, &button, rect.shrink(2.0), CONTROL_RADIUS);
+    }
+
+    let mut picked = None;
+    let width = response.rect.width();
+    Popup::menu(&button)
+        .id(menu)
+        .anchor(response.rect)
+        .align(RectAlign::BOTTOM_START)
+        .show(|ui| {
+            // As wide as the field, as a Mac combo box's list is.
+            ui.set_min_width(width - ui.style().spacing.menu_margin.sum().x);
+            for choice in choices {
+                if ui.selectable_label(choice == text, choice).clicked() {
+                    picked = Some(choice.clone());
+                }
+            }
+        });
+    if let Some(choice) = &picked {
+        text.clone_from(choice);
+    }
+    Combo {
+        field: response,
+        picked,
+    }
+}
+
+/// Whether the list of the [`combo_field`] whose field is `field_id` is open, so that a
+/// sheet can leave Escape to it.
+pub fn combo_open(ctx: &egui::Context, field_id: Id) -> bool {
+    Popup::is_id_open(ctx, field_id.with(CHOICES))
+}
+
+/// Opens the list of the [`combo_field`] whose field is `field_id`, for the snapshots.
+#[cfg(test)]
+pub fn open_combo(ctx: &egui::Context, field_id: Id) {
+    Popup::open_id(ctx, field_id.with(CHOICES));
 }
 
 /// A checkbox with `label` beside it, in sentence case, for a choice that isn't a

@@ -10,13 +10,15 @@ use super::tests::{NOW, ONE, state};
 use super::{log_view, theme};
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
-use crate::state::{AppState, BrokerState};
+use crate::state::{AppState, BrokerState, Edit};
 
-/// The screens with what they asked for, for a test harness to drive.
+/// The screens with what they asked for, for a test harness to drive. The edits are made
+/// to the state as the app makes them.
 struct Rig {
     screens: Screens,
     state: AppState,
     commands: Vec<UiCommand>,
+    edits: Vec<Edit>,
 }
 
 /// A harness that draws the screens in egui's fonts, without a hub. The first frame
@@ -27,6 +29,7 @@ fn harness(state: AppState) -> egui_kittest::Harness<'static, Rig> {
         screens: Screens::new(None),
         state,
         commands: Vec::new(),
+        edits: Vec::new(),
     };
     egui_kittest::Harness::builder()
         .with_size(theme::WINDOW_SIZE)
@@ -43,6 +46,10 @@ fn harness(state: AppState) -> egui_kittest::Harness<'static, Rig> {
                     .screens
                     .show(ui, &rig.state, &BrokerSettings::default(), NOW);
                 rig.commands.extend(requests.commands);
+                for edit in requests.edits {
+                    rig.state.edit(edit.clone());
+                    rig.edits.push(edit);
+                }
             },
             rig,
         )
@@ -644,4 +651,367 @@ fn the_schedule_editor_calls_an_unnamed_diffuser_by_its_display_name() {
         node.label().is_some_and(|text| raw(&text)) || node.value().is_some_and(|text| raw(&text))
     });
     assert!(named_by_id.is_none());
+}
+
+/// Types `text` over what the Details field `label` holds and leaves it with `key`:
+/// Return to commit, Escape to put it back.
+fn type_over(
+    harness: &mut egui_kittest::Harness<'static, Rig>,
+    label: &str,
+    text: &str,
+    key: Option<Key>,
+) {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    harness
+        .get_by_role_and_label(Role::TextInput, label)
+        .focus();
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
+    if text.is_empty() {
+        harness.key_press(Key::Backspace);
+    } else {
+        harness
+            .get_by_role_and_label(Role::TextInput, label)
+            .type_text(text);
+    }
+    harness.run_steps(2);
+    if let Some(key) = key {
+        harness.key_press(key);
+        harness.run_steps(2);
+    }
+}
+
+/// Whether a node is labelled with a sentence that starts with `start`.
+fn starts(start: &'static str) -> impl Fn(&egui_kittest::kittest::AccessKitNode<'_>) -> bool {
+    move |node| node.label().is_some_and(|label| label.starts_with(start))
+}
+
+/// The state with the first diffuser off, as it last reported, and nothing on its way.
+fn calm() -> AppState {
+    let mut state = state();
+    state.devices.get_mut(ONE).unwrap().sent = None;
+    state
+}
+
+#[test]
+fn a_rename_in_details_shows_everywhere_at_once() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    let name = harness.get_by_role_and_label(Role::TextInput, "Name");
+    assert_eq!(name.value().as_deref(), Some("Bedroom"));
+
+    type_over(&mut harness, "Name", "  Bedside ", Some(Key::Enter));
+    let rig = harness.state();
+    assert_eq!(rig.state.devices[ONE].label, "Bedside");
+    assert_eq!(rig.edits.len(), 1, "{:?}", rig.edits);
+    // The header, the hero, the sidebar and the field itself, all at once.
+    let _ = harness.get_by_label("Bedside");
+    let _ = harness.get_by(|node| node.role() == Role::Group && starts("Bedside, ")(node));
+    assert!(harness.query_by(starts("Bedroom")).is_none());
+    let sidebar = harness.get_all_by(starts("Bedside, ")).count();
+    assert_eq!(sidebar, 2, "the sidebar row and the hero");
+    let name = harness.get_by_role_and_label(Role::TextInput, "Name");
+    assert_eq!(name.value().as_deref(), Some("Bedside"));
+    // The log's sentences.
+    show_log(&mut harness);
+    let _ = harness
+        .get_all_by_label("Turned Bedside on, over WiFi")
+        .next()
+        .expect("the log says the new name");
+}
+
+#[test]
+fn a_renamed_diffuser_goes_by_its_new_name_in_the_sheets() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Bedside", Some(Key::Tab));
+    assert_eq!(harness.state().state.devices[ONE].label, "Bedside");
+    // Edit Schedule's question.
+    open_schedule(&mut harness);
+    harness.get_by_label("Send Schedule").click();
+    harness.run_steps(2);
+    let _ = harness.get_by_label("Replace Bedside's stored schedule?");
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    // Set Up Again… fills the add sheet in with it.
+    harness.get_by_label("Set Up Again…").scroll_to_me();
+    harness.run_steps(4);
+    harness.get_by_label("Set Up Again…").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.add_sheet.is_open());
+    // The sheet's Name field, and Details' behind it.
+    let names: Vec<_> = harness
+        .get_all_by_role_and_label(Role::TextInput, "Name")
+        .map(|field| field.value())
+        .collect();
+    assert_eq!(
+        names,
+        [Some("Bedside".to_owned()), Some("Bedside".to_owned())]
+    );
+}
+
+#[test]
+fn escape_puts_the_name_back_and_changes_nothing() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Kitchen", Some(Key::Escape));
+    let rig = harness.state();
+    assert_eq!(rig.state.devices[ONE].label, "Bedroom");
+    assert!(rig.edits.is_empty(), "{:?}", rig.edits);
+    let name = harness.get_by_role_and_label(Role::TextInput, "Name");
+    assert_eq!(name.value().as_deref(), Some("Bedroom"));
+}
+
+#[test]
+fn an_empty_name_goes_back_to_the_model() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "", Some(Key::Enter));
+    assert_eq!(harness.state().state.devices[ONE].label, ONE);
+    // The model's name shows, and stands in the empty field.
+    let _ = harness.get_by(|node| node.role() == Role::Group && starts("Air 2, ")(node));
+    let name = harness.get_by_role_and_label(Role::TextInput, "Name");
+    assert_eq!(name.value().as_deref(), Some(""));
+    assert_eq!(name.accesskit_node().placeholder(), Some("Air 2"));
+    assert!(harness.query_by_label_contains("TESTDEVICE01,").is_none());
+}
+
+#[test]
+fn a_name_being_typed_is_kept_when_another_diffuser_is_chosen() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Bedside", None);
+    // A click on the other diffuser ends the typing: the name goes to the one it was for.
+    harness
+        .get_by_label("Diffuser CE02, not pinged yet")
+        .click();
+    harness.run_steps(2);
+    let rig = harness.state();
+    assert_eq!(rig.screens.selected.as_deref(), Some(super::tests::TWO));
+    assert_eq!(rig.state.devices[ONE].label, "Bedside");
+    assert_eq!(
+        rig.state.devices[super::tests::TWO].label,
+        super::tests::TWO
+    );
+}
+
+#[test]
+fn a_room_typed_in_details_groups_the_sidebar() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    // No rooms yet: the one "Diffusers" section of before.
+    let _ = harness.get_by_label("Diffusers");
+    assert!(harness.query_by_label("No Room").is_none());
+
+    type_over(&mut harness, "Room", "upstairs ", Some(Key::Enter));
+    assert_eq!(
+        harness.state().state.devices[ONE].room.as_deref(),
+        Some("upstairs")
+    );
+    assert!(harness.query_by_label("Diffusers").is_none());
+    // The room, then the diffusers in no room, each heading over its diffuser.
+    let top = |harness: &egui_kittest::Harness<'static, Rig>, node: &str| {
+        harness.get_by_label(node).rect().top()
+    };
+    let row = |harness: &egui_kittest::Harness<'static, Rig>, start| {
+        let row = |node: &egui_kittest::kittest::AccessKitNode<'_>| {
+            node.role() == Role::Button && starts(start)(node)
+        };
+        harness.get_by(row).rect().top()
+    };
+    let order = [
+        top(&harness, "upstairs"),
+        row(&harness, "Bedroom, "),
+        top(&harness, "No Room"),
+        row(&harness, "Diffuser CE02, "),
+    ];
+    assert!(order.is_sorted(), "{order:?}");
+}
+
+#[test]
+fn a_room_in_use_can_be_picked_from_the_list() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = calm();
+    state.devices.get_mut(ONE).unwrap().room = Some("Upstairs".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    harness
+        .get_by_label("Diffuser CE02, not pinged yet")
+        .click();
+    harness.run_steps(2);
+    let room = harness.get_by_role_and_label(Role::TextInput, "Room");
+    assert_eq!(room.value().as_deref(), Some(""));
+    harness
+        .get_by_role_and_label(Role::Button, "Choose a Room")
+        .click();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::Button, "Upstairs")
+        .click();
+    harness.run_steps(2);
+    let rig = harness.state();
+    assert_eq!(
+        rig.state.devices[super::tests::TWO].room.as_deref(),
+        Some("Upstairs")
+    );
+    // Both are in it now: one section, and no "No Room".
+    assert!(harness.query_by_label("No Room").is_none());
+    let room = harness.get_by_role_and_label(Role::TextInput, "Room");
+    assert_eq!(room.value().as_deref(), Some("Upstairs"));
+}
+
+#[test]
+fn set_up_again_keeps_the_room_it_is_in() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = state();
+    state.devices.get_mut(ONE).unwrap().room = Some("Upstairs".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    harness.get_by_label("Set Up Again…").scroll_to_me();
+    harness.run_steps(4);
+    harness.get_by_label("Set Up Again…").click();
+    harness.run_steps(2);
+    harness.get_by_label("Add").click();
+    harness.run_steps(2);
+    let [UiCommand::Add(request)] = &harness.state().commands[..] else {
+        panic!("one Add");
+    };
+    assert_eq!(
+        (request.label.as_str(), request.room.as_str()),
+        ("Bedroom", "Upstairs")
+    );
+}
+
+#[test]
+fn set_up_again_right_after_typing_a_name_opens_with_that_name() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    // Typed, and not left with Return: the click on the button ends the typing.
+    type_over(&mut harness, "Name", "Bedside", None);
+    harness.get_by_label("Set Up Again…").scroll_to_me();
+    harness.run_steps(4);
+    harness.get_by_label("Set Up Again…").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state.devices[ONE].label, "Bedside");
+    let names: Vec<_> = harness
+        .get_all_by_role_and_label(Role::TextInput, "Name")
+        .map(|field| field.value())
+        .collect();
+    assert_eq!(
+        names,
+        [Some("Bedside".to_owned()), Some("Bedside".to_owned())]
+    );
+    harness.get_by_label("Add").click();
+    harness.run_steps(2);
+    let [UiCommand::Add(request)] = &harness.state().commands[..] else {
+        panic!("one Add");
+    };
+    assert_eq!(request.label, "Bedside");
+}
+
+#[test]
+fn add_to_broker_right_after_typing_a_room_opens_with_that_room() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = calm();
+    let two = state.devices.get_mut(super::tests::TWO).unwrap();
+    two.ble_id = Some("ble-2".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    harness
+        .get_by_label("Diffuser CE02, not pinged yet")
+        .click();
+    harness.run_steps(2);
+    // The notice's button is above Details: it opens the sheet in the frame the typing ends.
+    type_over(&mut harness, "Room", "Office", None);
+    harness.get_by_label("Add to Broker…").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.add_sheet.is_for("ble-2"));
+    let rooms: Vec<_> = harness
+        .get_all_by_role_and_label(Role::TextInput, "Room")
+        .map(|field| field.value())
+        .collect();
+    assert_eq!(
+        rooms,
+        [Some("Office".to_owned()), Some("Office".to_owned())]
+    );
+}
+
+#[test]
+fn switching_to_another_app_while_typing_ends_nothing() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Bedsi", None);
+    harness.input_mut().focused = false;
+    harness.run_steps(2);
+    assert!(harness.state().edits.is_empty());
+    // Back in the app, the typing goes on, and Return ends it.
+    harness.input_mut().focused = true;
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Name")
+        .type_text("de");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state.devices[ONE].label, "Bedside");
+}
+
+#[test]
+fn the_list_of_rooms_opens_without_ending_the_typing() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut state = calm();
+    state.devices.get_mut(super::tests::TWO).unwrap().room = Some("Upstairs".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    type_over(&mut harness, "Room", "Up", None);
+    harness
+        .get_by_role_and_label(Role::Button, "Choose a Room")
+        .click();
+    harness.run_steps(2);
+    // Nothing half typed went into the state, and the field still has the typing.
+    assert!(harness.state().edits.is_empty());
+    let room = harness.get_by_role_and_label(Role::TextInput, "Room");
+    assert!(room.accesskit_node().is_focused());
+    harness
+        .get_by_role_and_label(Role::Button, "Upstairs")
+        .click();
+    harness.run_steps(2);
+    let picked = Edit::Room {
+        device_id: ONE.to_owned(),
+        room: "Upstairs".to_owned(),
+    };
+    assert_eq!(harness.state().edits, [picked]);
+}
+
+#[test]
+fn what_is_being_typed_is_kept_when_the_app_quits() {
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Bedside", None);
+    let edits = harness.state_mut().screens.end_typing();
+    let typed = Edit::Name {
+        device_id: ONE.to_owned(),
+        name: "Bedside".to_owned(),
+    };
+    assert_eq!(edits, [typed]);
 }

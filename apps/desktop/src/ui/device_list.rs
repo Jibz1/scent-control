@@ -1,7 +1,7 @@
-//! The sidebar, a source list: the known diffusers under "Diffusers", each on a glyph
-//! tile with its status dot and what it is doing in words, then what the Bluetooth scan
-//! found under "Found Nearby", with its signal. Along the bottom, the broker's state and
-//! the scan button.
+//! The sidebar, a source list: the known diffusers under "Diffusers", or under the names
+//! of their rooms once they are in rooms, each on a glyph tile with its status dot and
+//! what it is doing in words, then what the Bluetooth scan found under "Found Nearby",
+//! with its signal. Along the bottom, the broker's state and the scan button.
 
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,7 @@ use super::glyphs::{self, Ink, solid};
 use super::theme::{CONTROL_RADIUS, GRID, Palette, broker_color, status_color, subheadline};
 use super::widgets::{one_line, plain_button, secondary};
 use crate::hub::{SCAN_FAILED, UiCommand};
-use crate::state::{AppState, BrokerState, DeviceView, Event, Field, ScanHit};
+use crate::state::{AppState, BrokerState, DeviceView, Event, Field, ScanHit, same_room};
 
 /// How long "Scanning…" stays up if no answer ever comes. The hub gives up on a scan
 /// itself after 30 s.
@@ -39,6 +39,11 @@ const DOT_RING: f32 = 1.5;
 
 /// The signal bars at the end of a Found Nearby row.
 const BARS: egui::Vec2 = vec2(16.0, 11.0);
+
+/// The heading of the diffusers while none is in a room, and of those in no room once
+/// some are.
+const DIFFUSERS: &str = "Diffusers";
+const NO_ROOM: &str = "No Room";
 
 /// What is selected in the sidebar: a diffuser this app knows, or one found nearby.
 pub struct Selection<'a> {
@@ -70,6 +75,50 @@ pub fn unknown_hits(state: &AppState) -> Vec<&ScanHit> {
                 .any(|device| device.ble_id.as_deref() == Some(hit.ble_id.as_str()))
         })
         .collect()
+}
+
+/// One heading of the sidebar's diffusers, and the diffusers under it.
+pub struct Section<'a> {
+    pub heading: String,
+    pub devices: Vec<&'a DeviceView>,
+}
+
+/// The known diffusers as the sidebar lists them: a section for each room, in
+/// alphabetical order, then "No Room" for the rest. With no rooms at all, one section,
+/// "Diffusers", as before there were rooms. In each, the diffusers keep the state's order.
+pub fn sections(state: &AppState) -> Vec<Section<'_>> {
+    let rooms = state.rooms();
+    let mut sections: Vec<Section<'_>> = rooms
+        .into_iter()
+        .map(|heading| Section {
+            heading,
+            devices: Vec::new(),
+        })
+        .collect();
+    let mut rest = Vec::new();
+    for device in state.devices.values() {
+        let room = device.room.as_deref().and_then(|room| {
+            sections
+                .iter_mut()
+                .find(|section| same_room(&section.heading, room))
+        });
+        match room {
+            Some(section) => section.devices.push(device),
+            None => rest.push(device),
+        }
+    }
+    if !rest.is_empty() {
+        let heading = if sections.is_empty() {
+            DIFFUSERS
+        } else {
+            NO_ROOM
+        };
+        sections.push(Section {
+            heading: heading.to_owned(),
+            devices: rest,
+        });
+    }
+    sections
 }
 
 /// The power and intensity a diffuser is set to as far as this app knows: what was sent
@@ -190,15 +239,19 @@ impl DeviceList {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 // With none, the detail pane's empty state says how to find them.
-                if !state.devices.is_empty() {
-                    section_heading(ui, "Diffusers");
-                }
-                for device in state.devices.values() {
-                    let online = state.online(&device.id, now);
-                    let selected = found.is_none() && chosen.as_deref() == Some(device.id.as_str());
-                    if device_row(ui, device, online, selected).clicked() {
-                        *chosen = Some(device.id.clone());
-                        *found = None;
+                for (i, section) in sections(state).into_iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(2.0 * GRID);
+                    }
+                    section_heading(ui, &section.heading);
+                    for device in section.devices {
+                        let online = state.online(&device.id, now);
+                        let selected =
+                            found.is_none() && chosen.as_deref() == Some(device.id.as_str());
+                        if device_row(ui, device, online, selected).clicked() {
+                            *chosen = Some(device.id.clone());
+                            *found = None;
+                        }
                     }
                 }
                 let hits = unknown_hits(state);
@@ -227,12 +280,13 @@ impl DeviceList {
 }
 
 /// A section heading in the sidebar: Subheadline, in the secondary label color, lined
-/// up with the tiles.
+/// up with the tiles. A long room name is cut short to the sidebar's width.
 fn section_heading(ui: &mut egui::Ui, title: &str) {
     let color = Palette::of(ui).secondary_label;
     ui.horizontal(|ui| {
         ui.add_space(TILE_INSET);
-        ui.label(RichText::new(title).text_style(subheadline()).color(color));
+        let text = RichText::new(title).text_style(subheadline()).color(color);
+        ui.add(egui::Label::new(text).truncate());
     });
     ui.add_space(2.0);
 }
@@ -599,6 +653,70 @@ mod tests {
             .map(|hit| hit.name.as_str())
             .collect();
         assert_eq!(names, ["Air 2 new"]);
+    }
+
+    /// Each section's heading and its diffusers' IDs, in order.
+    fn headed(state: &AppState) -> Vec<(String, Vec<&str>)> {
+        sections(state)
+            .into_iter()
+            .map(|section| {
+                let ids = section.devices.iter().map(|d| d.id.as_str()).collect();
+                (section.heading, ids)
+            })
+            .collect()
+    }
+
+    fn in_rooms(rooms: &[(&str, Option<&str>)]) -> AppState {
+        let mut state = AppState::default();
+        for (id, room) in rooms {
+            let mut device = DeviceView::new(id);
+            device.room = room.map(str::to_owned);
+            state.devices.insert((*id).to_owned(), device);
+        }
+        state
+    }
+
+    #[test]
+    fn with_no_rooms_the_diffusers_are_one_section_as_before() {
+        let state = in_rooms(&[(ONE, None), ("TESTDEVICE02", None)]);
+        assert_eq!(
+            headed(&state),
+            [("Diffusers".to_owned(), vec![ONE, "TESTDEVICE02"])]
+        );
+        // None at all: no heading either.
+        assert!(sections(&AppState::default()).is_empty());
+    }
+
+    #[test]
+    fn the_diffusers_are_grouped_by_room_in_alphabetical_order_with_no_room_last() {
+        let state = in_rooms(&[
+            (ONE, Some("Office")),
+            ("TESTDEVICE02", None),
+            ("TESTDEVICE03", Some("bedroom")),
+            ("TESTDEVICE04", Some("Living Room")),
+            // From a file edited by hand: the same room in other capitals.
+            ("TESTDEVICE05", Some("Bedroom")),
+            ("TESTDEVICE06", None),
+        ]);
+        let heading = |text: &str| text.to_owned();
+        assert_eq!(
+            headed(&state),
+            [
+                (heading("bedroom"), vec!["TESTDEVICE03", "TESTDEVICE05"]),
+                (heading("Living Room"), vec!["TESTDEVICE04"]),
+                (heading("Office"), vec![ONE]),
+                (heading("No Room"), vec!["TESTDEVICE02", "TESTDEVICE06"]),
+            ]
+        );
+        // With every diffuser in a room, there is no "No Room".
+        let state = in_rooms(&[(ONE, Some("Office")), ("TESTDEVICE02", Some("Attic"))]);
+        assert_eq!(
+            headed(&state),
+            [
+                (heading("Attic"), vec!["TESTDEVICE02"]),
+                (heading("Office"), vec![ONE]),
+            ]
+        );
     }
 
     #[test]

@@ -187,10 +187,19 @@ pub fn name_from_model(model: &str) -> String {
 /// What a diffuser is called on screen: the name it was given, else its model ("Air 2",
 /// "HVAC 2"), else "Diffuser" and the last four characters of its ID. Never the raw ID.
 pub fn display_name(device: &DeviceView) -> String {
+    given_name(device).map_or_else(|| fallback_name(device), str::to_owned)
+}
+
+/// The name the person gave a diffuser, if they gave it one: its label, unless that is
+/// blank or still its ID.
+pub fn given_name(device: &DeviceView) -> Option<&str> {
     let named = !device.label.trim().is_empty() && device.label != device.id;
-    if named {
-        return device.label.clone();
-    }
+    named.then_some(device.label.as_str())
+}
+
+/// What a diffuser is called when it has no name of its own: its model, else "Diffuser"
+/// and the end of its ID.
+pub fn fallback_name(device: &DeviceView) -> String {
     match Model::of(device).name() {
         Some(model) => model.to_owned(),
         None => unknown_name(&device.id),
@@ -550,10 +559,16 @@ mod tests {
         assert_eq!(display_name(&unnamed(None)), "Diffuser CE01");
         assert_eq!(display_name(&unnamed(Some(""))), "Diffuser CE01");
         assert_eq!(display_name(&unnamed(Some("Mini"))), "Diffuser CE01");
-        // A name the person gave wins.
+        // A name the person gave wins; without it, it goes back to its model.
         let mut named = unnamed(Some("Hvac"));
+        assert_eq!(given_name(&named), None);
         named.label = "Hallway".to_owned();
         assert_eq!(display_name(&named), "Hallway");
+        assert_eq!(given_name(&named), Some("Hallway"));
+        assert_eq!(fallback_name(&named), "HVAC 2");
+        assert_eq!(fallback_name(&unnamed(None)), "Diffuser CE01");
+        named.label = "  ".to_owned();
+        assert_eq!(given_name(&named), None);
         // Nothing in the app shows the raw ID as a name.
         for device in [
             unnamed(None),

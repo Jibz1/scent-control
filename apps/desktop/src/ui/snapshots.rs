@@ -1,8 +1,10 @@
 //! Renders the screens to `target/snapshots/*.png`, so that the look can be judged
 //! without a screen: the main window in light and dark with the first diffuser
 //! diffusing at Medium and its Today strip, then with a command on its way; a diffuser
-//! that is off; the log open with one row open to its message; the empty state; a
-//! diffuser found nearby; the Settings window; the notices; the Add Diffuser sheet as it
+//! that is off; the diffusers grouped by room in the sidebar, with the name and room in
+//! Details and the list of rooms open; the log open with one row open to its message; the
+//! empty state; a diffuser found nearby; the Settings window; the notices; the Add
+//! Diffuser sheet as it
 //! opens, asks for a network, waits, is done, fails and asks for the network again; the
 //! Edit Schedule sheet with its week grid, valid and with a mistake; and the glyphs on
 //! their own at 1x and 2x. Uses the Mac's own fonts; the PNGs stay under `target/` and
@@ -20,6 +22,7 @@ use scent_core::{
 
 use super::Screens;
 use super::add_sheet::Target;
+use super::device_panel::DevicePanel;
 use super::glyphs::{self, Ink, Mark};
 use super::schedule_editor::{DraftEntry, test_time};
 use super::settings::{self, SettingsWindow};
@@ -406,6 +409,62 @@ fn main_window_with(
     })
 }
 
+/// How tall the window is in the renders of rooms, so that Details shows whole.
+const ROOMS_HEIGHT: f32 = 1000.0;
+
+/// The diffusers in rooms: the first, renamed "Bedside", and an Air 2 with no name in
+/// "Bedroom"; the HVAC 2 in "Living Room"; and a "Desk" Air 2, off, in no room.
+fn rooms_state() -> AppState {
+    let mut state = snapshot_state();
+    let air2 = |id: &str| DeviceInfo {
+        manufacturer_id: "TEST".into(),
+        model_name: "Diffuser".into(),
+        variant_name: "TEST".into(),
+        device_id: id.into(),
+        firmware: "2.30".into(),
+        wifi_configured: true,
+        wifi_status: 3,
+    };
+    let one = state.devices.get_mut(ONE).unwrap();
+    one.label = "Bedside".to_owned();
+    one.room = Some("Bedroom".to_owned());
+    state.devices.get_mut(TWO).unwrap().room = Some("Living Room".to_owned());
+    let mut unnamed = DeviceView::new("TESTDEVICE04");
+    unnamed.info = Some(air2("TESTDEVICE04"));
+    unnamed.room = Some("Bedroom".to_owned());
+    let mut desk = DeviceView::new("TESTDEVICE05");
+    desk.label = "Desk".to_owned();
+    desk.info = Some(air2("TESTDEVICE05"));
+    desk.ping_at = Some(NOW - 8);
+    desk.heard_wifi = Some(NOW - 7);
+    let off = Reading {
+        value: 0,
+        at: NOW - 7,
+        via: Via::Wifi,
+    };
+    desk.readings.insert(Field::Power, off);
+    for device in [unnamed, desk] {
+        state.devices.insert(device.id.clone(), device);
+    }
+    state
+}
+
+/// The main window with the diffusers in rooms, tall enough to show Details whole; with
+/// `choosing`, the list of rooms open in the first one's Room field.
+fn rooms(name: &str, dark: bool, choosing: bool) {
+    let state = rooms_state();
+    let mut screens = Screens::new(None);
+    screens.on_event(&Event::Scanned(state.scan.clone()));
+    let size = vec2(theme::WINDOW_SIZE[0], ROOMS_HEIGHT);
+    let _ = render(name, size, dark, move |ui| {
+        if choosing {
+            DevicePanel::as_choosing_room(ui.ctx(), ONE);
+        }
+        let _ = screens.show(ui, &state, &BrokerSettings::default(), NOW);
+        traffic_lights(ui);
+    });
+}
+
 /// The diffuser found nearby, read over Bluetooth as the add began: not on WiFi yet.
 const ADDED: &str = "TESTDEVICE03";
 const ADDED_BLE: &str = "ble-7";
@@ -442,6 +501,9 @@ fn adding_state(step: AddStep, reached: AddStep, network: Option<&str>) -> AppSt
     let adding = Adding {
         ble_id: ADDED_BLE.to_owned(),
         label: "Air 2".to_owned(),
+        room: None,
+        had_label: None,
+        had_room: None,
         network: network.map(str::to_owned),
         step,
         reached: Some(reached),
@@ -469,6 +531,7 @@ fn add_sheet(name: &str, dark: bool, at: AddRender) {
         screens.add_sheet.open(Target {
             ble_id: ADDED_BLE.to_owned(),
             name: "Air 2".to_owned(),
+            room: String::new(),
         });
         match at {
             AddRender::Ready => {}
@@ -752,6 +815,12 @@ fn render_screens() {
             screens.selected = Some(TWO.to_owned());
         },
     );
+
+    // The diffusers grouped by room in the sidebar, and the name and room in Details; then
+    // the list of rooms open, to pick one.
+    rooms("rooms_light", false, false);
+    rooms("rooms_dark", true, false);
+    rooms("rooms_list_light", false, true);
 
     // The log open, with the broker login's row open to its masked message.
     for (name, dark) in [("log_light", false), ("log_dark", true)] {

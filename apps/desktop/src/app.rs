@@ -188,18 +188,27 @@ impl eframe::App for ScentApp {
 
         let requests = self.screens.show(ui, &self.view, &self.broker, now);
         for command in requests.commands {
-            // The state follows the add from here, so that its name is given once it is
-            // done, even if the sheet has been closed.
+            // The state follows the add from here, so that its name and room are given
+            // once it is done, even if the sheet has been closed.
             if let UiCommand::Add(request) = &command {
                 let network = request.wifi.as_ref().map(|(network, _)| network.as_str());
                 self.change_state(|state| {
-                    state.begin_add(&request.ble_id, &request.label, network);
+                    state.begin_add(&request.ble_id, &request.label, &request.room, network);
                 });
             }
             self.hub.submit(command);
         }
         if let Some(submitted) = requests.settings {
             self.apply_settings(ui.ctx(), submitted);
+        }
+        if !requests.edits.is_empty() {
+            self.change_state(|state| {
+                for edit in requests.edits {
+                    state.edit(edit);
+                }
+            });
+            // A name or a room is the person's own work: saved at once.
+            self.save();
         }
 
         self.save_if_due();
@@ -216,6 +225,12 @@ impl eframe::App for ScentApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.drain_events();
+        let edits = self.screens.end_typing();
+        self.change_state(|state| {
+            for edit in edits {
+                state.edit(edit);
+            }
+        });
         self.save();
     }
 }

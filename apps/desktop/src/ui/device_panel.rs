@@ -1,21 +1,21 @@
 //! The open diffuser: its name and whether it answers, then the diffusion hero (what it
 //! is doing, and the power and intensity to change it), then grouped boxes, as in
 //! System Settings: "Schedule" (what this app sent, today's times, and Edit Schedule…),
-//! "Details" (the power source, the WiFi signal, the last report, the firmware and the
-//! ID) and "Connection" (Send Over, Read Status, and Set Up Again… for a diffuser on our
-//! broker).
+//! "Details" (its name and room, to change, then the power source, the WiFi signal, the
+//! last report, the firmware and the ID) and "Connection" (Send Over, Read Status, and Set
+//! Up Again… for a diffuser on our broker).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Id, RichText, Sense, vec2};
+use eframe::egui::{self, Id, Key, RichText, Sense, vec2};
 use scent_core::{Command, Level, Online, Via, expected_state, is_stale};
 
 use super::OpenSheet;
 use super::add_sheet::Target;
 use super::format::{
-    Model, Said, ago, capitalized, display_name, expected_text, name_from_model, power_source,
-    reading_text, signal, signal_quality, via_name,
+    Model, Said, ago, capitalized, display_name, expected_text, fallback_name, given_name,
+    name_from_model, power_source, reading_text, signal, signal_quality, via_name,
 };
 use super::glyphs::{signal_bars, solid};
 use super::hero::{self, HeroState};
@@ -23,12 +23,12 @@ use super::log_summary::failure_note;
 use super::theme::{GRID, Palette, SECTION_GAP, title1};
 use super::timeline::today_strip;
 use super::widgets::{
-    NoticeKind, footnote, free_row, grouped, grouped_with, notice, notice_with, one_line,
-    plain_button, row, segmented, value_with_note,
+    self, NoticeKind, combo_field, footnote, free_row, grouped, grouped_with, notice, notice_with,
+    one_line, plain_button, row, segmented, text_field, value_with_note,
 };
 use crate::hub::{UiCommand, on_our_broker};
 use crate::route::TransportPref;
-use crate::state::{AppState, DeviceView, Event, Field};
+use crate::state::{AppState, DeviceView, Edit, Event, Field, NAME_MAX_CHARS};
 
 /// How long "Sending…" stays up if no answer ever comes. A Bluetooth attempt is over in
 /// well under this, and the hub gives up on one itself after 30 s.
@@ -50,6 +50,14 @@ const WAITING: &str = "Sent, waiting for the diffuser";
 
 /// What Set Up Again… does, under the Connection box.
 const SET_UP_AGAIN: &str = "Points it at the broker in Settings and restarts it.";
+
+/// The width of the Name and Room fields in Details, as the add sheet's.
+const FIELD_WIDTH: f32 = super::add_sheet::FIELD_WIDTH;
+
+/// What the Room field shows when the diffuser is in none, and what its list button is
+/// called.
+pub const ROOM_HINT: &str = "None";
+pub const CHOOSE_ROOM: &str = "Choose a Room";
 
 /// How a reading looks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,9 +111,9 @@ pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     Some(expected_text(&expected_state(profile, now)))
 }
 
-/// The add sheet for a diffuser known over Bluetooth, named as it is, or after its model:
-/// to put it on our broker (Add to Broker…), or to point it at the broker in Settings
-/// again once it is there (Set Up Again…).
+/// The add sheet for a diffuser known over Bluetooth, named as it is, or after its model,
+/// and in the room it is in: to put it on our broker (Add to Broker…), or to point it at
+/// the broker in Settings again once it is there (Set Up Again…).
 fn add_target(device: &DeviceView) -> Option<Target> {
     let ble_id = device.ble_id.clone()?;
     let name = if device.label == device.id {
@@ -118,7 +126,8 @@ fn add_target(device: &DeviceView) -> Option<Target> {
     } else {
         device.label.clone()
     };
-    Some(Target { ble_id, name })
+    let room = device.room.clone().unwrap_or_default();
+    Some(Target { ble_id, name, room })
 }
 
 /// The intensity to show as chosen: the one we sent and is not yet reported, else the
@@ -233,6 +242,89 @@ fn failed_job(what: &str) -> Job<'_> {
     }
 }
 
+/// The ID of the Room field in Details, for `device_id`.
+fn room_field(device_id: &str) -> Id {
+    Id::new("details_room").with(device_id)
+}
+
+/// What is being typed in a Details field: for which diffuser, what the field held when the
+/// typing began, and what it holds now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Draft {
+    device_id: String,
+    was: String,
+    text: String,
+}
+
+/// `device` as it is once `edits` are made. The app makes them after the frame, so this is
+/// what a sheet opened in the frame that typing in Details ended starts from.
+fn after_edits(state: &AppState, device: &DeviceView, edits: &[Edit]) -> DeviceView {
+    if edits.is_empty() {
+        return device.clone();
+    }
+    let mut after = AppState {
+        devices: state.devices.clone(),
+        ..AppState::default()
+    };
+    for edit in edits {
+        after.edit(edit.clone());
+    }
+    after
+        .devices
+        .remove(&device.id)
+        .unwrap_or_else(|| device.clone())
+}
+
+/// Whether a Details field still has the keyboard focus, as egui keeps it: also while the
+/// window doesn't, when the person is in another app, so that the typing isn't ended.
+fn keeps_focus(ui: &egui::Ui, field: &egui::Response) -> bool {
+    ui.memory(|memory| memory.has_focus(field.id))
+}
+
+/// What a Details field for `device_id` shows: what is being typed in it, else `stored`.
+fn shown_text(draft: Option<&Draft>, device_id: &str, stored: &str) -> String {
+    match draft {
+        Some(draft) if draft.device_id == device_id => draft.text.clone(),
+        _ => stored.to_owned(),
+    }
+}
+
+/// Follows the typing in a Details field for `device_id`, which shows `stored` when it
+/// isn't being typed in and held `text` this frame. While the field has the focus
+/// (`focused`), the typing is kept in `draft`. Once it hasn't, the typing is over: Escape drops it, and
+/// otherwise it is what to change the field to, if that is a change. Typing left in another
+/// diffuser's field, as this one was chosen, is over too.
+fn typed(
+    draft: &mut Option<Draft>,
+    device_id: &str,
+    stored: &str,
+    text: String,
+    focused: bool,
+    escape: bool,
+) -> Option<Draft> {
+    let over = match draft.take() {
+        Some(mine) if mine.device_id == device_id => {
+            let mine = Draft { text, ..mine };
+            if focused {
+                *draft = Some(mine);
+                return None;
+            }
+            (!escape).then_some(mine)
+        }
+        left => {
+            if focused {
+                *draft = Some(Draft {
+                    device_id: device_id.to_owned(),
+                    was: stored.to_owned(),
+                    text,
+                });
+            }
+            left
+        }
+    };
+    over.filter(|draft| draft.text != draft.was)
+}
+
 #[derive(Default)]
 pub struct DevicePanel {
     /// The "Send Over" choice for each diffuser. Auto until it is changed.
@@ -244,6 +336,9 @@ pub struct DevicePanel {
     /// What last failed for each diffuser, for its hero to say until the next send to it
     /// or report from it: with the log hidden, a failure is never silent.
     failures: HashMap<String, Failure>,
+    /// The name and the room being typed in Details, until the field is left.
+    name: Option<Draft>,
+    room: Option<Draft>,
 }
 
 /// A failure as the hero says it, and when it happened.
@@ -369,6 +464,76 @@ impl DevicePanel {
         hero
     }
 
+    /// The Name and Room rows of Details: the name it was given (its model's name stands
+    /// in the empty field), and the room it is in, typed or picked from the rooms in use.
+    /// Returns the changes made in them.
+    fn naming_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        device: &DeviceView,
+    ) -> Vec<Edit> {
+        let mut edits = Vec::new();
+        let escape = ui.input(|input| input.key_pressed(Key::Escape));
+        let id = device.id.as_str();
+        row(ui, "Name", |ui| {
+            let stored = given_name(device).unwrap_or_default();
+            let hint = fallback_name(device);
+            let field = widgets::Field {
+                id: Id::new("details_name").with(id),
+                label: "Name",
+                hint: &hint,
+                width: FIELD_WIDTH,
+                max_chars: NAME_MAX_CHARS,
+            };
+            let mut text = shown_text(self.name.as_ref(), id, stored);
+            let field = text_field(ui, &mut text, &field);
+            let focused = keeps_focus(ui, &field);
+            if let Some(done) = typed(&mut self.name, id, stored, text, focused, escape) {
+                edits.push(Edit::Name {
+                    device_id: done.device_id,
+                    name: done.text,
+                });
+            }
+        });
+        row(ui, "Room", |ui| {
+            let stored = device.room.as_deref().unwrap_or_default();
+            let field = widgets::Field {
+                id: room_field(id),
+                label: "Room",
+                hint: ROOM_HINT,
+                width: FIELD_WIDTH,
+                max_chars: NAME_MAX_CHARS,
+            };
+            let mut text = shown_text(self.room.as_ref(), id, stored);
+            let combo = combo_field(ui, &mut text, &field, &state.rooms(), CHOOSE_ROOM);
+            let focused = keeps_focus(ui, &combo.field);
+            if combo.picked.is_some() {
+                // What was typed gives way to what was picked.
+                let _ = self.room.take_if(|draft| draft.device_id == id);
+            }
+            if let Some(done) = typed(&mut self.room, id, stored, text, focused, escape) {
+                edits.push(Edit::Room {
+                    device_id: done.device_id,
+                    room: done.text,
+                });
+            }
+            if let Some(room) = combo.picked {
+                edits.push(Edit::Room {
+                    device_id: id.to_owned(),
+                    room,
+                });
+            }
+        });
+        edits
+    }
+
+    /// Opens the list of rooms in the Room field of `device_id`, for the snapshots.
+    #[cfg(test)]
+    pub fn as_choosing_room(ctx: &egui::Context, device_id: &str) {
+        widgets::open_combo(ctx, room_field(device_id));
+    }
+
     /// What the person set on `device_id` and is on its way, for the snapshots.
     #[cfg(test)]
     pub fn as_sending(&mut self, device_id: &str, power: Option<bool>, intensity: Option<u8>) {
@@ -382,8 +547,25 @@ impl DevicePanel {
         self.asked.insert(device_id.to_owned(), asked);
     }
 
+    /// Ends the typing in Details when the panel isn't shown, such as when a diffuser found
+    /// nearby is chosen: what was typed is kept, as it is when the field is left.
+    pub fn end_typing(&mut self) -> Vec<Edit> {
+        let name = self.name.take().filter(|draft| draft.text != draft.was);
+        let room = self.room.take().filter(|draft| draft.text != draft.was);
+        let names = name.map(|draft| Edit::Name {
+            device_id: draft.device_id,
+            name: draft.text,
+        });
+        let rooms = room.map(|draft| Edit::Room {
+            device_id: draft.device_id,
+            room: draft.text,
+        });
+        names.into_iter().chain(rooms).collect()
+    }
+
     /// Shows the diffuser and returns the commands the controls asked for. `sheet` is set
-    /// when Edit Schedule…, Add to Broker… or Set Up Again… was clicked.
+    /// when Edit Schedule…, Add to Broker… or Set Up Again… was clicked, and the changes
+    /// made to its name and room go to `edits`.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -391,26 +573,24 @@ impl DevicePanel {
         device: &DeviceView,
         now: i64,
         sheet: &mut Option<OpenSheet>,
+        edits: &mut Vec<Edit>,
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         let mut pref = self.prefs.get(&device.id).copied().unwrap_or_default();
+        // Add to Broker… or Set Up Again… was clicked: the sheet opens at the end.
+        let mut open_add = false;
 
         header(ui, state.online(&device.id, now), device);
         if !on_our_broker(device) {
             ui.add_space(2.0 * GRID);
             let text = "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.";
-            match add_target(device) {
-                Some(target) => {
-                    let (add, _) = notice_with(ui, NoticeKind::Warning, text, |ui| {
-                        plain_button(ui, "Add to Broker…").clicked()
-                    });
-                    if add {
-                        *sheet = Some(OpenSheet::Add(target));
-                    }
-                }
-                None => {
-                    notice(ui, NoticeKind::Warning, text);
-                }
+            if add_target(device).is_some() {
+                let (add, _) = notice_with(ui, NoticeKind::Warning, text, |ui| {
+                    plain_button(ui, "Add to Broker…").clicked()
+                });
+                open_add |= add;
+            } else {
+                notice(ui, NoticeKind::Warning, text);
             }
         }
         ui.add_space(SECTION_GAP);
@@ -451,7 +631,9 @@ impl DevicePanel {
             *sheet = Some(OpenSheet::Schedule(device.id.clone()));
         }
         ui.add_space(SECTION_GAP);
-        details_box(ui, device, now);
+        details_box(ui, device, now, |ui| {
+            edits.extend(self.naming_rows(ui, state, device));
+        });
         ui.add_space(SECTION_GAP);
 
         let read_status = |ui: &mut egui::Ui| {
@@ -463,7 +645,7 @@ impl DevicePanel {
         };
         // Once it is on our broker, the notice and its Add to Broker… are gone: this is
         // the way to point it at the broker again, after the broker changes in Settings.
-        let again = on_our_broker(device).then(|| add_target(device)).flatten();
+        let again = on_our_broker(device) && add_target(device).is_some();
         let mut read = false;
         let mut set_up = false;
         grouped_with(
@@ -478,18 +660,16 @@ impl DevicePanel {
                             "Auto: Bluetooth when the diffuser is in range, otherwise WiFi",
                         );
                 });
-                if again.is_some() {
+                if again {
                     row(ui, "Broker", |ui| {
                         set_up = plain_button(ui, "Set Up Again…").clicked();
                     });
                 }
             },
         );
-        if let Some(target) = again {
+        if again {
             footnote(ui, SET_UP_AGAIN);
-            if set_up {
-                *sheet = Some(OpenSheet::Add(target));
-            }
+            open_add |= set_up;
         }
         // A read writes nothing and may say nothing, so it isn't waited for.
         if read {
@@ -499,6 +679,12 @@ impl DevicePanel {
             });
         }
         ui.add_space(SECTION_GAP);
+        // The click on the button may be what ended the typing in Details, this frame: the
+        // sheet starts from what was typed, not from the name or room before it.
+        if open_add {
+            let latest = after_edits(state, device, edits);
+            *sheet = add_target(&latest).map(OpenSheet::Add);
+        }
 
         self.prefs.insert(device.id.clone(), pref);
         commands
@@ -581,15 +767,22 @@ fn tone_color(palette: &Palette, tone: Tone) -> egui::Color32 {
     }
 }
 
-/// "Details": what the diffuser runs on, its WiFi signal (bars and words, the dBm in the
-/// tooltip), when it last said anything, its firmware and its ID.
-fn details_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
+/// "Details": the rows `naming_rows` adds first (its name and room), then what the
+/// diffuser runs on, its WiFi signal (bars and words, the dBm in the tooltip), when it last
+/// said anything, its firmware and its ID.
+fn details_box(
+    ui: &mut egui::Ui,
+    device: &DeviceView,
+    now: i64,
+    naming_rows: impl FnOnce(&mut egui::Ui),
+) {
     let palette = Palette::of(ui);
     let [source, wifi] = detail_rows(device, now);
     let value = |reading: &ReadingRow| {
         RichText::new(capitalized(&reading.value)).color(tone_color(&palette, reading.tone))
     };
     grouped(ui, "Details", |ui| {
+        naming_rows(ui);
         row(ui, "Power source", |ui| {
             value_with_note(ui, value(&source), source.note.as_deref());
         });
@@ -806,11 +999,54 @@ mod tests {
             add_target(&d),
             Some(Target {
                 ble_id: "ble-1".to_owned(),
-                name: "HVAC 2".to_owned()
+                name: "HVAC 2".to_owned(),
+                room: String::new(),
             })
         );
         d.label = "Hallway".to_owned();
-        assert_eq!(add_target(&d).unwrap().name, "Hallway");
+        d.room = Some("Upstairs".to_owned());
+        let target = add_target(&d).unwrap();
+        assert_eq!(
+            (target.name.as_str(), target.room.as_str()),
+            ("Hallway", "Upstairs")
+        );
+    }
+
+    #[test]
+    fn typing_in_a_field_is_kept_until_it_is_left_and_escape_drops_it() {
+        let mut draft = None;
+        let mut typing = |device: &str, text: &str, focused: bool, escape: bool| {
+            typed(
+                &mut draft,
+                device,
+                "Bedroom",
+                text.to_owned(),
+                focused,
+                escape,
+            )
+            .map(|done| (done.device_id, done.text))
+        };
+        // While the field has the focus, nothing is changed.
+        assert_eq!(typing(ID, "Bedr", true, false), None);
+        assert_eq!(typing(ID, "Bedside", true, false), None);
+        // Left, it is the change to make.
+        assert_eq!(
+            typing(ID, "Bedside", false, false),
+            Some((ID.to_owned(), "Bedside".to_owned()))
+        );
+        // Then nothing more: the typing is over.
+        assert_eq!(typing(ID, "Bedroom", false, false), None);
+        // Left with Escape, or left as it was, nothing.
+        typing(ID, "Kitchen", true, false);
+        assert_eq!(typing(ID, "Kitchen", false, true), None);
+        typing(ID, "Bedroom", true, false);
+        assert_eq!(typing(ID, "Bedroom", false, false), None);
+        // Typed for one diffuser, and left as another was chosen: made for the first.
+        typing(ID, "Bedside", true, false);
+        assert_eq!(
+            typing("TESTDEVICE02", "", false, false),
+            Some((ID.to_owned(), "Bedside".to_owned()))
+        );
     }
 
     #[test]
