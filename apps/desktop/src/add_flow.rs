@@ -34,6 +34,8 @@ pub struct AddRequest {
     pub ble_id: String,
     /// What to call it once it is added. Empty leaves its device ID as its name.
     pub label: String,
+    /// The room to put it in once it is added. Empty leaves it in the one it is in.
+    pub room: String,
     /// The network to join and its password, for a diffuser that isn't on WiFi yet.
     /// Sent once over Bluetooth and never kept.
     pub wifi: Option<(String, Secret)>,

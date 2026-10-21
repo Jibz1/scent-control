@@ -134,6 +134,7 @@ impl<T: Transport> Shared<T> {
         let AddRequest {
             ble_id,
             label: _,
+            room: _,
             wifi,
         } = request;
         let Some(in_progress) = self.start_add(&ble_id) else {
@@ -352,6 +353,7 @@ mod tests {
         AddRequest {
             ble_id: ble_id.to_owned(),
             label: "Bedroom".to_owned(),
+            room: String::new(),
             wifi: wifi.map(|(ssid, password)| (ssid.to_owned(), Secret::new(password.to_owned()))),
         }
     }

@@ -125,6 +125,8 @@ pub struct Target {
     pub ble_id: String,
     /// The name the field starts with.
     pub name: String,
+    /// The room the field starts with: empty for none.
+    pub room: String,
 }
 
 /// Where the sheet is, from the add the state follows for its diffuser.
@@ -153,6 +155,7 @@ pub struct AddSheet {
     /// The diffuser being added, while the sheet is open.
     target: Option<Target>,
     name: String,
+    room: String,
     network: String,
     /// What is typed in the masked field. Emptied when the sheet adds or closes.
     password: String,
@@ -168,9 +171,11 @@ impl AddSheet {
         Id::new("add_sheet_wifi_password")
     }
 
-    /// Opens the sheet for `target`, with its name in the field and the network empty.
+    /// Opens the sheet for `target`, with its name and room in the fields and the network
+    /// empty.
     pub fn open(&mut self, target: Target) {
         self.name.clone_from(&target.name);
+        self.room.clone_from(&target.room);
         self.target = Some(target);
         self.network = String::new();
         self.password = String::new();
@@ -296,7 +301,7 @@ impl AddSheet {
         }
     }
 
-    /// What Add hands the hub: the name, and the network when `wifi`. The password
+    /// What Add hands the hub: the name and room, and the network when `wifi`. The password
     /// moves out of the field into the [`Secret`], and the field and the text box's
     /// undo copy are emptied.
     fn submit(&mut self, ctx: &egui::Context, wifi: bool) -> UiCommand {
@@ -313,6 +318,7 @@ impl AddSheet {
         UiCommand::Add(AddRequest {
             ble_id,
             label: self.name.trim().to_owned(),
+            room: self.room.trim().to_owned(),
             wifi,
         })
     }
@@ -640,6 +646,7 @@ mod tests {
         let adding = Adding {
             ble_id: BLE.to_owned(),
             label: "Air 2".to_owned(),
+            room: String::new(),
             network: network.map(str::to_owned),
             step,
             reached,
@@ -655,6 +662,7 @@ mod tests {
         sheet.open(Target {
             ble_id: BLE.to_owned(),
             name: "Air 2".to_owned(),
+            room: String::new(),
         });
         sheet
     }

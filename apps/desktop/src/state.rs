@@ -33,6 +33,9 @@ const ADDED: &str = "Added: it joined your broker.";
 /// an acknowledgement on the broker. Matched in any case.
 const CREDENTIALS_SAVED: &str = "credentials saved";
 
+/// The most characters a diffuser's name or room may have.
+pub const NAME_MAX_CHARS: usize = 40;
+
 /// One value a diffuser reported, with when and over what it arrived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
@@ -95,6 +98,9 @@ pub struct DeviceView {
     pub id: String,
     /// What the user calls it. The ID until they rename it.
     pub label: String,
+    /// The room it is in, as the person named it; none until they give it one. Kept on
+    /// this Mac only: the sidebar groups the diffusers by it.
+    pub room: Option<String>,
     /// The Bluetooth peripheral ID, once it has been found over Bluetooth.
     pub ble_id: Option<String>,
     pub info: Option<DeviceInfo>,
@@ -124,6 +130,7 @@ impl DeviceView {
         DeviceView {
             id: id.to_owned(),
             label: id.to_owned(),
+            room: None,
             ble_id: None,
             info: None,
             readings: BTreeMap::new(),
@@ -210,6 +217,8 @@ pub struct Adding {
     pub ble_id: String,
     /// What it is to be called once it is added; empty keeps its device ID.
     pub label: String,
+    /// The room it goes in once it is added; empty leaves it in the one it is in.
+    pub room: String,
     /// The network it was given to join, if any: never its password.
     pub network: Option<String>,
     /// Where it is, as the hub last said.
@@ -283,6 +292,35 @@ pub enum Event {
     BrokerConnected,
     BrokerLoginRefused(String),
     BrokerDisconnected(String),
+}
+
+/// A change the person made to how this Mac knows a diffuser, in the screens. What they
+/// typed is tidied with [`clean_name`] as it is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    /// Renames it. An empty name takes its name away: the screens call it by its model.
+    Name { device_id: String, name: String },
+    /// Puts it in a room, spelled as the room in use when it is one in other capitals. An
+    /// empty room takes it out of any.
+    Room { device_id: String, room: String },
+}
+
+/// A name or a room as typed, tidied: no spaces at either end, one space between words, no
+/// control characters, and at most [`NAME_MAX_CHARS`] characters. Empty when nothing is
+/// left.
+pub fn clean_name(typed: &str) -> String {
+    let printable: String = typed
+        .chars()
+        .filter(|c| c.is_whitespace() || !c.is_control())
+        .collect();
+    let words = printable.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = words.chars().take(NAME_MAX_CHARS).collect();
+    cut.trim_end().to_owned()
+}
+
+/// Whether two rooms are one, as the person sees them: capitals don't make another room.
+pub fn same_room(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -395,10 +433,11 @@ impl AppState {
         }
     }
 
-    /// Starts following an add of the diffuser at `ble_id`, to be called `label`, given
-    /// `network` to join if any. The screens call it as they hand the add to the hub. An
-    /// add of it already under way is left as it is: the hub turns the new one down.
-    pub fn begin_add(&mut self, ble_id: &str, label: &str, network: Option<&str>) {
+    /// Starts following an add of the diffuser at `ble_id`, to be called `label` and put in
+    /// `room`, given `network` to join if any. The screens call it as they hand the add to
+    /// the hub. An add of it already under way is left as it is: the hub turns the new one
+    /// down.
+    pub fn begin_add(&mut self, ble_id: &str, label: &str, room: &str, network: Option<&str>) {
         if self
             .adding
             .get(ble_id)
@@ -409,6 +448,7 @@ impl AppState {
         let adding = Adding {
             ble_id: ble_id.to_owned(),
             label: label.to_owned(),
+            room: room.to_owned(),
             network: network.map(str::to_owned),
             step: AddStep::ReadInfo,
             reached: None,
@@ -417,8 +457,8 @@ impl AppState {
     }
 
     /// The hub says where the add of `ble_id` is. Once it is done, the diffuser takes its
-    /// name. How each add ended is logged, as its sheet may have been closed: a failure
-    /// as one, and an add as heard on the broker, where it showed up.
+    /// name and its room. How each add ended is logged, as its sheet may have been closed:
+    /// a failure as one, and an add as heard on the broker, where it showed up.
     fn on_adding(&mut self, ble_id: &str, step: AddStep, now: i64) {
         let adding = self
             .adding
@@ -426,6 +466,7 @@ impl AppState {
             .or_insert_with(|| Adding {
                 ble_id: ble_id.to_owned(),
                 label: String::new(),
+                room: String::new(),
                 network: None,
                 step: AddStep::ReadInfo,
                 reached: None,
@@ -434,13 +475,21 @@ impl AppState {
             adding.reached = Some(step.clone());
         }
         adding.step = step.clone();
-        let label = adding.label.clone();
+        let (label, room) = (adding.label.clone(), adding.room.clone());
         let (via, direction, text) = match step {
             AddStep::Done(id) => {
-                if let Some(device) = self.devices.get_mut(&id)
-                    && !label.is_empty()
-                {
-                    device.label = label;
+                if !label.is_empty() {
+                    let device_id = id.clone();
+                    self.edit(Edit::Name {
+                        device_id,
+                        name: label,
+                    });
+                }
+                if !room.is_empty() {
+                    self.edit(Edit::Room {
+                        device_id: id,
+                        room,
+                    });
                 }
                 (Some(Via::Wifi), Direction::FromDevice, ADDED.to_owned())
             }
@@ -461,6 +510,54 @@ impl AppState {
             text,
             sent: false,
         });
+    }
+
+    /// Makes a change the person asked for in the screens. A diffuser this app doesn't
+    /// know is left alone.
+    pub fn edit(&mut self, edit: Edit) {
+        match edit {
+            Edit::Name { device_id, name } => {
+                if let Some(device) = self.devices.get_mut(&device_id) {
+                    let name = clean_name(&name);
+                    device.label = if name.is_empty() { device_id } else { name };
+                }
+            }
+            Edit::Room { device_id, room } => {
+                let room = self.room_called(&room, &device_id);
+                if let Some(device) = self.devices.get_mut(&device_id) {
+                    device.room = room;
+                }
+            }
+        }
+    }
+
+    /// The rooms the diffusers are in, each once, in alphabetical order. Capitals don't
+    /// make another room: the first spelling, by device ID, is the one listed.
+    pub fn rooms(&self) -> Vec<String> {
+        let mut rooms: Vec<String> = Vec::new();
+        for room in self.devices.values().filter_map(|d| d.room.as_deref()) {
+            if !rooms.iter().any(|listed| same_room(listed, room)) {
+                rooms.push(room.to_owned());
+            }
+        }
+        rooms.sort_by_cached_key(|room| room.to_lowercase());
+        rooms
+    }
+
+    /// `typed` as the room of `device_id`: tidied, and spelled as the room another
+    /// diffuser is in when it is that one in other capitals. `None` when nothing is left.
+    fn room_called(&self, typed: &str, device_id: &str) -> Option<String> {
+        let room = clean_name(typed);
+        if room.is_empty() {
+            return None;
+        }
+        let in_use = self
+            .devices
+            .values()
+            .filter(|device| device.id != device_id)
+            .filter_map(|device| device.room.as_deref())
+            .find(|other| same_room(other, &room));
+        Some(in_use.map_or(room, str::to_owned))
     }
 
     /// Whether the diffuser answers pings. Only WiFi counts: the pings go over WiFi,
@@ -1751,7 +1848,7 @@ mod tests {
     #[test]
     fn an_add_follows_its_steps_and_names_the_diffuser_when_done() {
         let mut s = AppState::default();
-        s.begin_add(BLE1, "Bedroom", None);
+        s.begin_add(BLE1, "Bedroom", "", None);
         let current = s.adding[BLE1].clone();
         assert_eq!(
             (current.ble_id.as_str(), current.label.as_str()),
@@ -1780,7 +1877,7 @@ mod tests {
     #[test]
     fn an_add_with_no_name_keeps_the_device_id() {
         let mut s = known_air2();
-        s.begin_add(BLE1, "", None);
+        s.begin_add(BLE1, "", "", None);
         s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
         assert_eq!(s.devices[ID1].label, ID1);
     }
@@ -1789,7 +1886,7 @@ mod tests {
     fn a_failed_add_says_why_in_the_log_and_where_it_stopped() {
         let mut s = known_air2();
         let before = s.log.len();
-        s.begin_add(BLE1, "Bedroom", None);
+        s.begin_add(BLE1, "Bedroom", "", None);
         s.apply_at(adding(BLE1, AddStep::SaveMqtt), NOW);
         s.apply_at(adding(BLE1, AddStep::Failed("No answer.".into())), NOW);
         let current = &s.adding[BLE1];
@@ -1803,7 +1900,7 @@ mod tests {
         assert_eq!(logged[0].device_id.as_deref(), Some(ID1));
         assert_eq!(logged[0].via, None);
         // A new add starts over.
-        s.begin_add(BLE1, "Kitchen", Some("ExampleWiFi"));
+        s.begin_add(BLE1, "Kitchen", "", Some("ExampleWiFi"));
         let current = &s.adding[BLE1];
         assert_eq!(
             (current.step.clone(), current.reached.clone()),
@@ -1818,8 +1915,8 @@ mod tests {
     fn two_adds_are_followed_side_by_side_and_both_logged() {
         const BLE2: &str = "ble-peripheral-2";
         let mut s = AppState::default();
-        s.begin_add(BLE1, "Bedroom", None);
-        s.begin_add(BLE2, "Hallway", None);
+        s.begin_add(BLE1, "Bedroom", "", None);
+        s.begin_add(BLE2, "Hallway", "", None);
         s.apply_at(ble_info(BLE1, ID1, 10), NOW);
         s.apply_at(ble_info(BLE2, ID2, 11), NOW);
         let before = s.log.len();
@@ -1857,12 +1954,115 @@ mod tests {
     #[test]
     fn an_add_under_way_is_not_started_over() {
         let mut s = known_air2();
-        s.begin_add(BLE1, "Bedroom", None);
+        s.begin_add(BLE1, "Bedroom", "", None);
         s.apply_at(adding(BLE1, AddStep::WaitConnected), NOW);
-        s.begin_add(BLE1, "Kitchen", None);
+        s.begin_add(BLE1, "Kitchen", "", None);
         let current = &s.adding[BLE1];
         assert_eq!(current.step, AddStep::WaitConnected);
         assert_eq!(current.label, "Bedroom");
+    }
+
+    #[test]
+    fn an_add_puts_the_diffuser_in_its_room_when_done() {
+        let mut s = known_air2();
+        s.edit(Edit::Room {
+            device_id: ID1.into(),
+            room: "Office".into(),
+        });
+        s.begin_add(BLE1, "Bedside", " bedroom ", None);
+        assert_eq!(s.adding[BLE1].room, " bedroom ");
+        // Not before it is done.
+        s.apply_at(adding(BLE1, AddStep::WaitConnected), NOW);
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("Office"));
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("bedroom"));
+        // An add that names no room leaves it in the one it is in.
+        s.begin_add(BLE1, "Bedside", "", None);
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("bedroom"));
+    }
+
+    // Names and rooms
+
+    #[test]
+    fn a_typed_name_is_tidied() {
+        assert_eq!(clean_name("  Bedside  "), "Bedside");
+        assert_eq!(clean_name("Living \t  Room"), "Living Room");
+        assert_eq!(clean_name("Bed\u{7}side"), "Bedside");
+        assert_eq!(clean_name(" \n "), "");
+        // At most 40 characters, counted as characters rather than bytes.
+        let long = "Ä".repeat(50);
+        assert_eq!(clean_name(&long), "Ä".repeat(NAME_MAX_CHARS));
+        assert_eq!(NAME_MAX_CHARS, 40);
+        // Cut at a space, it doesn't end with one.
+        let spaced = format!("{} b", "a".repeat(39));
+        assert_eq!(clean_name(&spaced), "a".repeat(39));
+    }
+
+    #[test]
+    fn a_rename_is_tidied_and_an_empty_name_goes_back_to_none() {
+        let mut s = known_air2();
+        let rename = |s: &mut AppState, id: &str, name: &str| {
+            s.edit(Edit::Name {
+                device_id: id.into(),
+                name: name.into(),
+            });
+        };
+        rename(&mut s, ID1, "  Bedside  ");
+        assert_eq!(s.devices[ID1].label, "Bedside");
+        // No name: the label is its ID again, which the screens never show.
+        rename(&mut s, ID1, "   ");
+        assert_eq!(s.devices[ID1].label, ID1);
+        // A diffuser this app doesn't know is not made up.
+        rename(&mut s, ID2, "Hallway");
+        assert!(!s.devices.contains_key(ID2));
+    }
+
+    #[test]
+    fn a_room_takes_the_spelling_of_one_in_use_and_an_empty_room_is_none() {
+        const ID3: &str = "TESTDEVICE03";
+        let mut s = AppState::default();
+        for id in [ID1, ID2, ID3] {
+            s.devices.insert(id.to_owned(), DeviceView::new(id));
+        }
+        let room = |s: &mut AppState, id: &str, room: &str| {
+            s.edit(Edit::Room {
+                device_id: id.into(),
+                room: room.into(),
+            });
+        };
+        room(&mut s, ID1, " Living  Room ");
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("Living Room"));
+        // Typed in other capitals, it is the same room.
+        room(&mut s, ID2, "living room");
+        assert_eq!(s.devices[ID2].room.as_deref(), Some("Living Room"));
+        // The only diffuser in a room can change how it is spelled.
+        room(&mut s, ID3, "office");
+        room(&mut s, ID3, "Office");
+        assert_eq!(s.devices[ID3].room.as_deref(), Some("Office"));
+        room(&mut s, ID1, "  ");
+        assert_eq!(s.devices[ID1].room, None);
+        room(&mut s, "TESTDEVICE09", "Office");
+        assert!(!s.devices.contains_key("TESTDEVICE09"));
+    }
+
+    #[test]
+    fn the_rooms_in_use_are_listed_once_in_alphabetical_order() {
+        let mut s = AppState::default();
+        assert!(s.rooms().is_empty());
+        // As a hand-edited file could have them: the first spelling, by device ID, wins.
+        for (id, room) in [
+            (ID1, Some("Office")),
+            (ID2, Some("bedroom")),
+            ("TESTDEVICE03", Some("Bedroom")),
+            ("TESTDEVICE04", None),
+            ("TESTDEVICE05", Some("Attic")),
+        ] {
+            let mut device = DeviceView::new(id);
+            device.room = room.map(str::to_owned);
+            s.devices.insert(id.to_owned(), device);
+        }
+        assert_eq!(s.rooms(), ["Attic", "bedroom", "Office"]);
     }
 
     #[test]
@@ -1963,7 +2163,7 @@ mod tests {
         s.apply_at(Event::BrokerConnected, NOW);
         s.apply_at(fixture_event(CONNECTED_AGAIN, 4_003), NOW);
         s.apply_at(note(BLE1, "Credentials saved", 4_004), NOW);
-        s.begin_add(BLE1, "Bedroom", Some("ExampleWiFi"));
+        s.begin_add(BLE1, "Bedroom", "", Some("ExampleWiFi"));
 
         store.save(&s, &BrokerSettings::default()).unwrap();
         let loaded = store.load().state;

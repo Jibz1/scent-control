@@ -442,6 +442,7 @@ fn adding_state(step: AddStep, reached: AddStep, network: Option<&str>) -> AppSt
     let adding = Adding {
         ble_id: ADDED_BLE.to_owned(),
         label: "Air 2".to_owned(),
+        room: String::new(),
         network: network.map(str::to_owned),
         step,
         reached: Some(reached),
@@ -469,6 +470,7 @@ fn add_sheet(name: &str, dark: bool, at: AddRender) {
         screens.add_sheet.open(Target {
             ble_id: ADDED_BLE.to_owned(),
             name: "Air 2".to_owned(),
+            room: String::new(),
         });
         match at {
             AddRender::Ready => {}

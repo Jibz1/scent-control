@@ -198,6 +198,10 @@ impl From<StoredBroker> for BrokerSettings {
 struct StoredDevice {
     id: String,
     label: String,
+    /// The room it is in, as the person named it. Left out when it is in none, and
+    /// missing from files written before rooms were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    room: Option<String>,
     #[serde(default)]
     ble_id: Option<String>,
     #[serde(default)]
@@ -265,6 +269,7 @@ impl Stored {
                 .map(|device| StoredDevice {
                     id: device.id.clone(),
                     label: device.label.clone(),
+                    room: device.room.clone(),
                     ble_id: device.ble_id.clone(),
                     info: device.info.as_ref().map(StoredInfo::from),
                     readings: device
@@ -299,6 +304,11 @@ impl Stored {
             }
             let mut device = DeviceView::new(&stored.id);
             device.label = stored.label;
+            // Tidied as the app tidies what is typed, as it may have been typed here.
+            device.room = stored
+                .room
+                .map(|room| crate::state::clean_name(&room))
+                .filter(|room| !room.is_empty());
             device.ble_id = stored.ble_id;
             device.info = stored.info.map(DeviceInfo::from);
             device.sent_profile = stored.sent_profile.and_then(|profile| {
@@ -676,6 +686,60 @@ mod tests {
     }
 
     #[test]
+    fn a_room_is_saved_with_its_diffuser_and_left_out_when_it_has_none() {
+        let dir = TempDir::new("room-round-trip");
+        let mut s = AppState::default();
+        let mut one = DeviceView::new(ID1);
+        one.label = "Bedside".to_owned();
+        one.room = Some("Bedroom".to_owned());
+        s.devices.insert(ID1.to_owned(), one);
+        s.devices
+            .insert("TESTDEVICE02".to_owned(), DeviceView::new("TESTDEVICE02"));
+        store(&dir).save(&s, &BrokerSettings::default()).unwrap();
+
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.notice, None);
+        assert_eq!(loaded.state.devices, s.devices);
+        let text = fs::read_to_string(dir.path().join("desktop.json")).unwrap();
+        assert_eq!(text.matches("\"room\"").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn a_file_from_before_rooms_were_saved_loads_cleanly() {
+        let dir = TempDir::new("no-room");
+        fs::write(
+            dir.path().join("desktop.json"),
+            r#"{"devices":[{"id":"TESTDEVICE01","label":"Bedside","ble_id":"ble-1"}]}"#,
+        )
+        .unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.notice, None);
+        let device = &loaded.state.devices[ID1];
+        assert_eq!(device.label, "Bedside");
+        assert_eq!(device.room, None);
+        assert!(dir.path().join("desktop.json").exists());
+        assert!(!dir.path().join("desktop.json.corrupt").exists());
+    }
+
+    #[test]
+    fn a_room_typed_into_the_file_is_tidied_as_the_app_tidies_it() {
+        for (typed, room) in [
+            ("  Living   Room ", Some("Living Room")),
+            ("   ", None),
+            ("", None),
+        ] {
+            let dir = TempDir::new("hand-typed-room");
+            let file = format!(
+                r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedside","room":{typed:?}}}]}}"#
+            );
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            assert_eq!(loaded.notice, None, "{typed:?}");
+            assert_eq!(loaded.state.devices[ID1].room.as_deref(), room, "{typed:?}");
+        }
+    }
+
+    #[test]
     fn a_saved_schedule_that_cannot_be_used_is_left_out() {
         let good = r#"{"start":"07:00","end":"09:00","weekdays":[1],"level":2,"enable":true}"#;
         for bad in [
@@ -829,7 +893,8 @@ mod tests {
         );
         assert_eq!(Store::contents(&s, &broker).unwrap(), before);
 
-        // A reading, a name, a schedule sent or the broker's address does change it.
+        // A reading, a name, a room, a schedule sent or the broker's address does change
+        // it.
         let mut changed = s.clone();
         changed
             .devices
@@ -843,6 +908,9 @@ mod tests {
         let mut renamed = s.clone();
         renamed.devices.get_mut(ID1).unwrap().label = "Bedroom".into();
         assert_ne!(Store::contents(&renamed, &broker).unwrap(), before);
+        let mut moved = s.clone();
+        moved.devices.get_mut(ID1).unwrap().room = Some("Bedroom".into());
+        assert_ne!(Store::contents(&moved, &broker).unwrap(), before);
         let mut scheduled = s.clone();
         scheduled.devices.get_mut(ID1).unwrap().sent_profile = Some(sent_schedule());
         assert_ne!(Store::contents(&scheduled, &broker).unwrap(), before);

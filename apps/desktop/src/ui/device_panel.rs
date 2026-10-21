@@ -103,9 +103,9 @@ pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     Some(expected_text(&expected_state(profile, now)))
 }
 
-/// The add sheet for a diffuser known over Bluetooth, named as it is, or after its model:
-/// to put it on our broker (Add to Broker…), or to point it at the broker in Settings
-/// again once it is there (Set Up Again…).
+/// The add sheet for a diffuser known over Bluetooth, named as it is, or after its model,
+/// and in the room it is in: to put it on our broker (Add to Broker…), or to point it at
+/// the broker in Settings again once it is there (Set Up Again…).
 fn add_target(device: &DeviceView) -> Option<Target> {
     let ble_id = device.ble_id.clone()?;
     let name = if device.label == device.id {
@@ -118,7 +118,8 @@ fn add_target(device: &DeviceView) -> Option<Target> {
     } else {
         device.label.clone()
     };
-    Some(Target { ble_id, name })
+    let room = device.room.clone().unwrap_or_default();
+    Some(Target { ble_id, name, room })
 }
 
 /// The intensity to show as chosen: the one we sent and is not yet reported, else the
@@ -806,11 +807,17 @@ mod tests {
             add_target(&d),
             Some(Target {
                 ble_id: "ble-1".to_owned(),
-                name: "HVAC 2".to_owned()
+                name: "HVAC 2".to_owned(),
+                room: String::new(),
             })
         );
         d.label = "Hallway".to_owned();
-        assert_eq!(add_target(&d).unwrap().name, "Hallway");
+        d.room = Some("Upstairs".to_owned());
+        let target = add_target(&d).unwrap();
+        assert_eq!(
+            (target.name.as_str(), target.room.as_str()),
+            ("Hallway", "Upstairs")
+        );
     }
 
     #[test]

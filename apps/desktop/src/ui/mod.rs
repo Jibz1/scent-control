@@ -300,6 +300,7 @@ impl Screens {
                 *sheet = Some(OpenSheet::Add(Target {
                     ble_id: hit.ble_id.clone(),
                     name,
+                    room: String::new(),
                 }));
             }
             return;
