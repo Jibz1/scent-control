@@ -146,6 +146,7 @@ close Scentiment's app, or turn your phone's Bluetooth off, while you use this o
 
 ## Docs
 
+- [docs/releases.md](docs/releases.md): independent component versions and Git tags.
 - [docs/findings.md](docs/findings.md): what we know about the devices and their
   protocol, with dates and sources.
 - [The design](docs/superpowers/specs/2026-10-20-scent-control-design.md): goals,
