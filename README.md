@@ -1,7 +1,8 @@
 # Scent Control
 
-A self-hosted app and server for Scentiment smart diffusers. It sets them up on your
-WiFi, controls them, and runs their schedules without Scentiment's cloud.
+An **experimental, throwaway project** for controlling Scentiment smart diffusers
+without Scentiment's cloud. Built for personal tinkering, with no guarantees of
+stability, support, or continued development.
 
 > **Status:** the macOS desktop app sets up and controls the Diffuser Air 2 and
 > HVAC 2, over Bluetooth and over WiFi through our own MQTT broker. The owner is
@@ -13,6 +14,8 @@ Scentiment's official app has to reach Scentiment's servers before it will set u
 control a diffuser. The app is not reliable also I wanted something to work with other brand and possibly HomeKit support.
 
 ## Where it stands
+
+The phases below are tentative and may change or be abandoned.
 
 | Phase | What | Status |
 |---|---|---|
