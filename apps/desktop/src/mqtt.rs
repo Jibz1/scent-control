@@ -28,6 +28,9 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// How many commands can wait for the worker.
 const QUEUE: usize = 16;
 
+/// What the app is told when the worker's thread dies in a panic. Nothing restarts it.
+const STOPPED_UNEXPECTEDLY: &str = "The broker connection stopped unexpectedly. Restart the app.";
+
 /// The largest MQTT packet the connection writes or reads, both ways. rumqttc's default
 /// is 10 KiB, and a packet over it is not sent: the connection drops and the message is
 /// lost, though `send` has already said it was queued. A full schedule on firmware 2.30
@@ -146,7 +149,8 @@ impl RetryPolicy {
 pub struct MqttHandle {
     /// `None` when the worker never started (a bad broker address).
     client: Option<AsyncClient>,
-    /// True from the ConnAck until the connection drops.
+    /// True from the ConnAck until the connection drops or the worker's thread ends
+    /// (see [`WorkerExit`]).
     connected: Arc<AtomicBool>,
     /// The worker ends when this goes away.
     _stop: Option<oneshot::Sender<()>>,
@@ -154,7 +158,8 @@ pub struct MqttHandle {
 
 impl MqttHandle {
     /// Whether the broker is connected right now: true from the ConnAck until the
-    /// connection drops, and never true for a worker that did not start.
+    /// connection drops or the worker stops, and never true for a worker that did not
+    /// start.
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
     }
@@ -162,7 +167,8 @@ impl MqttHandle {
     /// Queues `cmd` for the diffuser, as a QoS 1 message on its device topic, and
     /// returns without waiting for the network. It refuses a bad device ID, and
     /// refuses while the broker isn't connected so that nothing waits in the queue
-    /// to go out minutes later, when the user no longer expects it.
+    /// to go out minutes later, when the user no longer expects it. Once the worker
+    /// has stopped, even in a panic, it is never connected again.
     pub fn send(&self, device_id: &str, cmd: &Command) -> Result<(), String> {
         if !valid_device_id(device_id) {
             return Err(format!("{device_id:?} is not a valid device ID."));
@@ -265,10 +271,28 @@ struct Worker {
     repaint: Box<dyn Fn() + Send>,
 }
 
+/// Held by the worker's thread for as long as it runs. When the thread ends, however it
+/// ends, a panic in rumqttc included, the connection flag goes down with it, so the app
+/// no longer believes it is connected and [`MqttHandle::send`] refuses. A panic is also
+/// told to the app, as nothing else would tell it; an ordinary end has been told already
+/// (a refused login) or nobody is listening (the handle was dropped).
+struct WorkerExit<'a>(&'a Worker);
+
+impl Drop for WorkerExit<'_> {
+    fn drop(&mut self) {
+        self.0.connected.store(false, Ordering::SeqCst);
+        if std::thread::panicking() {
+            self.0
+                .emit(Event::BrokerDisconnected(STOPPED_UNEXPECTEDLY.to_owned()));
+        }
+    }
+}
+
 impl Worker {
     /// Runs the connection until the handle is dropped, the login is refused or the
     /// app stops listening.
     fn run(self, eventloop: EventLoop, stopped: oneshot::Receiver<()>) {
+        let _exit = WorkerExit(&self);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
@@ -282,7 +306,7 @@ impl Worker {
         }
     }
 
-    async fn poll_forever(self, mut eventloop: EventLoop, mut stopped: oneshot::Receiver<()>) {
+    async fn poll_forever(&self, mut eventloop: EventLoop, mut stopped: oneshot::Receiver<()>) {
         loop {
             let polled = tokio::select! {
                 _ = &mut stopped => break,
@@ -318,7 +342,6 @@ impl Worker {
                 break;
             }
         }
-        self.connected.store(false, Ordering::SeqCst);
     }
 
     /// A ConnAck means the login was accepted (rumqttc turns any other code into an
@@ -365,6 +388,71 @@ mod tests {
             _stop: None,
         };
         (handle, eventloop)
+    }
+
+    /// A worker that reports into a channel and counts its repaints, sharing its
+    /// connection flag with a handle, as `spawn` makes them; nothing polls the client.
+    fn worker_and_handle() -> (
+        Worker,
+        MqttHandle,
+        rumqttc::EventLoop,
+        std::sync::mpsc::Receiver<Event>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let (mut handle, eventloop) = handle(true);
+        let connected = Arc::new(AtomicBool::new(true));
+        handle.connected = Arc::clone(&connected);
+        let (events, received) = std::sync::mpsc::channel();
+        let repaints = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&repaints);
+        let worker = Worker {
+            connected,
+            events,
+            repaint: Box::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        };
+        (worker, handle, eventloop, received, repaints)
+    }
+
+    #[test]
+    fn a_worker_that_panics_says_so_and_takes_the_connection_down_with_it() {
+        let (worker, handle, _eventloop, received, repaints) = worker_and_handle();
+        assert!(handle.is_connected());
+        let ended = std::thread::spawn(move || {
+            let _exit = WorkerExit(&worker);
+            panic!("rumqttc fell over");
+        })
+        .join();
+        assert!(ended.is_err(), "the thread panicked");
+        assert!(!handle.is_connected());
+        assert!(handle.send("TESTDEVICE01", &Command::GetStatus).is_err());
+        assert_eq!(
+            received.try_recv(),
+            Ok(Event::BrokerDisconnected(
+                "The broker connection stopped unexpectedly. Restart the app.".to_owned()
+            ))
+        );
+        // ...followed by a repaint, so that the footer says so at once.
+        assert_eq!(repaints.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_worker_that_ends_on_its_own_takes_the_connection_down_and_says_nothing_more() {
+        // Its handle was dropped, or the login was refused, which it has said already.
+        let (worker, handle, _eventloop, received, repaints) = worker_and_handle();
+        std::thread::spawn(move || {
+            let _exit = WorkerExit(&worker);
+        })
+        .join()
+        .unwrap();
+        assert!(!handle.is_connected());
+        assert!(handle.send("TESTDEVICE01", &Command::GetStatus).is_err());
+        assert_eq!(
+            received.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
+        assert_eq!(repaints.load(Ordering::SeqCst), 0);
     }
 
     #[test]
