@@ -442,8 +442,8 @@ impl DevicePanel {
             .copied()
     }
 
-    /// What last failed for `device`, unless it has reported since.
-    fn failure(&self, device: &DeviceView) -> Option<&str> {
+    /// What last failed for `device`, unless it has reported since: what its hero says.
+    pub(crate) fn failure(&self, device: &DeviceView) -> Option<&str> {
         let failure = self.failures.get(&device.id)?;
         let reported = device
             .readings
