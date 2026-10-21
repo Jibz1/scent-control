@@ -381,7 +381,7 @@ mod tests {
     fn log_sentences() {
         let save = Command::SaveMqtt {
             broker: "wss://broker.example/mqtt".to_owned(),
-            username: "scent-test".to_owned(),
+            username: "example-user".to_owned(),
             password: Secret::new("hunter2".to_owned()),
         };
         let join = Command::WifiConnect {
@@ -604,7 +604,7 @@ mod tests {
     fn a_secret_never_reaches_a_sentence() {
         let save = Command::SaveMqtt {
             broker: "wss://broker.example/mqtt".to_owned(),
-            username: "scent-test".to_owned(),
+            username: "example-user".to_owned(),
             password: Secret::new("hunter2".to_owned()),
         };
         // As logged (masked), and even as a frame that somehow wasn't.
@@ -613,7 +613,13 @@ mod tests {
         bare.text = String::from_utf8(save.ble_frame()).unwrap();
         for entry in [masked, bare] {
             let said = sentence(&entry, "Bedroom");
-            for secret in ["hunter2", "***", "password", "scent-test", "broker.example"] {
+            for secret in [
+                "hunter2",
+                "***",
+                "password",
+                "example-user",
+                "broker.example",
+            ] {
                 assert!(!said.contains(secret), "{said:?} has {secret:?}");
             }
         }

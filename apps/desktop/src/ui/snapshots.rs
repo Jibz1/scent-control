@@ -121,7 +121,7 @@ fn snapshot_state() -> AppState {
     }];
     let save = Command::SaveMqtt {
         broker: "wss://broker.example/mqtt".to_owned(),
-        username: "scent-test".to_owned(),
+        username: "example-user".to_owned(),
         password: Secret::new("hunter2".to_owned()),
     };
     let sent = |cmd: &Command, via| (cmd.redacted(via), cmd.action(via));
