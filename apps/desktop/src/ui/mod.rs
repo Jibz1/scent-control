@@ -44,7 +44,7 @@ use self::log_view::LogView;
 use self::schedule_editor::ScheduleEditor;
 use self::settings::{SettingsWindow, Submitted};
 use self::theme::{
-    CONTENT_MAX_WIDTH, GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+    Appearance, CONTENT_MAX_WIDTH, GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_TOP_INSET, SIDEBAR_WIDTH, TOOLBAR_HEIGHT,
 };
 use self::widgets::{
@@ -76,6 +76,8 @@ pub struct Requests {
     pub settings: Option<Submitted>,
     /// Changes to a diffuser's name or room, for the app to make to the state and save.
     pub edits: Vec<Edit>,
+    /// The appearance chosen in Settings. It is shown already; the app saves it.
+    pub appearance: Option<Appearance>,
 }
 
 /// What the screens remember between frames. The hub never sees any of it.
@@ -263,6 +265,7 @@ impl Screens {
         requests.commands.extend(sheets.into_iter().flatten());
 
         requests.settings = self.settings.show(ui.ctx(), &state.broker);
+        requests.appearance = self.settings.take_appearance();
         requests
     }
 
@@ -559,13 +562,13 @@ mod tests {
             state.broker = broker;
             let requests = draw(&mut screens, &state);
             assert!(requests.commands.is_empty() && requests.settings.is_none());
-            assert!(requests.edits.is_empty());
+            assert!(requests.edits.is_empty() && requests.appearance.is_none());
         }
         // The first diffuser is open, and the log and the Settings window draw too.
         assert_eq!(screens.selected.as_deref(), Some(ONE));
         screens.settings.open(&BrokerSettings::default());
         let requests = draw(&mut screens, &state);
-        assert!(requests.settings.is_none());
+        assert!(requests.settings.is_none() && requests.appearance.is_none());
         // With nothing known at all.
         let requests = draw(&mut Screens::new(None), &AppState::default());
         assert!(requests.commands.is_empty());

@@ -1,10 +1,10 @@
 //! The app's memory between runs: the diffusers it knows, their names, their last
-//! readings and the last schedule this Mac sent each, and where the broker is, in
-//! `desktop.json`.
+//! readings and the last schedule this Mac sent each, where the broker is, and how the
+//! app looks, in `desktop.json`.
 //!
-//! The file holds devices and the broker's address and nothing else: no log, no live
-//! status, and no secrets (the broker password lives in the Keychain, and WiFi
-//! passwords are never kept; a schedule is times, days and levels).
+//! The file holds devices, the broker's address and the appearance and nothing else: no
+//! log, no live status, and no secrets (the broker password lives in the Keychain, and
+//! WiFi passwords are never kept; a schedule is times, days and levels).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mqtt::{BrokerSettings, BrokerUrl};
 use crate::state::{AppState, DeviceView, Field, Reading};
+use crate::ui::theme::Appearance;
 
 const FILE_NAME: &str = "desktop.json";
 const TEMP_NAME: &str = "desktop.json.tmp";
@@ -37,6 +38,8 @@ pub struct Loaded {
     pub state: AppState,
     /// The default settings when the file doesn't say.
     pub broker: BrokerSettings,
+    /// How the app looks, as chosen in Settings: the system's when the file doesn't say.
+    pub appearance: Appearance,
     /// Set when there was a file and it could not be used, for the screens to show.
     pub notice: Option<String>,
 }
@@ -46,6 +49,7 @@ impl Loaded {
         Loaded {
             state: AppState::default(),
             broker: BrokerSettings::default(),
+            appearance: Appearance::System,
             notice,
         }
     }
@@ -116,19 +120,25 @@ impl Store {
         }
     }
 
-    /// What [`write`](Self::write) writes for this state: the devices and the broker
-    /// settings, as JSON. Only what the file holds is in it, so two states give the
+    /// What [`write`](Self::write) writes for this state: the devices, the broker
+    /// settings and the appearance, as JSON. Only what the file holds is in it, so two states give the
     /// same bytes exactly when what would be saved is the same.
-    pub fn contents(state: &AppState, broker: &BrokerSettings) -> io::Result<Vec<u8>> {
-        serde_json::to_vec_pretty(&Stored::from_state(state, broker)).map_err(io::Error::other)
+    pub fn contents(
+        state: &AppState,
+        broker: &BrokerSettings,
+        appearance: Appearance,
+    ) -> io::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(&Stored::from_state(state, broker, appearance))
+            .map_err(io::Error::other)
     }
 
-    /// Writes the devices and the broker settings (see [`contents`](Self::contents)).
+    /// Writes the devices and the broker settings, with the system's appearance (see
+    /// [`contents`](Self::contents)).
     /// The app writes through `contents` and `write` instead, so as to leave the file
     /// alone when it would not change.
     #[cfg(test)]
     pub fn save(&self, state: &AppState, broker: &BrokerSettings) -> io::Result<()> {
-        self.write(&Self::contents(state, broker)?)
+        self.write(&Self::contents(state, broker, Appearance::System)?)
     }
 
     /// Writes the file. It is written whole under another name and then renamed over
@@ -157,6 +167,38 @@ struct Stored {
     /// Missing from files written before the settings were kept.
     #[serde(default)]
     broker: StoredBroker,
+    /// How the app looks. Left out while it follows the system, and missing from files
+    /// written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ui: Option<StoredUi>,
+}
+
+/// The app's own settings, apart from the broker's.
+#[derive(Serialize, Deserialize)]
+struct StoredUi {
+    /// `"light"` or `"dark"`. Missing, or one the app doesn't know, means the system's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    appearance: Option<String>,
+}
+
+impl StoredUi {
+    /// `None` for the system's appearance, so that the file leaves `ui` out.
+    fn for_appearance(appearance: Appearance) -> Option<StoredUi> {
+        (appearance != Appearance::System).then(|| StoredUi {
+            appearance: Some(appearance_key(appearance).to_owned()),
+        })
+    }
+
+    /// The appearance saved in `ui`, or the system's.
+    fn appearance(ui: Option<StoredUi>) -> Appearance {
+        let Some(key) = ui.and_then(|ui| ui.appearance) else {
+            return Appearance::System;
+        };
+        appearance_from_key(&key).unwrap_or_else(|| {
+            eprintln!("scent-control: ignoring the saved appearance {key:?}: not one we know");
+            Appearance::System
+        })
+    }
 }
 
 /// Where the broker is. Not the password: that is in the Keychain.
@@ -260,9 +302,10 @@ struct StoredReading {
 }
 
 impl Stored {
-    fn from_state(state: &AppState, broker: &BrokerSettings) -> Stored {
+    fn from_state(state: &AppState, broker: &BrokerSettings, appearance: Appearance) -> Stored {
         Stored {
             broker: broker.into(),
+            ui: StoredUi::for_appearance(appearance),
             devices: state
                 .devices
                 .values()
@@ -349,6 +392,7 @@ impl Stored {
         Loaded {
             state,
             broker,
+            appearance: StoredUi::appearance(self.ui),
             notice,
         }
     }
@@ -458,6 +502,20 @@ fn flag_from_key(key: &str) -> Option<ScheduleFlag> {
     [ScheduleFlag::Replace, ScheduleFlag::AlwaysOnOnly]
         .into_iter()
         .find(|&flag| flag_key(flag) == key)
+}
+
+fn appearance_key(appearance: Appearance) -> &'static str {
+    match appearance {
+        Appearance::System => "system",
+        Appearance::Light => "light",
+        Appearance::Dark => "dark",
+    }
+}
+
+fn appearance_from_key(key: &str) -> Option<Appearance> {
+    [Appearance::System, Appearance::Light, Appearance::Dark]
+        .into_iter()
+        .find(|&appearance| appearance_key(appearance) == key)
 }
 
 fn via_key(via: Via) -> &'static str {
@@ -836,6 +894,70 @@ mod tests {
     }
 
     #[test]
+    fn the_appearance_is_saved_under_ui_and_left_out_while_it_follows_the_system() {
+        let broker = BrokerSettings::default();
+        for (appearance, key) in [
+            (Appearance::Light, Some("light")),
+            (Appearance::Dark, Some("dark")),
+            (Appearance::System, None),
+        ] {
+            let dir = TempDir::new("appearance-round-trip");
+            let json = Store::contents(&AppState::default(), &broker, appearance).unwrap();
+            store(&dir).write(&json).unwrap();
+
+            let loaded = store(&dir).load();
+            assert_eq!(loaded.appearance, appearance);
+            assert_eq!(loaded.notice, None, "{appearance:?}");
+
+            let text = fs::read_to_string(dir.path().join("desktop.json")).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["ui"]["appearance"].as_str(), key, "{text}");
+            assert_eq!(json.get("ui").is_some(), key.is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_file_from_before_the_appearance_was_saved_follows_the_system() {
+        let dir = TempDir::new("no-ui");
+        fs::write(
+            dir.path().join("desktop.json"),
+            r#"{"devices":[{"id":"TESTDEVICE01","label":"Bedroom"}],"broker":{"username":"someone"}}"#,
+        )
+        .unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.appearance, Appearance::System);
+        // Not damaged: the rest is as it was, nothing to tell, and the file stays.
+        assert_eq!(loaded.notice, None);
+        assert_eq!(loaded.state.devices[ID1].label, "Bedroom");
+        assert_eq!(loaded.broker.username, "someone");
+        assert!(dir.path().join("desktop.json").exists());
+        assert!(!dir.path().join("desktop.json.corrupt").exists());
+    }
+
+    #[test]
+    fn an_appearance_the_app_does_not_know_follows_the_system() {
+        for ui in [
+            "{}",
+            r#"{"appearance":null}"#,
+            r#"{"appearance":"sepia"}"#,
+            r#"{"appearance":"dark","later":1}"#,
+        ] {
+            let dir = TempDir::new("odd-ui");
+            let file = format!(r#"{{"devices":[],"ui":{ui}}}"#);
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            let expected = if ui.contains("dark") {
+                Appearance::Dark
+            } else {
+                Appearance::System
+            };
+            assert_eq!(loaded.appearance, expected, "{ui}");
+            assert_eq!(loaded.notice, None, "{ui}");
+            assert!(!dir.path().join("desktop.json.corrupt").exists(), "{ui}");
+        }
+    }
+
+    #[test]
     fn a_saved_broker_address_that_is_not_valid_is_replaced_and_the_notice_says_so() {
         for bad in [
             "ws://broker.example/mqtt",
@@ -875,8 +997,11 @@ mod tests {
             },
             10,
         );
-        let before = Store::contents(&s, &broker).unwrap();
-        assert_eq!(Store::contents(&s.clone(), &broker).unwrap(), before);
+        let contents = |s: &AppState, broker: &BrokerSettings| {
+            Store::contents(s, broker, Appearance::System).unwrap()
+        };
+        let before = contents(&s, &broker);
+        assert_eq!(contents(&s.clone(), &broker), before);
 
         // Live things the file doesn't hold.
         let device = s.devices.get_mut(ID1).unwrap();
@@ -891,7 +1016,7 @@ mod tests {
             },
             100,
         );
-        assert_eq!(Store::contents(&s, &broker).unwrap(), before);
+        assert_eq!(contents(&s, &broker), before);
 
         // A reading, a name, a room, a schedule sent or the broker's address does change
         // it.
@@ -904,21 +1029,24 @@ mod tests {
             .get_mut(&Field::Power)
             .unwrap()
             .value = 0;
-        assert_ne!(Store::contents(&changed, &broker).unwrap(), before);
+        assert_ne!(contents(&changed, &broker), before);
         let mut renamed = s.clone();
         renamed.devices.get_mut(ID1).unwrap().label = "Bedroom".into();
-        assert_ne!(Store::contents(&renamed, &broker).unwrap(), before);
+        assert_ne!(contents(&renamed, &broker), before);
         let mut moved = s.clone();
         moved.devices.get_mut(ID1).unwrap().room = Some("Bedroom".into());
-        assert_ne!(Store::contents(&moved, &broker).unwrap(), before);
+        assert_ne!(contents(&moved, &broker), before);
         let mut scheduled = s.clone();
         scheduled.devices.get_mut(ID1).unwrap().sent_profile = Some(sent_schedule());
-        assert_ne!(Store::contents(&scheduled, &broker).unwrap(), before);
+        assert_ne!(contents(&scheduled, &broker), before);
         let elsewhere = BrokerSettings {
             username: "someone".into(),
             ..BrokerSettings::default()
         };
-        assert_ne!(Store::contents(&s, &elsewhere).unwrap(), before);
+        assert_ne!(contents(&s, &elsewhere), before);
+        // So does the appearance chosen in Settings.
+        let dark = Store::contents(&s, &broker, Appearance::Dark).unwrap();
+        assert_ne!(dark, before);
     }
 
     #[test]

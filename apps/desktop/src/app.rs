@@ -7,8 +7,9 @@
 //! changes, not every frame: a frame draws from the copy and locks nothing.
 //!
 //! The saved file is written only when what it holds has changed (new readings, a new
-//! name, a schedule sent, other broker settings), not for every ping and reply: a write
-//! is a full flush to disk, and it is done here, on the thread that draws.
+//! name, a schedule sent, other broker settings, another appearance), not for every ping
+//! and reply: a write is a full flush to disk, and it is done here, on the thread that
+//! draws.
 
 use std::path::Path;
 use std::sync::mpsc::Receiver;
@@ -25,7 +26,7 @@ use crate::store::{Loaded, Store};
 use crate::transport::lock;
 use crate::ui::Screens;
 use crate::ui::settings::Submitted;
-use crate::ui::theme;
+use crate::ui::theme::{self, Appearance};
 
 /// The least time between two saves of `desktop.json`.
 const SAVE_EVERY: Duration = Duration::from_secs(10);
@@ -42,6 +43,8 @@ pub struct ScentApp {
     store: Store,
     /// Where the broker is, as last saved. The password is in the Keychain.
     broker: BrokerSettings,
+    /// How the app looks, as chosen in Settings and saved with the rest.
+    appearance: Appearance,
     screens: Screens,
     /// What `desktop.json` holds as far as we know: what was loaded or last written.
     /// `None` when the file is to be rewritten whatever it holds (it wasn't usable).
@@ -61,13 +64,15 @@ impl ScentApp {
         let Loaded {
             state,
             broker,
+            appearance,
             notice,
         } = store.load();
+        theme::set_appearance(&cc.egui_ctx, appearance);
         // The Keychain may ask the person before it answers; nothing is drawn until it has.
         let password = broker_password(&broker);
         let written = notice
             .is_none()
-            .then(|| Store::contents(&state, &broker).ok())
+            .then(|| Store::contents(&state, &broker, appearance).ok())
             .flatten();
         let view = state.clone();
         let state = Arc::new(Mutex::new(state));
@@ -82,6 +87,7 @@ impl ScentApp {
             hub,
             store,
             broker,
+            appearance,
             screens: Screens::new(notice),
             written,
             saved_at: Instant::now(),
@@ -154,7 +160,7 @@ impl ScentApp {
             ..AppState::default()
         };
         self.saved_at = Instant::now();
-        let written = Store::contents(&snapshot, &self.broker).and_then(|json| {
+        let written = Store::contents(&snapshot, &self.broker, self.appearance).and_then(|json| {
             if self.written.as_ref() == Some(&json) {
                 return Ok(None);
             }
@@ -200,6 +206,11 @@ impl eframe::App for ScentApp {
         }
         if let Some(submitted) = requests.settings {
             self.apply_settings(ui.ctx(), submitted);
+        }
+        if let Some(appearance) = requests.appearance {
+            // Shown already. Saved at once, as Settings has no Save for it.
+            self.appearance = appearance;
+            self.save();
         }
         if !requests.edits.is_empty() {
             self.change_state(|state| {

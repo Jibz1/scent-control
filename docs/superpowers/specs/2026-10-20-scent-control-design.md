@@ -488,7 +488,8 @@ Mac app rather than a generic egui window. egui draws its own widgets, so we mat
 look with a theme and a few custom widgets.
 
 - **Appearance:**
-  - The app follows the system's light or dark setting (`ThemePreference::System`).
+  - The app follows the system's light or dark setting (`ThemePreference::System`),
+    unless Settings → Appearance is set to Light or Dark.
   - The title bar is unified with the content: full-size content view, title hidden
     and transparent, with the traffic lights over the sidebar.
 - **Color:** Apple's system colors, each with a light and a dark value.
@@ -543,7 +544,12 @@ look with a theme and a few custom widgets.
 - **Settings:**
   - a separate "Settings" window, opened with ⌘, and from a gear button in the toolbar;
   - its broker fields are in a grouped box;
-  - Save is the default button.
+  - Save is the default button;
+  - an "Appearance" box with a System, Light, Dark segmented control, applied to every
+    window at once and saved as `ui.appearance` in `desktop.json` (missing means
+    System);
+  - an "About" box at the bottom: the app's name and "Version 0.1.0", with the commit
+    the bundle was built from when known, selectable and copyable.
   - If egui can't open a second window here, use a sheet attached to the top of the
     main window instead.
 - **Notices:** an inline notice at the top of the detail pane, rounded 8 pt with a 12%

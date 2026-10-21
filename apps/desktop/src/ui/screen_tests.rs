@@ -7,6 +7,7 @@ use eframe::egui::{self, Key};
 
 use super::Screens;
 use super::tests::{NOW, ONE, state};
+use super::theme::Appearance;
 use super::{log_view, theme};
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
@@ -19,6 +20,8 @@ struct Rig {
     state: AppState,
     commands: Vec<UiCommand>,
     edits: Vec<Edit>,
+    /// Each appearance chosen in Settings, as the app is handed it to save.
+    appearances: Vec<Appearance>,
 }
 
 /// A harness that draws the screens in egui's fonts, without a hub. The first frame
@@ -30,6 +33,7 @@ fn harness(state: AppState) -> egui_kittest::Harness<'static, Rig> {
         state,
         commands: Vec::new(),
         edits: Vec::new(),
+        appearances: Vec::new(),
     };
     egui_kittest::Harness::builder()
         .with_size(theme::WINDOW_SIZE)
@@ -50,6 +54,7 @@ fn harness(state: AppState) -> egui_kittest::Harness<'static, Rig> {
                     rig.state.edit(edit.clone());
                     rig.edits.push(edit);
                 }
+                rig.appearances.extend(requests.appearance);
             },
             rig,
         )
@@ -108,6 +113,26 @@ fn the_toolbar_shows_the_log_and_opens_settings_as_does_command_comma() {
     harness.run_steps(2);
     assert!(harness.state().screens.settings.is_open());
     assert!(harness.state().commands.is_empty());
+}
+
+#[test]
+fn dark_chosen_in_settings_shows_at_once_and_is_handed_over_to_save() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(state());
+    harness.run_steps(2);
+    harness.get_by_label("Settings").click();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::RadioButton, "Dark")
+        .click();
+    harness.run_steps(2);
+    // The main window too: egui draws every window from the one theme.
+    assert_eq!(harness.ctx.theme(), egui::Theme::Dark);
+    assert_eq!(harness.state().appearances, [Appearance::Dark]);
+    // Nothing else is asked for, and Settings stays open.
+    assert!(harness.state().commands.is_empty());
+    assert!(harness.state().screens.settings.is_open());
 }
 
 /// Shows the log, and lets its pane open.

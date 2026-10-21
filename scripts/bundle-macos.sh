@@ -14,6 +14,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+# Settings → About shows the commit after the version. Empty outside a git checkout.
+SCENT_BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || true)"
+export SCENT_BUILD_COMMIT
 cargo build --release -p scent-desktop
 
 app="target/Scent Control.app"
@@ -21,6 +24,11 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/scent-control "$app/Contents/MacOS/scent-control"
 cp apps/desktop/macos/Info.plist "$app/Contents/Info.plist"
+# The crate's version, as Settings → About shows it, so that Get Info agrees.
+version="$(cargo pkgid -p scent-desktop)"
+version="${version##*[@#]}"
+plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$version" "$app/Contents/Info.plist"
 # Drawn by the ignored `render_app_icon` test (apps/desktop/src/ui/icon.rs).
 cp apps/desktop/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
