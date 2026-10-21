@@ -64,7 +64,7 @@ bundle use Bluetooth.
 12. Click Edit Schedule…, then Add a Test Time Starting in 3 Minutes, then Send Schedule. Confirm
     Replace. Leave the diffuser alone.
     - It starts on its own about 3 minutes later and stops when the test time ends.
-    - The Today strip and the line under it ("Based on the schedule this app last sent…") match
+    - The Today strip and the line under it ("Based on the last schedule sent from Scent Control…") match
       what it does.
     - Note the start and stop times you saw.
 

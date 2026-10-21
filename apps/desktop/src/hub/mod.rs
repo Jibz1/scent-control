@@ -31,7 +31,8 @@ use crate::add_flow::AddRequest;
 use crate::ble::Reply;
 use crate::mqtt::BrokerSettings;
 use crate::route::{TransportPref, ble_known, route, why_no_route, wifi_available};
-use crate::state::{AppState, DeviceView, Event, unix_now};
+use crate::shared_schedule;
+use crate::state::{AppState, DeviceView, Event, remember_profile, unix_now};
 use crate::transport::{Radios, Transport, lock};
 
 use self::add::{AddJob, Adds, Login};
@@ -75,6 +76,11 @@ const BLUETOOTH_BACKSTOP: Duration = Duration::from_secs(30);
 const LOST_JOBS: &str = "An earlier command to this diffuser stopped unexpectedly, so it and any commands queued behind it were dropped. This one is not affected.";
 
 const TIME_SYNC_FAILED: &str = "The schedule went out, but the time sync after it didn't, so the diffuser may not run it yet. Send the schedule again.";
+
+/// Why comes between the two: the schedule went out, but the copy the app's other copies
+/// read is missing.
+const SHARE_FAILED: &str = "The schedule went out, but the copy that other copies of Scent Control read wasn't stored on the broker.";
+const SHARE_AGAIN: &str = "Send the schedule again to store it.";
 
 /// What the screens ask the hub to do.
 pub enum UiCommand {
@@ -310,6 +316,12 @@ impl<T: Transport> Shared<T> {
     /// when one fails. Emits `Sent` for the one that worked, and one `Failed` for
     /// whatever failed on the way. True when it got there.
     async fn deliver(&self, device_id: &str, work: &Work, pref: TransportPref) -> bool {
+        self.deliver_at(device_id, work, pref).await.is_some()
+    }
+
+    /// [`deliver`](Self::deliver), with the time its `Sent` event carries when it got
+    /// there.
+    async fn deliver_at(&self, device_id: &str, work: &Work, pref: TransportPref) -> Option<i64> {
         let Target {
             ble_id,
             heard_ble,
@@ -331,7 +343,7 @@ impl<T: Transport> Shared<T> {
         if ways.is_empty() {
             let what = work.name(pref.first_choice());
             self.failed(Some(device_id), what, why_no_route(pref));
-            return false;
+            return None;
         }
 
         let mut failed: Vec<(Via, String)> = Vec::new();
@@ -350,14 +362,13 @@ impl<T: Transport> Shared<T> {
             match result {
                 Ok(()) => {
                     self.report_failure(device_id, work, &failed, Some(via));
-                    self.sent(device_id, work, via);
-                    return true;
+                    return Some(self.sent(device_id, work, via));
                 }
                 Err(error) => failed.push((via, error)),
             }
         }
         self.report_failure(device_id, work, &failed, None);
-        false
+        None
     }
 
     /// One Bluetooth attempt, which also keeps the cool-down: a failure starts it, a
@@ -388,22 +399,25 @@ impl<T: Transport> Shared<T> {
         result
     }
 
-    /// The command went out over `via`: say so, and what it asked for.
-    fn sent(&self, device_id: &str, work: &Work, via: Via) {
+    /// The command went out over `via`: say so, and what it asked for. Returns the time
+    /// the `Sent` event carries.
+    fn sent(&self, device_id: &str, work: &Work, via: Via) -> i64 {
+        let at = unix_now();
         // Reading a status over Bluetooth writes nothing, so there is nothing to log.
         if via == Via::Bluetooth && work.reads_status {
-            return;
+            return at;
         }
         let (power, intensity, profile) = effects(&work.cmd);
         self.emit(Event::Sent {
             device_id: device_id.to_owned(),
             summary: work.cmd.redacted(via),
             via,
-            at: unix_now(),
+            at,
             power,
             intensity,
             profile,
         });
+        at
     }
 
     fn report_failure(
@@ -418,28 +432,77 @@ impl<T: Transport> Shared<T> {
         }
     }
 
-    /// Sends the schedule, waits, then tells the diffuser the time. Both over WiFi.
-    /// Without the first there is no point in the second, so a failure stops here.
+    /// Sends the schedule, stores its copy on the broker for the app's other copies,
+    /// waits, then tells the diffuser the time. All over WiFi. The copy is stored once
+    /// the broker has taken the table, and only then. Without the table there is no
+    /// point in the rest, so a failure there stops here.
+    ///
+    /// A copy the broker didn't take is tried once more after the time sync (a full
+    /// queue has drained by then), unless a newer one was adopted from the broker in the
+    /// meantime: that one is stored, and ours would replace it with an older schedule.
+    /// Only if the retry fails too is it said, after the time sync's `Sent`, which would
+    /// otherwise clear it from the hero at once. A failed time sync is said last, as it
+    /// is the one that matters for the diffuser.
     async fn send_schedule(&self, device_id: &str, profile: Profile) {
-        let steps = schedule_steps(profile, unix_now());
-        for (index, (wait, cmd)) in steps.into_iter().enumerate() {
-            if !wait.is_zero() {
-                sleep(wait).await;
-            }
-            if !self
-                .deliver(device_id, &Work::send(cmd), TransportPref::Wifi)
-                .await
-            {
-                if index > 0 {
-                    self.failed(
-                        Some(device_id),
-                        "Schedule".to_owned(),
-                        TIME_SYNC_FAILED.to_owned(),
-                    );
-                }
-                return;
-            }
+        let held = self.held_after(device_id, &profile);
+        let [(_, table), (wait, time)] = schedule_steps(profile, unix_now());
+        let Some(at) = self
+            .deliver_at(device_id, &Work::send(table), TransportPref::Wifi)
+            .await
+        else {
+            return;
+        };
+        let shared = self.share_schedule(device_id, &held, at);
+        sleep(wait).await;
+        let synced = self
+            .deliver(device_id, &Work::send(time), TransportPref::Wifi)
+            .await;
+        if shared.is_err()
+            && !self.newer_schedule_known(device_id, at)
+            && let Err(error) = self.share_schedule(device_id, &held, at)
+        {
+            self.failed(
+                Some(device_id),
+                "Schedule".to_owned(),
+                format!("{SHARE_FAILED} {error} {SHARE_AGAIN}"),
+            );
         }
+        if !synced {
+            self.failed(
+                Some(device_id),
+                "Schedule".to_owned(),
+                TIME_SYNC_FAILED.to_owned(),
+            );
+        }
+    }
+
+    /// The table the diffuser holds once `profile` is in, as the state will remember it
+    /// (see `state::remember_profile`): with flag 0, the times sent before stay.
+    fn held_after(&self, device_id: &str, profile: &Profile) -> Profile {
+        let earlier = lock(&self.state)
+            .devices
+            .get(device_id)
+            .and_then(|device| device.sent_profile.clone());
+        remember_profile(earlier, profile.clone())
+    }
+
+    /// Whether the state knows a schedule for the diffuser sent after `at`: a copy another
+    /// copy of the app stored, adopted since.
+    fn newer_schedule_known(&self, device_id: &str, at: i64) -> bool {
+        lock(&self.state)
+            .devices
+            .get(device_id)
+            .and_then(|device| device.sent_profile_at)
+            .is_some_and(|known| known > at)
+    }
+
+    /// Stores `held`, sent at `at` (the time of its `Sent` event, so that the app hears
+    /// its own copy back as nothing new), as the retained copy the app's other copies
+    /// read. The error says why the broker didn't take it.
+    fn share_schedule(&self, device_id: &str, held: &Profile, at: i64) -> Result<(), String> {
+        let body = shared_schedule::encode(held, at)
+            .ok_or_else(|| "Its time zone isn't a number.".to_owned())?;
+        self.transport.store_schedule(device_id, body)
     }
 
     async fn scan(&self) {
@@ -596,18 +659,21 @@ fn ping_targets(state: &AppState) -> Vec<String> {
         .collect()
 }
 
-/// Whether to ping a diffuser: it is on our broker, or its info says WiFi is set up.
-/// `heard_wifi` alone is not enough, as it is not saved, so after a restart nothing
-/// would be pinged until a diffuser spoke of its own accord, which can take its whole
-/// 1200 s keepalive. What the saved state does hold is the info string
-/// (`wifi_configured`) and the readings with their source. A ping to a diffuser that
-/// is on some other broker (it may still be on Scentiment's cloud) is harmless, and it
-/// is how a diffuser that has just been moved to ours first gets heard.
+/// Whether to ping a diffuser: it is on our broker, its info says WiFi is set up, or a
+/// schedule was sent to it, which goes over our broker only (it may be known only from
+/// the copy another copy of the app stored there). `heard_wifi` alone is not enough, as
+/// it is not saved, so after a restart nothing would be pinged until a diffuser spoke of
+/// its own accord, which can take its whole 1200 s keepalive. What the saved state does
+/// hold is the info string (`wifi_configured`), the readings with their source and the
+/// last schedule sent. A ping to a diffuser that is on some other broker (it may still be
+/// on Scentiment's cloud) is harmless, and it is how a diffuser that has just been moved
+/// to ours first gets heard.
 fn worth_pinging(device: &DeviceView) -> bool {
     device
         .info
         .as_ref()
         .is_some_and(|info| info.wifi_configured)
+        || device.sent_profile.is_some()
         || on_our_broker(device)
 }
 
@@ -920,6 +986,19 @@ mod tests {
     }
 
     #[test]
+    fn a_diffuser_known_only_from_a_stored_schedule_is_pinged() {
+        // Another copy of the app sent it a schedule over our broker; this copy has
+        // heard nothing from it yet. A ping is how it first gets heard.
+        let mut state = AppState::default();
+        let mut copied = DeviceView::new(ONE);
+        copied.sent_profile = Some(profile());
+        assert!(worth_pinging(&copied));
+        state.devices.insert(ONE.to_owned(), copied);
+        state.devices.insert(TWO.to_owned(), DeviceView::new(TWO));
+        assert_eq!(ping_targets(&state), [ONE.to_owned()]);
+    }
+
+    #[test]
     fn only_a_diffuser_heard_on_our_broker_is_reached_over_it() {
         // WiFi set up, and nothing heard here: it may still be on Scentiment's cloud,
         // where a publish to our broker would reach nobody. It is still pinged, which
@@ -1036,6 +1115,10 @@ mod tests {
         pub(super) ble: Mutex<VecDeque<Ble>>,
         pub(super) wifi: Mutex<VecDeque<Result<(), String>>>,
         pub(super) wifi_commands: Mutex<Vec<(String, Command)>>,
+        /// How storing a schedule's copy on the broker goes, in order: `Ok` when unscripted.
+        pub(super) store: Mutex<VecDeque<Result<(), String>>>,
+        /// The schedule copies stored on the broker, by device ID, as published.
+        pub(super) stored: Mutex<Vec<(String, Vec<u8>)>>,
         /// What went out over Bluetooth, by Bluetooth ID, secrets and all.
         pub(super) ble_commands: Mutex<Vec<(String, Command)>>,
         /// The info each diffuser gives when it is read, by Bluetooth ID.
@@ -1059,6 +1142,8 @@ mod tests {
                 ble: Mutex::new(VecDeque::new()),
                 wifi: Mutex::new(VecDeque::new()),
                 wifi_commands: Mutex::new(Vec::new()),
+                store: Mutex::new(VecDeque::new()),
+                stored: Mutex::new(Vec::new()),
                 ble_commands: Mutex::new(Vec::new()),
                 infos: Mutex::new(HashMap::new()),
                 state: Mutex::new(None),
@@ -1163,6 +1248,12 @@ mod tests {
             self.note(format!("wifi {device_id} {}", cmd.action(Via::Wifi)));
             lock(&self.wifi_commands).push((device_id.to_owned(), cmd.clone()));
             lock(&self.wifi).pop_front().unwrap_or(Ok(()))
+        }
+
+        fn store_schedule(&self, device_id: &str, body: Vec<u8>) -> Result<(), String> {
+            self.note(format!("store {device_id} schedule"));
+            lock(&self.stored).push((device_id.to_owned(), body));
+            lock(&self.store).pop_front().unwrap_or(Ok(()))
         }
 
         fn broker_route_id(&self) -> Option<String> {
@@ -1380,6 +1471,7 @@ mod tests {
                     Duration::ZERO,
                     "wifi TESTDEVICE01 UPDATE_PROFILE".to_owned()
                 ),
+                (Duration::ZERO, "store TESTDEVICE01 schedule".to_owned()),
                 (secs(5), "wifi TESTDEVICE01 SYNC_TIME".to_owned()),
                 (secs(5), "wifi TESTDEVICE01 TURN_ON".to_owned()),
             ]
@@ -1421,6 +1513,243 @@ mod tests {
         // The time sync is not attempted, so there was no 5 s wait either.
         assert_eq!(before.elapsed(), Duration::ZERO);
         assert!(rig.fake().labels().is_empty());
+        // Nor is a copy stored for the app's other copies.
+        assert!(lock(&rig.fake().stored).is_empty());
+    }
+
+    /// When the `Sent` event of the schedule says it went.
+    fn schedule_sent_at(events: &[Event]) -> i64 {
+        events
+            .iter()
+            .find_map(|event| match event {
+                Event::Sent {
+                    at,
+                    profile: Some(_),
+                    ..
+                } => Some(*at),
+                _ => None,
+            })
+            .expect("the schedule's Sent event")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_schedule_the_broker_took_is_stored_there_for_the_apps_other_copies() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        rig.shared.send_schedule(ONE, profile()).await;
+        // Right after the table went out, before the 5 s wait for the time.
+        assert_eq!(
+            rig.fake().log(),
+            [
+                (
+                    Duration::ZERO,
+                    "wifi TESTDEVICE01 UPDATE_PROFILE".to_owned()
+                ),
+                (Duration::ZERO, "store TESTDEVICE01 schedule".to_owned()),
+                (secs(5), "wifi TESTDEVICE01 SYNC_TIME".to_owned()),
+            ]
+        );
+        let events = rig.events();
+        assert!(failed(&events).is_empty(), "{events:?}");
+        let stored = lock(&rig.fake().stored).clone();
+        let [(device_id, body)] = &stored[..] else {
+            panic!("{stored:?}");
+        };
+        assert_eq!(device_id, ONE);
+        // The copy is the schedule, sent when the Sent event says, so that the app hears
+        // its own copy back as nothing new.
+        assert_eq!(
+            crate::shared_schedule::decode(body, unix_now()),
+            Ok(crate::shared_schedule::SharedSchedule {
+                profile: profile(),
+                sent_at: schedule_sent_at(&events),
+            })
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_schedule_the_broker_did_not_take_is_not_stored() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        rig.fake().script_wifi([Err(
+            "The broker connection is too busy to take this message.".to_owned(),
+        )]);
+        rig.shared.send_schedule(ONE, profile()).await;
+        assert_eq!(rig.fake().labels(), ["wifi TESTDEVICE01 UPDATE_PROFILE"]);
+        assert!(lock(&rig.fake().stored).is_empty());
+        let events = rig.events();
+        assert!(sent(&events).is_empty());
+        assert_eq!(failed(&events).len(), 1, "{events:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_copy_the_broker_was_too_busy_for_is_stored_after_the_time_sync() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        lock(&rig.fake().store).push_back(Err(
+            "The broker connection is too busy to take this message.".to_owned(),
+        ));
+        rig.shared.send_schedule(ONE, profile()).await;
+        // Tried again once the time has gone, by when the queue has drained.
+        assert_eq!(
+            rig.fake().log(),
+            [
+                (
+                    Duration::ZERO,
+                    "wifi TESTDEVICE01 UPDATE_PROFILE".to_owned()
+                ),
+                (Duration::ZERO, "store TESTDEVICE01 schedule".to_owned()),
+                (secs(5), "wifi TESTDEVICE01 SYNC_TIME".to_owned()),
+                (secs(5), "store TESTDEVICE01 schedule".to_owned()),
+            ]
+        );
+        let events = rig.events();
+        assert!(failed(&events).is_empty(), "{events:?}");
+        // The same copy both times: sent when the schedule went.
+        let stored = lock(&rig.fake().stored).clone();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0], stored[1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_copy_is_stored_over_a_newer_one_adopted_while_waiting_to_retry() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        lock(&rig.fake().store).push_back(Err(
+            "The broker connection is too busy to take this message.".to_owned(),
+        ));
+        // Two seconds in, another copy of the app sends a schedule of its own, and this
+        // one adopts its copy from the broker.
+        let theirs = Profile {
+            timezone_hours: 1.0,
+            ..profile()
+        };
+        let now = unix_now();
+        rig.apply_later(
+            secs(2),
+            Event::Mqtt {
+                topic: scent_core::schedule_topic(ONE).unwrap(),
+                body: crate::shared_schedule::encode(&theirs, now + 60).unwrap(),
+                at: now,
+            },
+        );
+        rig.shared.send_schedule(ONE, profile()).await;
+        assert_eq!(lock(&rig.state).devices[ONE].sent_profile, Some(theirs));
+        // Ours is older: storing it again would put it back over theirs.
+        assert_eq!(
+            rig.fake().labels(),
+            [
+                "wifi TESTDEVICE01 UPDATE_PROFILE",
+                "store TESTDEVICE01 schedule",
+                "wifi TESTDEVICE01 SYNC_TIME",
+            ]
+        );
+        // And there is nothing to say: the newer copy is the one stored.
+        let events = rig.events();
+        assert!(failed(&events).is_empty(), "{events:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_copy_the_broker_would_not_store_twice_is_said_last_and_stays_in_the_hero() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        lock(&rig.fake().store).extend([
+            Err("The broker connection is too busy to take this message.".to_owned()),
+            Err("Not connected to the broker.".to_owned()),
+        ]);
+        rig.shared.send_schedule(ONE, profile()).await;
+        assert_eq!(
+            rig.fake().labels(),
+            [
+                "wifi TESTDEVICE01 UPDATE_PROFILE",
+                "store TESTDEVICE01 schedule",
+                "wifi TESTDEVICE01 SYNC_TIME",
+                "store TESTDEVICE01 schedule",
+            ]
+        );
+        let events = rig.events();
+        assert_eq!(sent(&events).len(), 2);
+        let lines = failed(&events);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0.as_deref(), Some(ONE));
+        assert_eq!(lines[0].1, "Schedule");
+        // It comes after the time sync's Sent, which would otherwise clear it...
+        assert!(
+            matches!(events.last(), Some(Event::Failed { .. })),
+            "{events:?}"
+        );
+        // ...so the hero still says it once everything has been folded in.
+        let mut panel = crate::ui::device_panel::DevicePanel::default();
+        for event in &events {
+            panel.on_event(event);
+        }
+        let device = lock(&rig.state).devices[ONE].clone();
+        assert_eq!(
+            panel.failure(&device),
+            Some(
+                "Couldn't finish sending its schedule: The schedule went out, but the copy \
+                 that other copies of Scent Control read wasn't stored on the broker. Not \
+                 connected to the broker. Send the schedule again to store it."
+            )
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn when_the_time_sync_fails_too_its_note_is_the_one_left_showing() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        rig.fake()
+            .script_wifi([Ok(()), Err("Not connected to the broker.".to_owned())]);
+        lock(&rig.fake().store).extend([
+            Err("Not connected to the broker.".to_owned()),
+            Err("Not connected to the broker.".to_owned()),
+        ]);
+        rig.shared.send_schedule(ONE, profile()).await;
+        let lines = failed(&rig.events());
+        let whats: Vec<&str> = lines.iter().map(|(_, what, _)| what.as_str()).collect();
+        assert_eq!(
+            whats,
+            ["WiFi SYNC_TIME", "Schedule", "Schedule"],
+            "{lines:?}"
+        );
+        // Both are in the log; the one about the diffuser not running it is said last.
+        assert!(lines[1].2.contains("other copies"), "{lines:?}");
+        assert!(lines[2].2.contains("may not run"), "{lines:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_copy_of_an_always_on_only_schedule_keeps_the_times_sent_before() {
+        // Only the always-on entry goes out with flag 0, so the diffuser keeps the times
+        // it had: the copy says so, as desktop.json does.
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        let earlier = Profile {
+            entries: vec![scent_core::Entry {
+                start: scent_core::HhMm::parse("07:00").unwrap(),
+                end: scent_core::HhMm::parse("08:00").unwrap(),
+                weekdays: vec![1],
+                level: Level::new(2).unwrap(),
+                enable: true,
+            }],
+            ..profile()
+        };
+        lock(&rig.state).devices.get_mut(ONE).unwrap().sent_profile = Some(earlier.clone());
+        let always_on = Profile {
+            always_on: AlwaysOn {
+                enable: true,
+                level: Level::new(3).unwrap(),
+            },
+            flag: ScheduleFlag::AlwaysOnOnly,
+            ..profile()
+        };
+        rig.shared.send_schedule(ONE, always_on.clone()).await;
+        let stored = lock(&rig.fake().stored).clone();
+        let copy = crate::shared_schedule::decode(&stored[0].1, unix_now())
+            .unwrap()
+            .profile;
+        assert_eq!(copy.always_on, always_on.always_on);
+        assert_eq!(copy.flag, ScheduleFlag::AlwaysOnOnly);
+        assert_eq!(copy.entries, earlier.entries);
     }
 
     #[tokio::test(start_paused = true)]

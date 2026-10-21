@@ -1,6 +1,7 @@
 //! The open diffuser: its name and whether it answers, then the diffusion hero (what it
 //! is doing, and the power and intensity to change it), then grouped boxes, as in
-//! System Settings: "Schedule" (what this app sent, today's times, and Edit Schedule…),
+//! System Settings: "Schedule" (the last one sent from Scent Control, today's times, and
+//! Edit Schedule…),
 //! "Details" (its name and room, to change, then the power source, the WiFi signal, the
 //! last report, the firmware and the ID) and "Connection" (Send Over, Read Status, and Set
 //! Up Again… for a diffuser on our broker).
@@ -103,9 +104,10 @@ pub fn detail_rows(device: &DeviceView, now: i64) -> [ReadingRow; 2] {
     [row_of("Power source", source), row_of("WiFi signal", wifi)]
 }
 
-/// What the schedule this app last sent says the diffuser should be doing now. `None`
-/// when this Mac has never sent it one (the last one it sent is saved with the
-/// diffusers): the diffuser may hold one, but we don't know what it says.
+/// What the last schedule sent from Scent Control says the diffuser should be doing
+/// now. `None` when none was ever sent to it from Scent Control, here or by another copy
+/// through the broker (the last one sent is saved with the diffusers): the diffuser may
+/// hold one, but we don't know what it says.
 pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     let profile = device.sent_profile.as_ref()?;
     Some(expected_text(&expected_state(profile, now)))
@@ -440,8 +442,8 @@ impl DevicePanel {
             .copied()
     }
 
-    /// What last failed for `device`, unless it has reported since.
-    fn failure(&self, device: &DeviceView) -> Option<&str> {
+    /// What last failed for `device`, unless it has reported since: what its hero says.
+    pub(crate) fn failure(&self, device: &DeviceView) -> Option<&str> {
         let failure = self.failures.get(&device.id)?;
         let reported = device
             .readings
@@ -729,9 +731,9 @@ fn header_line(device: &DeviceView, name: &str, online: Online) -> String {
     }
 }
 
-/// "Schedule": today's times when this app knows them (the last schedule this Mac sent,
-/// saved with the diffusers), and what they say it should be doing now. True when Edit
-/// Schedule… was clicked.
+/// "Schedule": today's times when this app knows them (the last schedule sent from
+/// Scent Control, saved with the diffusers), and what they say it should be doing now.
+/// True when Edit Schedule… was clicked.
 fn schedule_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) -> bool {
     let palette = Palette::of(ui);
     let mut edit = false;
@@ -746,7 +748,7 @@ fn schedule_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) -> bool {
                     free_row(ui, |ui| today_strip(ui, profile, now, palette.grouped));
                 }
                 None => {
-                    row(ui, "Sent from this Mac", |ui| {
+                    row(ui, "Sent from Scent Control", |ui| {
                         ui.label(RichText::new("Nothing yet").color(palette.secondary_label));
                     });
                 }
@@ -959,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn the_expected_line_is_only_about_a_schedule_this_app_sent() {
+    fn the_expected_line_is_only_about_a_schedule_sent_from_scent_control() {
         let mut d = device();
         assert_eq!(expected_line(&d, NOW), None);
         d.sent_profile = Some(Profile {
@@ -973,7 +975,7 @@ mod tests {
         });
         assert_eq!(
             expected_line(&d, NOW).as_deref(),
-            Some("Based on the schedule this app last sent, it should be off now.")
+            Some("Based on the last schedule sent from Scent Control, it should be off now.")
         );
     }
 

@@ -8,11 +8,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use scent_core::{
-    Ack, Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Online, Profile, ScheduleFlag,
-    Status, Via, online_status, parse_mqtt, parse_notification, valid_device_id,
+    APP_PREFIX, Ack, Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Online, Profile,
+    ScheduleFlag, Status, Via, online_status, parse_mqtt, parse_notification,
+    schedule_topic_device, valid_device_id,
 };
 
 use crate::add_flow::AddStep;
+use crate::shared_schedule::{self, Unreadable};
 
 /// How many log entries the app keeps. The oldest go first.
 pub const LOG_CAP: usize = 500;
@@ -32,6 +34,17 @@ const ADDED: &str = "Added: it joined your broker.";
 /// What a diffuser says once it has taken `SAVE_MQTT`, over Bluetooth or as the `msg` of
 /// an acknowledgement on the broker. Matched in any case.
 const CREDENTIALS_SAVED: &str = "credentials saved";
+
+/// What the log calls a schedule read from the broker that changed what the app knew.
+pub const SHARED_SCHEDULE: &str = "shared schedule";
+
+/// What the log calls a message under our own prefix that the app can't read.
+pub const UNREADABLE_SCHEDULE: &str = "unreadable shared schedule";
+
+/// What the log calls a stored schedule that another version of the app wrote. The
+/// reason is kept in the action as it is logged, so the log never reads the message
+/// again.
+pub const OTHER_VERSION_SCHEDULE: &str = "shared schedule from another version";
 
 /// The most characters a diffuser's name or room may have.
 pub const NAME_MAX_CHARS: usize = 40;
@@ -112,9 +125,14 @@ pub struct DeviceView {
     /// When we last pinged it over WiFi.
     pub ping_at: Option<i64>,
     pub sent: Option<Sent>,
-    /// The schedule table we believe the diffuser holds, from what this Mac last sent
-    /// it. Saved with the diffuser, so that it is known again after a relaunch.
+    /// The schedule table we believe the diffuser holds: the last one sent from Scent
+    /// Control, by this copy of the app or, as read from the broker, by another (see
+    /// `shared_schedule`). Saved with the diffuser, so that it is known again after a
+    /// relaunch.
     pub sent_profile: Option<Profile>,
+    /// When `sent_profile` was sent, so that the newer of it and a copy on the broker
+    /// wins. `None` for a schedule saved before the time was kept. Saved with it.
+    pub sent_profile_at: Option<i64>,
     /// When it last said it joined the broker (`device_connected`, on either topic).
     /// An add waits for one that comes after the restart.
     pub connected_at: Option<i64>,
@@ -139,6 +157,7 @@ impl DeviceView {
             ping_at: None,
             sent: None,
             sent_profile: None,
+            sent_profile_at: None,
             connected_at: None,
             info_at: None,
             credentials_saved_at: None,
@@ -410,6 +429,7 @@ impl AppState {
                     if let Some(profile) = profile {
                         let earlier = device.sent_profile.take();
                         device.sent_profile = Some(remember_profile(earlier, profile));
+                        device.sent_profile_at = Some(at);
                     }
                 }
             }
@@ -588,6 +608,10 @@ impl AppState {
     }
 
     fn on_mqtt(&mut self, topic: &str, body: &[u8], at: i64) {
+        if topic.starts_with(APP_PREFIX) {
+            self.on_app_message(topic, body, at);
+            return;
+        }
         let MqttMessage {
             direction,
             action,
@@ -638,6 +662,69 @@ impl AppState {
             device.credentials_saved_at = Some(at);
         }
         device.merge_readings(&status.unwrap_or_default(), rssi, at, Via::Wifi);
+    }
+
+    /// A message under our own prefix: the copy of a diffuser's last schedule that a
+    /// copy of the app stored on the broker (see `shared_schedule`). The newer of it and
+    /// what the app knows wins. A diffuser not known yet becomes known, as one heard on
+    /// the broker does. It is logged only when it changes the schedule the app knew, so
+    /// that our own copy heard back, and every copy again on each reconnect, add nothing.
+    /// One that can't be used changes nothing and is logged, masked, once, with why
+    /// (another version's, or unreadable) in its action.
+    fn on_app_message(&mut self, topic: &str, body: &[u8], at: i64) {
+        // An empty retained message is how a stored one is taken off the broker.
+        if body.is_empty() {
+            return;
+        }
+        let text = String::from_utf8_lossy(body).into_owned();
+        let device_id = schedule_topic_device(topic);
+        let decoded = device_id
+            .ok_or(Unreadable::Invalid)
+            .and_then(|_| shared_schedule::decode(body, at));
+        let (id, shared) = match (device_id, decoded) {
+            (Some(id), Ok(shared)) => (id, shared),
+            (_, unusable) => {
+                let action = if matches!(unusable, Err(Unreadable::Version)) {
+                    OTHER_VERSION_SCHEDULE
+                } else {
+                    UNREADABLE_SCHEDULE
+                };
+                self.push_log(LogEntry {
+                    at,
+                    device_id: device_id.map(str::to_owned),
+                    via: Some(Via::Wifi),
+                    direction: Direction::FromDevice,
+                    action: action.to_owned(),
+                    text,
+                    sent: false,
+                });
+                return;
+            }
+        };
+        let device = self
+            .devices
+            .entry(id.to_owned())
+            .or_insert_with_key(|id| DeviceView::new(id));
+        if device
+            .sent_profile_at
+            .is_some_and(|known| shared.sent_at <= known)
+        {
+            return;
+        }
+        let changed = device.sent_profile.as_ref() != Some(&shared.profile);
+        device.sent_profile = Some(shared.profile);
+        device.sent_profile_at = Some(shared.sent_at);
+        if changed {
+            self.push_log(LogEntry {
+                at,
+                device_id: Some(id.to_owned()),
+                via: Some(Via::Wifi),
+                direction: Direction::FromDevice,
+                action: SHARED_SCHEDULE.to_owned(),
+                text,
+                sent: false,
+            });
+        }
     }
 
     fn on_ble_notification(&mut self, ble_id: &str, bytes: &[u8], at: i64) {
@@ -781,7 +868,7 @@ fn remember_sent(device: &mut DeviceView, power: Option<bool>, intensity: Option
 /// What the diffuser holds after `UPDATE_PROFILE` with `sent`. With flag 0 only
 /// the always-on entry went out, so the timed entries stay what they were before;
 /// we know of none if nothing was sent earlier. Flag 1 replaces the whole table.
-fn remember_profile(earlier: Option<Profile>, sent: Profile) -> Profile {
+pub(crate) fn remember_profile(earlier: Option<Profile>, sent: Profile) -> Profile {
     match sent.flag {
         ScheduleFlag::Replace => sent,
         ScheduleFlag::AlwaysOnOnly => Profile {
@@ -929,6 +1016,7 @@ mod tests {
     use crate::add_flow::AddStep;
     use crate::mqtt::BrokerSettings;
     use crate::store::{Store, TempDir};
+    use crate::ui::theme::Appearance;
 
     const ID1: &str = "TESTDEVICE01";
     const ID2: &str = "TESTDEVICE02";
@@ -1476,6 +1564,211 @@ mod tests {
         let kept = s.devices[ID1].sent_profile.as_ref().unwrap();
         assert!(kept.always_on.enable);
         assert!(kept.entries.is_empty());
+    }
+
+    #[test]
+    fn a_sent_schedule_is_remembered_with_when_it_was_sent() {
+        let mut s = known_air2();
+        assert_eq!(s.devices[ID1].sent_profile_at, None);
+        let p = profile(true, vec![window("10:24", "10:27")], ScheduleFlag::Replace);
+        s.apply_at(sent_profile(ID1, p, 100), NOW);
+        assert_eq!(s.devices[ID1].sent_profile_at, Some(100));
+        // A command that isn't a schedule leaves it alone.
+        s.apply_at(sent(ID1, Some(true), None, 150), NOW);
+        assert_eq!(s.devices[ID1].sent_profile_at, Some(100));
+    }
+
+    // Schedules stored on the broker by any copy of the app
+
+    /// The retained copy of `profile`, sent at `sent_at`, as the broker hands it over at
+    /// `at`.
+    fn stored_copy(id: &str, profile: &Profile, sent_at: i64, at: i64) -> Event {
+        Event::Mqtt {
+            topic: format!("scent-control/v1/schedule/{id}"),
+            body: crate::shared_schedule::encode(profile, sent_at).unwrap(),
+            at,
+        }
+    }
+
+    fn morning() -> Profile {
+        profile(false, vec![window("07:00", "08:00")], ScheduleFlag::Replace)
+    }
+
+    fn evening() -> Profile {
+        profile(true, vec![window("21:30", "22:30")], ScheduleFlag::Replace)
+    }
+
+    #[test]
+    fn a_newer_schedule_on_the_broker_is_adopted_and_logged_once() {
+        let mut s = known_air2();
+        s.apply_at(sent_profile(ID1, morning(), 100), NOW);
+        let saved = Store::contents(&s, &BrokerSettings::default(), Appearance::System).unwrap();
+        let logged = s.log.len();
+
+        s.apply_at(stored_copy(ID1, &evening(), 200, 300), NOW);
+
+        let device = &s.devices[ID1];
+        assert_eq!(device.sent_profile, Some(evening()));
+        assert_eq!(device.sent_profile_at, Some(200));
+        // A copy on the broker is not the diffuser speaking.
+        assert_eq!(device.heard_wifi, None);
+        let new: Vec<&LogEntry> = s.log.iter().skip(logged).collect();
+        assert_eq!(new.len(), 1, "{new:?}");
+        let entry = new[0];
+        assert_eq!(
+            (
+                entry.at,
+                entry.device_id.as_deref(),
+                entry.via,
+                entry.direction,
+                entry.action.as_str(),
+                entry.sent
+            ),
+            (
+                300,
+                Some(ID1),
+                Some(Via::Wifi),
+                Direction::FromDevice,
+                SHARED_SCHEDULE,
+                false
+            )
+        );
+        // ...and desktop.json takes it at the next save, as it does any change.
+        assert_ne!(
+            Store::contents(&s, &BrokerSettings::default(), Appearance::System).unwrap(),
+            saved
+        );
+    }
+
+    #[test]
+    fn an_older_schedule_on_the_broker_is_ignored() {
+        let mut s = known_air2();
+        s.apply_at(sent_profile(ID1, morning(), 200), NOW);
+        let before = s.clone();
+        s.apply_at(stored_copy(ID1, &evening(), 199, 300), NOW);
+        assert_eq!(s, before);
+        // One sent at the same second is not newer either.
+        s.apply_at(stored_copy(ID1, &evening(), 200, 301), NOW);
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn our_own_copy_heard_back_changes_nothing_and_logs_nothing() {
+        let mut s = known_air2();
+        s.apply_at(sent_profile(ID1, evening(), 100), NOW);
+        let before = s.clone();
+        // As the broker hands it back at once, and again on every reconnect.
+        s.apply_at(stored_copy(ID1, &evening(), 100, 101), NOW);
+        s.apply_at(stored_copy(ID1, &evening(), 100, 900), NOW);
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn a_newer_copy_of_the_schedule_already_known_logs_nothing() {
+        let mut s = known_air2();
+        s.apply_at(sent_profile(ID1, evening(), 100), NOW);
+        let logged = s.log.len();
+        // Another copy of the app sent the same schedule again.
+        s.apply_at(stored_copy(ID1, &evening(), 150, 160), NOW);
+        assert_eq!(s.devices[ID1].sent_profile, Some(evening()));
+        assert_eq!(s.devices[ID1].sent_profile_at, Some(150));
+        assert_eq!(s.log.len(), logged);
+    }
+
+    #[test]
+    fn a_schedule_known_without_a_time_gives_way_to_the_brokers() {
+        // As loaded from a desktop.json written before the time was kept.
+        let mut s = known_air2();
+        s.devices.get_mut(ID1).unwrap().sent_profile = Some(morning());
+        s.apply_at(stored_copy(ID1, &evening(), 5, 10), NOW);
+        assert_eq!(s.devices[ID1].sent_profile, Some(evening()));
+        assert_eq!(s.devices[ID1].sent_profile_at, Some(5));
+        assert_eq!(s.log.back().unwrap().action, SHARED_SCHEDULE);
+    }
+
+    #[test]
+    fn a_schedule_for_a_diffuser_not_known_yet_makes_it_known() {
+        // As on_mqtt does for a diffuser heard on the broker: another copy of the app
+        // knows it, so this one does now, by its ID until it is named.
+        let mut s = AppState::default();
+        s.apply_at(stored_copy(ID2, &evening(), 100, 110), NOW);
+        let device = &s.devices[ID2];
+        assert_eq!(device.label, ID2);
+        assert_eq!(device.sent_profile, Some(evening()));
+        assert_eq!(device.sent_profile_at, Some(100));
+        assert_eq!((device.heard_wifi, device.ble_id.as_ref()), (None, None));
+        assert_eq!(s.log.len(), 1);
+        assert_eq!(s.log[0].device_id.as_deref(), Some(ID2));
+        assert_eq!(s.log[0].action, SHARED_SCHEDULE);
+    }
+
+    #[test]
+    fn a_stored_schedule_that_cannot_be_read_is_ignored_with_one_masked_line() {
+        let good = crate::shared_schedule::encode(&evening(), 100).unwrap();
+        let mut later: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        later["v"] = serde_json::json!(2);
+        let later = serde_json::to_vec(&later).unwrap();
+        let secret = br#"{"v":1,"password":"hunter2","sent_at":1}"#.to_vec();
+        // Heard at 60: a copy sent more than a day after that can't be right.
+        let future = crate::shared_schedule::encode(&evening(), 60 + 86_401).unwrap();
+        const TOPIC1: &str = "scent-control/v1/schedule/TESTDEVICE01";
+        let cases: [(&str, Vec<u8>, Option<&str>, &str); 7] = [
+            // Why is kept as it is logged, so the log never reads the message again.
+            (TOPIC1, later, Some(ID1), OTHER_VERSION_SCHEDULE),
+            (
+                TOPIC1,
+                b"{ not json".to_vec(),
+                Some(ID1),
+                UNREADABLE_SCHEDULE,
+            ),
+            (TOPIC1, secret, Some(ID1), UNREADABLE_SCHEDULE),
+            (TOPIC1, future, Some(ID1), UNREADABLE_SCHEDULE),
+            // A good schedule, on a topic that isn't a diffuser's.
+            (
+                "scent-control/v1/schedule/testdevice01",
+                good.clone(),
+                None,
+                UNREADABLE_SCHEDULE,
+            ),
+            (
+                "scent-control/v1/schedule/TESTDEVICE01/x",
+                good.clone(),
+                None,
+                UNREADABLE_SCHEDULE,
+            ),
+            (
+                "scent-control/v1/something-new",
+                good,
+                None,
+                UNREADABLE_SCHEDULE,
+            ),
+        ];
+        for (topic, body, device_id, action) in cases {
+            let mut s = known_air2();
+            s.apply_at(sent_profile(ID1, morning(), 50), NOW);
+            let before = s.clone();
+            s.apply_at(mqtt(topic, &String::from_utf8_lossy(&body), 60), NOW);
+            assert_eq!(s.devices, before.devices, "{topic}");
+            assert_eq!(s.log.len(), before.log.len() + 1, "{topic}");
+            let entry = s.log.back().unwrap();
+            assert_eq!(entry.action, action, "{topic}");
+            assert_eq!(entry.device_id.as_deref(), device_id, "{topic}");
+            assert_eq!(
+                (entry.via, entry.direction),
+                (Some(Via::Wifi), Direction::FromDevice)
+            );
+            assert!(!entry.text.contains("hunter2"), "{}", entry.text);
+        }
+    }
+
+    #[test]
+    fn a_cleared_copy_is_ignored_without_a_word() {
+        // An empty retained message is how a stored one is taken off the broker.
+        let mut s = known_air2();
+        s.apply_at(sent_profile(ID1, morning(), 50), NOW);
+        let before = s.clone();
+        s.apply_at(mqtt("scent-control/v1/schedule/TESTDEVICE01", "", 60), NOW);
+        assert_eq!(s, before);
     }
 
     #[test]
@@ -2223,7 +2516,7 @@ mod tests {
         s.apply_at(note(BLE1, "enable:0-|", 2_000), NOW);
         s.apply_at(report(ID2, "S:1,L:1", 3_000), NOW);
         s.devices.get_mut(ID1).unwrap().label = "Bedroom".into();
-        // The last schedule this Mac sent is remembered with the diffuser.
+        // The last schedule sent is remembered with the diffuser, and when it went.
         s.apply_at(
             sent_profile(ID1, profile(true, vec![], ScheduleFlag::Replace), 4_002),
             NOW,
@@ -2262,6 +2555,7 @@ mod tests {
         assert!(after.sent.is_none());
         assert!(before.sent_profile.is_some());
         assert_eq!(after.sent_profile, before.sent_profile);
+        assert_eq!(after.sent_profile_at, Some(4_002));
         assert_eq!(loaded.devices[ID2].sent_profile, None);
         assert_eq!(
             (

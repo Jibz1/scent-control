@@ -1,9 +1,11 @@
 //! The MQTT worker: one connection to the broker over `wss`, the subscription to
-//! everything under the Scentiment prefix, and the [`Event`]s that come out of it.
+//! everything under the Scentiment prefix and under our own, and the [`Event`]s that
+//! come out of it.
 //!
 //! The worker runs on its own thread. It reports through the same channel as the
 //! other workers and never touches the screens. [`MqttHandle::send`] queues a command
-//! without waiting for the network.
+//! without waiting for the network, and [`MqttHandle::store_retained`] the copy of a
+//! schedule that the app's other copies read.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,10 +13,13 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use rumqttc::{
-    AsyncClient, ConnectReturnCode, ConnectionError, EventLoop, MqttOptions, Packet, QoS,
-    Subscribe, Transport,
+    AsyncClient, ConnectReturnCode, ConnectionError, EventLoop, MqttOptions, Packet, Publish, QoS,
+    Subscribe, SubscribeFilter, Transport,
 };
-use scent_core::{Command, SUBSCRIBE_ALL, Secret, device_topic, valid_device_id};
+use scent_core::{
+    APP_PREFIX, Command, SUBSCRIBE_ALL, SUBSCRIBE_APP, Secret, device_topic, schedule_topic,
+    valid_device_id,
+};
 use tokio::sync::oneshot;
 
 use crate::state::{Event, unix_now};
@@ -173,28 +178,86 @@ impl MqttHandle {
         if !valid_device_id(device_id) {
             return Err(format!("{device_id:?} is not a valid device ID."));
         }
-        let client = match &self.client {
-            Some(client) if self.connected.load(Ordering::SeqCst) => client,
-            _ => return Err("Not connected to the broker.".to_owned()),
-        };
-        client
+        self.connected_client()?
             .try_publish(
                 device_topic(device_id),
                 QoS::AtLeastOnce,
                 false,
                 cmd.mqtt_body(),
             )
-            .map_err(|_| "The broker connection is too busy to take this message.".to_owned())
+            .map_err(|_| TOO_BUSY.to_owned())
     }
+
+    /// Queues `body` (see `shared_schedule`) as the retained copy of the diffuser's
+    /// schedule, at QoS 1 on `scent-control/v1/schedule/<deviceId>`, and returns without
+    /// waiting for the network. It refuses a bad device ID and, as [`send`](Self::send)
+    /// does, while the broker isn't connected.
+    pub fn store_retained(&self, device_id: &str, body: Vec<u8>) -> Result<(), String> {
+        let topic = schedule_topic(device_id)
+            .ok_or_else(|| format!("{device_id:?} is not a valid device ID."))?;
+        self.publish_retained(&topic, body)
+    }
+
+    /// The one way the app publishes a retained message. Only to a topic under our own
+    /// prefix (see [`retained_publish`]): a retained message on a diffuser's topic would
+    /// be replayed to it every time it connects.
+    fn publish_retained(&self, topic: &str, body: Vec<u8>) -> Result<(), String> {
+        let publish = retained_publish(topic, body)?;
+        self.connected_client()?
+            .try_publish(
+                publish.topic,
+                publish.qos,
+                publish.retain,
+                publish.payload.to_vec(),
+            )
+            .map_err(|_| TOO_BUSY.to_owned())
+    }
+
+    /// The client, while the broker is connected.
+    fn connected_client(&self) -> Result<&AsyncClient, String> {
+        match &self.client {
+            Some(client) if self.connected.load(Ordering::SeqCst) => Ok(client),
+            _ => Err("Not connected to the broker.".to_owned()),
+        }
+    }
+}
+
+/// What a full queue makes `send` and `store_retained` say.
+const TOO_BUSY: &str = "The broker connection is too busy to take this message.";
+
+/// The retained QoS 1 message `publish_retained` sends, or why it won't: the topic must
+/// be under `scent-control/v1/`, with something after it and no wildcard in it.
+fn retained_publish(topic: &str, body: Vec<u8>) -> Result<Publish, String> {
+    let ours = topic
+        .strip_prefix(APP_PREFIX)
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(['+', '#', '\0']));
+    if !ours {
+        return Err(format!(
+            "{topic:?} is not a Scent Control topic, so nothing is stored there."
+        ));
+    }
+    let mut publish = Publish::new(topic, QoS::AtLeastOnce, body);
+    publish.retain = true;
+    Ok(publish)
+}
+
+/// What the worker subscribes to on every ConnAck, in one request: everything under
+/// Scentiment's prefix (the diffusers and our commands to them), and everything under
+/// ours (the stored schedules, which the broker hands over at once as they are retained).
+fn subscriptions() -> Subscribe {
+    Subscribe::new_many(
+        [SUBSCRIBE_ALL, SUBSCRIBE_APP]
+            .map(|filter| SubscribeFilter::new(filter.to_owned(), QoS::AtLeastOnce)),
+    )
 }
 
 /// Starts the worker on its own thread and returns at once. Events (`BrokerConnected`,
 /// `BrokerLoginRefused`, `BrokerDisconnected` and one `Mqtt` per message on the
 /// broker) go to `events`, each followed by a call to `repaint`.
 ///
-/// The worker subscribes to everything under the Scentiment prefix on every ConnAck.
-/// A refused login is reported once and the worker stops; start a new one with the
-/// corrected password. Any other failure is reported and retried every 5 s.
+/// The worker subscribes to everything under the Scentiment prefix and under ours on
+/// every ConnAck. A refused login is reported once and the worker stops; start a new one
+/// with the corrected password. Any other failure is reported and retried every 5 s.
 pub fn spawn(
     settings: BrokerSettings,
     password: Secret,
@@ -345,13 +408,11 @@ impl Worker {
     }
 
     /// A ConnAck means the login was accepted (rumqttc turns any other code into an
-    /// error). Subscribes again, as the session starts clean every time. The
-    /// subscription goes to the front of the event loop's own queue, so it can't be
-    /// held up behind commands and goes out before any of them.
+    /// error). Subscribes again (see [`subscriptions`]), as the session starts clean
+    /// every time. The subscription goes to the front of the event loop's own queue, so
+    /// it can't be held up behind commands and goes out before any of them.
     fn on_connected(&self, eventloop: &mut EventLoop) -> bool {
-        eventloop
-            .pending
-            .push_front(Subscribe::new(SUBSCRIBE_ALL, QoS::AtLeastOnce).into());
+        eventloop.pending.push_front(subscriptions().into());
         self.connected.store(true, Ordering::SeqCst);
         self.emit(Event::BrokerConnected)
     }
@@ -501,6 +562,100 @@ mod tests {
             assert!(error.contains("device ID"), "{bad:?}: {error}");
         }
         assert_eq!(handle.send("TESTDEVICE01", &Command::GetStatus), Ok(()));
+    }
+
+    #[test]
+    fn nothing_is_stored_retained_outside_our_own_prefix() {
+        let (handle, _eventloop) = handle(true);
+        for foreign in [
+            "scentiment-mqtt-prod/device/TESTDEVICE01",
+            "scentiment-mqtt-prod/user/route-test-1",
+            "scentiment-mqtt-prod/#",
+            "",
+            "scent-control/v1",
+            "scent-control/v1/",
+            "scent-control/v2/schedule/TESTDEVICE01",
+            "Scent-Control/v1/schedule/TESTDEVICE01",
+            "/scent-control/v1/schedule/TESTDEVICE01",
+            "scent-control/v1/#",
+            "scent-control/v1/schedule/+",
+            "scent-control/v1/schedule/TESTDEVICE01/#",
+        ] {
+            let error = handle
+                .publish_retained(foreign, b"{}".to_vec())
+                .unwrap_err();
+            assert!(
+                error.contains("Scent Control topic"),
+                "{foreign:?}: {error}"
+            );
+            assert!(
+                retained_publish(foreign, b"{}".to_vec()).is_err(),
+                "{foreign:?}"
+            );
+        }
+        let ours = "scent-control/v1/schedule/TESTDEVICE01";
+        assert_eq!(handle.publish_retained(ours, b"{}".to_vec()), Ok(()));
+    }
+
+    #[test]
+    fn a_stored_schedule_goes_to_the_devices_schedule_topic_retained_at_qos_1() {
+        let publish =
+            retained_publish("scent-control/v1/schedule/TESTDEVICE01", b"{}".to_vec()).unwrap();
+        assert_eq!(publish.topic, "scent-control/v1/schedule/TESTDEVICE01");
+        assert!(publish.retain);
+        assert_eq!(publish.qos, QoS::AtLeastOnce);
+        assert_eq!(&publish.payload[..], b"{}");
+
+        let (handle, _eventloop) = handle(true);
+        assert_eq!(
+            handle.store_retained("TESTDEVICE01", b"{}".to_vec()),
+            Ok(())
+        );
+        // A device ID can't make it any other topic.
+        for bad in [
+            "#",
+            "TESTDEVICE01/x",
+            "",
+            "../scentiment-mqtt-prod/device/X",
+        ] {
+            let error = handle.store_retained(bad, b"{}".to_vec()).unwrap_err();
+            assert!(error.contains("device ID"), "{bad:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn storing_a_schedule_refuses_while_the_broker_is_not_connected() {
+        let (handle, _eventloop) = handle(false);
+        let error = handle
+            .store_retained("TESTDEVICE01", b"{}".to_vec())
+            .unwrap_err();
+        assert!(error.contains("Not connected"), "{error}");
+    }
+
+    #[test]
+    fn every_connack_subscribes_to_scentiments_prefix_and_ours() {
+        let filters: Vec<(String, QoS)> = subscriptions()
+            .filters
+            .into_iter()
+            .map(|filter| (filter.path, filter.qos))
+            .collect();
+        assert_eq!(
+            filters,
+            [
+                ("scentiment-mqtt-prod/#".to_owned(), QoS::AtLeastOnce),
+                ("scent-control/v1/#".to_owned(), QoS::AtLeastOnce),
+            ]
+        );
+        // The worker queues them at the front, ahead of any command, on each ConnAck.
+        let (worker, _handle, mut eventloop, _received, _repaints) = worker_and_handle();
+        for connack in 1..=2 {
+            assert!(worker.on_connected(&mut eventloop));
+            assert_eq!(
+                eventloop.pending.front(),
+                Some(&rumqttc::Request::Subscribe(subscriptions())),
+                "ConnAck {connack}"
+            );
+        }
     }
 
     #[test]

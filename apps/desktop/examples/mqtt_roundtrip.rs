@@ -20,8 +20,18 @@ mod add_flow;
 mod mqtt;
 #[path = "../src/secrets.rs"]
 mod secrets;
+#[path = "../src/shared_schedule.rs"]
+mod shared_schedule;
 #[path = "../src/state.rs"]
 mod state;
+#[path = "../src/store.rs"]
+mod store;
+#[path = "../src/ui/theme.rs"]
+mod theme;
+/// Only the theme, for the appearance the store saves.
+mod ui {
+    pub(crate) use super::theme;
+}
 
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};

@@ -13,6 +13,22 @@ server.
   uses it.
 - **Logs:** `log_type all`, so Railway's logs show every connect, subscribe and
   publish, including which topics a diffuser subscribes to.
+- **Persistence:** on (`persistence true`, saved to `/mosquitto/data/` every 60 s
+  and on shutdown). It keeps the retained messages, which is where the desktop app
+  stores each diffuser's last schedule for its other copies
+  (`scent-control/v1/schedule/<deviceId>`, interim until the Phase 2 server).
+  Persistence also keeps the sessions and queues of `clean_session=false` clients
+  (bounded in `mosquitto.conf`). It also keeps any retained message under
+  `scentiment-mqtt-prod/`, so a stray retained publish to a device topic would be
+  replayed to the diffuser across restarts; the cure is an empty retained publish to
+  that topic.
+
+> **A Railway volume must be mounted at `/mosquitto/data`.** Without one, the
+> container's disk is thrown away on every restart or redeploy, and every stored
+> schedule goes with it: the diffusers keep running their schedules, but the app
+> no longer knows what they are until each is sent again. The entrypoint makes the
+> directory and gives it to the `mosquitto` user, so a fresh volume needs nothing
+> else.
 
 > **Never delete or recreate this service, or its domain, while a diffuser points at
 > it.** A diffuser keeps the broker address it was given. Before removing the
@@ -32,7 +48,9 @@ server.
 railway up infra/test-broker --path-as-root --service test-broker
 ```
 
-Then generate a Railway domain for the service with target port **8080**.
+Then generate a Railway domain for the service with target port **8080**, and
+attach a volume to the service with mount path **`/mosquitto/data`** (see
+Persistence above).
 
 ## Watch
 
