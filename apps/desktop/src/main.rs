@@ -46,10 +46,13 @@ use app::ScentApp;
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
     // The content runs under a transparent title bar with no title, so the traffic
-    // lights sit over the sidebar, as in a Mac app's split view.
+    // lights sit over the sidebar, as in a Mac app's split view. The icon is empty so
+    // that the Dock shows the bundle's AppIcon: given none, eframe puts egui's logo
+    // there while the app runs.
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Scent Control")
+            .with_icon(eframe::egui::IconData::default())
             .with_inner_size(ui::theme::WINDOW_SIZE)
             .with_min_inner_size(ui::theme::MIN_WINDOW_SIZE)
             .with_fullsize_content_view(true)

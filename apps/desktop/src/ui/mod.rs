@@ -25,6 +25,8 @@ pub mod timeline;
 pub mod widgets;
 
 #[cfg(test)]
+mod icon;
+#[cfg(test)]
 mod screen_tests;
 #[cfg(test)]
 mod snapshots;

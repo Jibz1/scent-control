@@ -10,6 +10,8 @@
 	<string>dev.scent-control.desktop</string>
 	<key>CFBundleExecutable</key>
 	<string>scent-control</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
