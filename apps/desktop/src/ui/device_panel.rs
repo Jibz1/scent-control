@@ -242,6 +242,11 @@ fn failed_job(what: &str) -> Job<'_> {
     }
 }
 
+/// The ID of the Room field in Details, for `device_id`.
+fn room_field(device_id: &str) -> Id {
+    Id::new("details_room").with(device_id)
+}
+
 /// What is being typed in a Details field: for which diffuser, what the field held when the
 /// typing began, and what it holds now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -468,7 +473,7 @@ impl DevicePanel {
         row(ui, "Room", |ui| {
             let stored = device.room.as_deref().unwrap_or_default();
             let field = widgets::Field {
-                id: Id::new("details_room").with(id),
+                id: room_field(id),
                 label: "Room",
                 hint: ROOM_HINT,
                 width: FIELD_WIDTH,
@@ -491,6 +496,12 @@ impl DevicePanel {
             }
         });
         edits
+    }
+
+    /// Opens the list of rooms in the Room field of `device_id`, for the snapshots.
+    #[cfg(test)]
+    pub fn as_choosing_room(ctx: &egui::Context, device_id: &str) {
+        widgets::open_combo(ctx, room_field(device_id));
     }
 
     /// What the person set on `device_id` and is on its way, for the snapshots.

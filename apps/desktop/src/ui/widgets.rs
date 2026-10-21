@@ -316,12 +316,14 @@ pub fn combo_field(
     }
 
     let mut picked = None;
+    let width = response.rect.width();
     Popup::menu(&button)
         .id(menu)
         .anchor(response.rect)
         .align(RectAlign::BOTTOM_START)
-        .width(response.rect.width())
         .show(|ui| {
+            // As wide as the field, as a Mac combo box's list is.
+            ui.set_min_width(width - ui.style().spacing.menu_margin.sum().x);
             for choice in choices {
                 if ui.selectable_label(choice == text, choice).clicked() {
                     picked = Some(choice.clone());
@@ -341,6 +343,12 @@ pub fn combo_field(
 /// sheet can leave Escape to it.
 pub fn combo_open(ctx: &egui::Context, field_id: Id) -> bool {
     Popup::is_id_open(ctx, field_id.with(CHOICES))
+}
+
+/// Opens the list of the [`combo_field`] whose field is `field_id`, for the snapshots.
+#[cfg(test)]
+pub fn open_combo(ctx: &egui::Context, field_id: Id) {
+    Popup::open_id(ctx, field_id.with(CHOICES));
 }
 
 /// A checkbox with `label` beside it, in sentence case, for a choice that isn't a
