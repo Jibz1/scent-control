@@ -498,3 +498,86 @@ The app sends the whole table with `UPDATE_PROFILE`:
 3. Whether `UPDATE_PROFILE` and `SYNC_TIME` work over BLE, and whether schedules keep
    running after a power cut.
 4. Whether the Air 2's oil value (index 7) tracks real refills.
+
+## 2026-10-20: Phase 1 desktop app, acceptance session (in progress) and follow-ups
+
+### Owner acceptance session [observed]
+
+The owner ran `docs/phase-1-owner-session.md` against the bundled app, with both diffusers
+nearby.
+
+- **Window and Settings: pass.** The title bar is unified with the content, the window
+  drags, ⌘, opens Settings in its own window, and the broker connects once the password
+  has been saved there. The password is then in the login Keychain under service
+  `scent-control`.
+- **App icon: pass.** The Dock shows the indigo diffuser icon from PR #5.
+- **Scan.** At first, Found Nearby said "No new diffusers found nearby". After a rebuild
+  and relaunch it listed both diffusers. Two possible causes:
+  - Every ad hoc re-sign can make macOS ask for Bluetooth permission again, and a scan
+    without the permission comes back empty.
+  - The app may have checked whether Bluetooth was ready before CoreBluetooth had
+    reported its first state.
+
+  Either way, the app showed a failed scan as "nothing found". A fix is in progress on
+  branch `desktop-env-and-scan`.
+- **Adding a diffuser: not yet confirmed.** Both diffusers were listed from the broker,
+  named and given rooms. `desktop.json` showed no Bluetooth read for either (no `info`,
+  no `ble_id`), so neither add has run end to end yet.
+
+### Oil level on the Air 2 [observed]
+
+This is the follow-up to the app-code item "whether the Air 2's oil value tracks real
+refills". Over 5 minutes, the app watched the Air 2 (firmware 2.30) over the broker,
+asking for status every 20 s. Status index 7 read:
+
+| Time | State | Index 7 |
+|---|---|---|
+| 22:44:39 | on, intensity 1 | 100 |
+| 22:45:04 | switched off | 0 |
+| 22:45:32 | on again, intensity 2 | 50 |
+| 22:45:36 | on, intensity 1 | 50 |
+
+So index 7 follows whether the diffuser is running and its spray/pause phase. It is
+**not an oil level** on the Air 2, and the HVAC 2 has no such field. The app shows no oil
+level for either model.
+
+Also seen during the same watch:
+- Over MQTT, `GET_STATUS` was answered only with `acknowledgement` messages, with no
+  status array. Status arrays arrived only on a change.
+- The Air 2 was on battery at the time (charging 0, battery 98).
+
+### Scentiment app: schedule read-back, lights, names and rooms (app code)
+
+- **Reading back a stored schedule.**
+  - No app → device command asks a diffuser for its schedule. The only read-like request
+    is `GET_STATUS` (over MQTT, firmware > 2.12), and its reply holds no schedule.
+  - The app shows schedules only from its own backend.
+  - Incoming device messages carrying a schedule are barely used:
+    - `update_profile`: only entry 0's enable and level are read.
+    - `initial_load`: when its schedule is empty, the app pushes a default.
+  - Schedule limits: at most 7 entries on firmware ≤ 2.21 and 100 above. Entry 1 (the
+    factory entry) holds the master power and intensity.
+  - Scent Control therefore keeps the last schedule it sent, and shares it through the
+    broker (interim; branch `desktop-shared-schedules`).
+- **Lights.**
+  - Commands: `SET_RGB_LED {on}` and `SET_RGB_LEVEL {red,green,blue}`. The app's "warm"
+    light is preset RGB values.
+  - The app shows light controls only for the Wall Plug / Plug-In model. Nothing enables
+    them for the Air 2 (model `D`) or the HVAC (`H`). That matches Phase 0, where the Air
+    2 ignored both commands.
+  - The status array's light switch (index 12) is only logged.
+  - The schedule entries' `workingState.led` is never set from a control.
+- **Names and rooms.**
+  - Names and rooms are kept only in Scentiment's backend, as Houses with Spaces.
+    Nothing is written to the device.
+  - The advertised Bluetooth name is set by the firmware.
+  - Scent Control keeps names and rooms locally (PR #7).
+
+### Not yet observed
+
+- A large `UPDATE_PROFILE`: 99 entries is about 13.5 KB. The app and broker accept it, but
+  it hasn't been sent to real firmware.
+- Whether the diffusers connect with `clean_session` set. Read the `c` flag from the
+  broker's connect log line.
+- The add flow's Bluetooth wording for "Credentials saved", and whether the `SECRET_COMMAND`
+  restart write is acknowledged before the reboot.
