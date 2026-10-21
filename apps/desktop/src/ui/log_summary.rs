@@ -10,8 +10,7 @@ use serde_json::Value;
 
 use super::format::{Model, intensity, power_source, via_name};
 use crate::hub::SCAN_FAILED;
-use crate::shared_schedule::{self, Unreadable};
-use crate::state::{LogEntry, SHARED_SCHEDULE, UNREADABLE_SCHEDULE};
+use crate::state::{LogEntry, OTHER_VERSION_SCHEDULE, SHARED_SCHEDULE, UNREADABLE_SCHEDULE};
 
 /// What `power_source` says when it has nothing to go on.
 const NOTHING: &str = "not reported yet";
@@ -181,7 +180,7 @@ fn heard(entry: &LogEntry, label: &str, via: Option<Via>) -> String {
         "device_connected" => return format!("{label} connected to the broker"),
         "initial_load" | "update_profile" => return format!("{label} sent its schedule"),
         SHARED_SCHEDULE => return format!("Loaded {label}'s schedule from the broker"),
-        UNREADABLE_SCHEDULE => return unreadable_schedule(entry, label),
+        UNREADABLE_SCHEDULE | OTHER_VERSION_SCHEDULE => return ignored_schedule(entry, label),
         _ => {}
     }
     if says_credentials_saved(text) {
@@ -198,16 +197,17 @@ fn heard(entry: &LogEntry, label: &str, via: Option<Via>) -> String {
     }
 }
 
-/// A message under our own topics that the app ignored, and why, read again from the
-/// message itself.
-fn unreadable_schedule(entry: &LogEntry, label: &str) -> String {
+/// A message under our own topics that the app ignored, and why, as the action kept it
+/// when it was logged: the message itself is not read again.
+fn ignored_schedule(entry: &LogEntry, label: &str) -> String {
     if entry.device_id.is_none() {
         return "Ignored a message under Scent Control's topics on the broker that it can't use"
             .to_owned();
     }
-    let why = match shared_schedule::decode(entry.text.as_bytes()) {
-        Err(Unreadable::Version) => "another version of Scent Control stored it",
-        _ => "it can't be read",
+    let why = if entry.action == OTHER_VERSION_SCHEDULE {
+        "another version of Scent Control stored it"
+    } else {
+        "it can't be read"
     };
     format!("Ignored {label}'s schedule on the broker: {why}")
 }
@@ -626,9 +626,9 @@ mod tests {
             sentence(&loaded, "Bedroom"),
             "Loaded Bedroom's schedule from the broker"
         );
-        let mut later: Value = serde_json::from_str(&body).unwrap();
-        later["v"] = 2.into();
-        let later = heard(UNREADABLE_SCHEDULE, &later.to_string());
+        // Why is the action's, kept when it was logged: the text is not read again (here
+        // it couldn't be).
+        let later = heard(OTHER_VERSION_SCHEDULE, "{ not json");
         assert_eq!(
             sentence(&later, "Bedroom"),
             "Ignored Bedroom's schedule on the broker: another version of Scent Control stored it"

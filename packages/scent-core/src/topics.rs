@@ -98,7 +98,7 @@ mod tests {
         // Whatever it is given, it never builds a topic a diffuser listens on.
         for id in [
             "TESTDEVICE01",
-            "A1B2C3D4E5F6",
+            "TESTDEVICE02",
             "scentiment-mqtt-prod/device/X",
         ] {
             if let Some(topic) = schedule_topic(id) {

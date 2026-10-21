@@ -740,6 +740,14 @@ fn number_field<'a>(text: &'a mut String, salt: &str) -> egui::TextEdit<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shared_copy_takes_as_many_times_as_the_largest_table_keeps() {
+        assert_eq!(
+            super::max_times(Some("2.30")),
+            crate::shared_schedule::MOST_TIMES
+        );
+    }
+
     use scent_core::{AlwaysOn, Entry, HhMm, Level, Profile, ScheduleFlag};
 
     use super::*;

@@ -38,8 +38,13 @@ const CREDENTIALS_SAVED: &str = "credentials saved";
 /// What the log calls a schedule read from the broker that changed what the app knew.
 pub const SHARED_SCHEDULE: &str = "shared schedule";
 
-/// What the log calls a message under our own prefix that the app can't use.
+/// What the log calls a message under our own prefix that the app can't read.
 pub const UNREADABLE_SCHEDULE: &str = "unreadable shared schedule";
+
+/// What the log calls a stored schedule that another version of the app wrote. The
+/// reason is kept in the action as it is logged, so the log never reads the message
+/// again.
+pub const OTHER_VERSION_SCHEDULE: &str = "shared schedule from another version";
 
 /// The most characters a diffuser's name or room may have.
 pub const NAME_MAX_CHARS: usize = 40;
@@ -664,7 +669,8 @@ impl AppState {
     /// what the app knows wins. A diffuser not known yet becomes known, as one heard on
     /// the broker does. It is logged only when it changes the schedule the app knew, so
     /// that our own copy heard back, and every copy again on each reconnect, add nothing.
-    /// One that can't be used changes nothing and is logged, masked, once.
+    /// One that can't be used changes nothing and is logged, masked, once, with why
+    /// (another version's, or unreadable) in its action.
     fn on_app_message(&mut self, topic: &str, body: &[u8], at: i64) {
         // An empty retained message is how a stored one is taken off the broker.
         if body.is_empty() {
@@ -672,20 +678,28 @@ impl AppState {
         }
         let text = String::from_utf8_lossy(body).into_owned();
         let device_id = schedule_topic_device(topic);
-        let shared = device_id
+        let decoded = device_id
             .ok_or(Unreadable::Invalid)
-            .and_then(|_| shared_schedule::decode(body));
-        let (Some(id), Ok(shared)) = (device_id, shared) else {
-            self.push_log(LogEntry {
-                at,
-                device_id: device_id.map(str::to_owned),
-                via: Some(Via::Wifi),
-                direction: Direction::FromDevice,
-                action: UNREADABLE_SCHEDULE.to_owned(),
-                text,
-                sent: false,
-            });
-            return;
+            .and_then(|_| shared_schedule::decode(body, at));
+        let (id, shared) = match (device_id, decoded) {
+            (Some(id), Ok(shared)) => (id, shared),
+            (_, unusable) => {
+                let action = if matches!(unusable, Err(Unreadable::Version)) {
+                    OTHER_VERSION_SCHEDULE
+                } else {
+                    UNREADABLE_SCHEDULE
+                };
+                self.push_log(LogEntry {
+                    at,
+                    device_id: device_id.map(str::to_owned),
+                    via: Some(Via::Wifi),
+                    direction: Direction::FromDevice,
+                    action: action.to_owned(),
+                    text,
+                    sent: false,
+                });
+                return;
+            }
         };
         let device = self
             .devices
@@ -1695,24 +1709,41 @@ mod tests {
         later["v"] = serde_json::json!(2);
         let later = serde_json::to_vec(&later).unwrap();
         let secret = br#"{"v":1,"password":"hunter2","sent_at":1}"#.to_vec();
-        let cases: [(&str, Vec<u8>, Option<&str>); 6] = [
-            ("scent-control/v1/schedule/TESTDEVICE01", later, Some(ID1)),
+        // Heard at 60: a copy sent more than a day after that can't be right.
+        let future = crate::shared_schedule::encode(&evening(), 60 + 86_401).unwrap();
+        const TOPIC1: &str = "scent-control/v1/schedule/TESTDEVICE01";
+        let cases: [(&str, Vec<u8>, Option<&str>, &str); 7] = [
+            // Why is kept as it is logged, so the log never reads the message again.
+            (TOPIC1, later, Some(ID1), OTHER_VERSION_SCHEDULE),
             (
-                "scent-control/v1/schedule/TESTDEVICE01",
+                TOPIC1,
                 b"{ not json".to_vec(),
                 Some(ID1),
+                UNREADABLE_SCHEDULE,
             ),
-            ("scent-control/v1/schedule/TESTDEVICE01", secret, Some(ID1)),
+            (TOPIC1, secret, Some(ID1), UNREADABLE_SCHEDULE),
+            (TOPIC1, future, Some(ID1), UNREADABLE_SCHEDULE),
             // A good schedule, on a topic that isn't a diffuser's.
-            ("scent-control/v1/schedule/testdevice01", good.clone(), None),
+            (
+                "scent-control/v1/schedule/testdevice01",
+                good.clone(),
+                None,
+                UNREADABLE_SCHEDULE,
+            ),
             (
                 "scent-control/v1/schedule/TESTDEVICE01/x",
                 good.clone(),
                 None,
+                UNREADABLE_SCHEDULE,
             ),
-            ("scent-control/v1/something-new", good, None),
+            (
+                "scent-control/v1/something-new",
+                good,
+                None,
+                UNREADABLE_SCHEDULE,
+            ),
         ];
-        for (topic, body, device_id) in cases {
+        for (topic, body, device_id, action) in cases {
             let mut s = known_air2();
             s.apply_at(sent_profile(ID1, morning(), 50), NOW);
             let before = s.clone();
@@ -1720,7 +1751,7 @@ mod tests {
             assert_eq!(s.devices, before.devices, "{topic}");
             assert_eq!(s.log.len(), before.log.len() + 1, "{topic}");
             let entry = s.log.back().unwrap();
-            assert_eq!(entry.action, UNREADABLE_SCHEDULE, "{topic}");
+            assert_eq!(entry.action, action, "{topic}");
             assert_eq!(entry.device_id.as_deref(), device_id, "{topic}");
             assert_eq!(
                 (entry.via, entry.direction),

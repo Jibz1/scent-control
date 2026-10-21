@@ -5,7 +5,8 @@
 //! A diffuser can't say what schedule it holds, so the app remembers the last one it
 //! sent. When it sends one, it also stores it as a retained message at
 //! `scent-control/v1/schedule/<deviceId>` (see `scent_core::schedule_topic`), and every
-//! copy that connects reads it back: the newer copy wins. The payload is
+//! copy that connects reads it back: the newer copy wins, which assumes the copies'
+//! clocks agree (one sent more than a day ahead is not believed). The payload is
 //! `{"v":1,"profile":<the schedule as desktop.json keeps it>,"sent_at":<unix seconds>}`.
 //! It holds times, days, levels and a time zone offset: nothing secret.
 
@@ -16,6 +17,15 @@ use crate::store::StoredProfile;
 
 /// The only version of the payload this app writes and reads.
 const VERSION: u64 = 1;
+
+/// The most times a copy may hold: the largest table any firmware keeps, less its
+/// always-on entry (see `ui::schedule_editor::max_times`).
+pub const MOST_TIMES: usize = 99;
+
+/// How far ahead of the reader's clock a copy's `sent_at` may be. The clocks of the
+/// app's copies are assumed to agree to within this; a copy further ahead (forged, or
+/// from a clock that is badly wrong) would win over every schedule sent for that long.
+const AHEAD_ALLOWED_S: i64 = 86_400;
 
 /// A schedule stored on the broker, and when it was sent to the diffuser.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,9 +66,10 @@ pub fn encode(profile: &Profile, sent_at: i64) -> Option<Vec<u8>> {
     serde_json::to_vec(&payload).ok()
 }
 
-/// The schedule in a payload. The version is read first, so a payload from another
-/// version is told apart from a broken one whatever else it holds.
-pub fn decode(body: &[u8]) -> Result<SharedSchedule, Unreadable> {
+/// The schedule in a payload read at `now`. The version is read first, so a payload
+/// from another version is told apart from a broken one whatever else it holds. A copy
+/// sent more than a day after `now`, or with more than [`MOST_TIMES`] times, is invalid.
+pub fn decode(body: &[u8], now: i64) -> Result<SharedSchedule, Unreadable> {
     let json: serde_json::Value = serde_json::from_slice(body).map_err(|_| Unreadable::Invalid)?;
     match json.get("v") {
         None => return Err(Unreadable::Invalid),
@@ -66,7 +77,14 @@ pub fn decode(body: &[u8]) -> Result<SharedSchedule, Unreadable> {
         Some(_) => return Err(Unreadable::Version),
     }
     let payload: Payload = serde_json::from_value(json).map_err(|_| Unreadable::Invalid)?;
-    let profile = payload.profile.into_profile().ok_or(Unreadable::Invalid)?;
+    if payload.sent_at > now.saturating_add(AHEAD_ALLOWED_S) {
+        return Err(Unreadable::Invalid);
+    }
+    let profile = payload
+        .profile
+        .into_profile()
+        .filter(|profile| profile.entries.len() <= MOST_TIMES)
+        .ok_or(Unreadable::Invalid)?;
     Ok(SharedSchedule {
         profile,
         sent_at: payload.sent_at,
@@ -81,6 +99,8 @@ mod tests {
     use crate::store::sent_schedule;
 
     const SENT_AT: i64 = 1_790_000_000;
+    /// When the copy is read: a minute after it was sent.
+    const NOW: i64 = SENT_AT + 60;
 
     fn json(body: &[u8]) -> serde_json::Value {
         serde_json::from_slice(body).unwrap()
@@ -90,7 +110,7 @@ mod tests {
     fn a_schedule_goes_out_and_comes_back_the_same() {
         let body = encode(&sent_schedule(), SENT_AT).unwrap();
         assert_eq!(
-            decode(&body),
+            decode(&body, NOW),
             Ok(SharedSchedule {
                 profile: sent_schedule(),
                 sent_at: SENT_AT,
@@ -102,7 +122,7 @@ mod tests {
             ..sent_schedule()
         };
         let body = encode(&always_on_only, 7).unwrap();
-        assert_eq!(decode(&body).unwrap().profile, always_on_only);
+        assert_eq!(decode(&body, NOW).unwrap().profile, always_on_only);
     }
 
     #[test]
@@ -148,11 +168,50 @@ mod tests {
             let mut json = json(&body);
             json["v"] = v.clone();
             let bytes = serde_json::to_vec(&json).unwrap();
-            assert_eq!(decode(&bytes), Err(Unreadable::Version), "{v}");
+            assert_eq!(decode(&bytes, NOW), Err(Unreadable::Version), "{v}");
         }
         // A version 2 whose schedule looks nothing like ours is still a version 2.
         let later = br#"{"v":2,"profile":{"rooms":[]},"sent_at":"yesterday"}"#;
-        assert_eq!(decode(later), Err(Unreadable::Version));
+        assert_eq!(decode(later, NOW), Err(Unreadable::Version));
+    }
+
+    #[test]
+    fn a_copy_sent_more_than_a_day_from_now_is_invalid() {
+        const DAY: i64 = 86_400;
+        // A clock that is off by up to a day is still believed.
+        let ahead = encode(&sent_schedule(), NOW + DAY).unwrap();
+        assert_eq!(decode(&ahead, NOW).unwrap().sent_at, NOW + DAY);
+        // Further ahead, it would win over every schedule sent for a long time.
+        let too_far = encode(&sent_schedule(), NOW + DAY + 1).unwrap();
+        assert_eq!(decode(&too_far, NOW), Err(Unreadable::Invalid));
+        let last = encode(&sent_schedule(), i64::MAX).unwrap();
+        assert_eq!(decode(&last, NOW), Err(Unreadable::Invalid));
+        // No overflow at the end of time.
+        assert!(decode(&last, i64::MAX).is_ok());
+    }
+
+    #[test]
+    fn more_times_than_any_firmware_keeps_is_invalid() {
+        assert_eq!(MOST_TIMES, 99);
+        let time = sent_schedule().entries[0].clone();
+        let most = Profile {
+            entries: vec![time.clone(); MOST_TIMES],
+            ..sent_schedule()
+        };
+        assert_eq!(
+            decode(&encode(&most, SENT_AT).unwrap(), NOW)
+                .unwrap()
+                .profile,
+            most
+        );
+        let more = Profile {
+            entries: vec![time; MOST_TIMES + 1],
+            ..sent_schedule()
+        };
+        assert_eq!(
+            decode(&encode(&more, SENT_AT).unwrap(), NOW),
+            Err(Unreadable::Invalid)
+        );
     }
 
     #[test]
@@ -189,7 +248,7 @@ mod tests {
         ];
         for body in shaped.iter().map(Vec::as_slice).chain(broken) {
             assert_eq!(
-                decode(body),
+                decode(body, NOW),
                 Err(Unreadable::Invalid),
                 "{}",
                 String::from_utf8_lossy(body)

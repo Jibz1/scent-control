@@ -1546,7 +1546,7 @@ mod tests {
         // The copy is the schedule, sent when the Sent event says, so that the app hears
         // its own copy back as nothing new.
         assert_eq!(
-            crate::shared_schedule::decode(body),
+            crate::shared_schedule::decode(body, unix_now()),
             Ok(crate::shared_schedule::SharedSchedule {
                 profile: profile(),
                 sent_at: schedule_sent_at(&events),
@@ -1693,7 +1693,7 @@ mod tests {
         };
         rig.shared.send_schedule(ONE, always_on.clone()).await;
         let stored = lock(&rig.fake().stored).clone();
-        let copy = crate::shared_schedule::decode(&stored[0].1)
+        let copy = crate::shared_schedule::decode(&stored[0].1, unix_now())
             .unwrap()
             .profile;
         assert_eq!(copy.always_on, always_on.always_on);

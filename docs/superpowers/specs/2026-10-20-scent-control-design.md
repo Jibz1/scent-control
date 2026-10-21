@@ -681,9 +681,9 @@ The header has no glyph tile of its own: the hero card already carries the glyph
 ### Shared schedules (interim, owner 2026-10-20)
 
 - **Topic:** `scent-control/v1/schedule/<deviceId>`, valid IDs only; never under `scentiment-mqtt-prod/`, where a retained message would be replayed to the diffuser.
-- **Payload:** `{"v":1,"profile":<the schedule as desktop.json stores it>,"sent_at":<unix seconds>}`, with no secrets; other versions are ignored.
+- **Payload:** `{"v":1,"profile":<the schedule as desktop.json stores it>,"sent_at":<unix seconds>}`, with no secrets; other versions, more than 99 times, or a `sent_at` more than a day ahead of the reader's clock are ignored.
 - **Publishing:** retained at QoS 1, once the broker has accepted that schedule's `UPDATE_PROFILE`; never after a failed one.
-- **Newer wins:** each copy subscribes to `scent-control/v1/#` on every ConnAck and adopts a copy only if its `sent_at` is newer than its own (or it has none).
+- **Newer wins:** each copy subscribes to `scent-control/v1/#` on every ConnAck and adopts a copy only if its `sent_at` is newer than its own (or it has none). This assumes the copies' clocks agree.
 - **Persistence:** the broker keeps retained messages on a volume at `/mosquitto/data`; without one, they are lost on every restart.
 - **Interim:** the Phase 2 server's master copy of each schedule replaces this.
 
