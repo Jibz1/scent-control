@@ -282,11 +282,12 @@ pub fn ble_signal_quality(dbm: i64) -> Quality {
     }
 }
 
-/// What the schedule this app last sent says the diffuser should be doing now. It
-/// says where that comes from, because the diffuser may hold a different one (the
-/// Scentiment app, or another copy of this one, could have sent its own).
+/// What the last schedule sent from Scent Control (by this copy of the app or, as
+/// read from the broker, by another) says the diffuser should be doing now. It says
+/// where that comes from, because the diffuser may hold a different one (the
+/// Scentiment app could have sent its own).
 pub fn expected_text(expected: &Expected) -> String {
-    const BASED_ON: &str = "Based on the schedule this app last sent, it should be";
+    const BASED_ON: &str = "Based on the last schedule sent from Scent Control, it should be";
     if !expected.power {
         return format!("{BASED_ON} off now.");
     }
@@ -464,7 +465,7 @@ mod tests {
         let off = expected(false, 0, Source::AlwaysOn, None);
         assert_eq!(
             expected_text(&off),
-            "Based on the schedule this app last sent, it should be off now."
+            "Based on the last schedule sent from Scent Control, it should be off now."
         );
         let entry = Source::Entry {
             start: HhMm::parse("21:30").unwrap(),
@@ -472,12 +473,12 @@ mod tests {
         };
         assert_eq!(
             expected_text(&expected(true, 1, entry, Some("22:30"))),
-            "Based on the schedule this app last sent, it should be on at Low until 22:30 (schedule 21:30–22:30)."
+            "Based on the last schedule sent from Scent Control, it should be on at Low until 22:30 (schedule 21:30–22:30)."
         );
         // The always-on entry has no end.
         assert_eq!(
             expected_text(&expected(true, 2, Source::AlwaysOn, None)),
-            "Based on the schedule this app last sent, it should be on at Medium (always-on entry)."
+            "Based on the last schedule sent from Scent Control, it should be on at Medium (always-on entry)."
         );
     }
 

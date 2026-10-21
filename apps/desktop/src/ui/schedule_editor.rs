@@ -1,5 +1,5 @@
-//! The Edit Schedule sheet: the diffuser's timetable as this app last sent it (or empty),
-//! to change and send again. The diffuser keeps the table and runs it on its own;
+//! The Edit Schedule sheet: the diffuser's timetable as last sent from Scent Control (or
+//! empty), to change and send again. The diffuser keeps the table and runs it on its own;
 //! sending it replaces the whole table, over WiFi (see `hub::UiCommand::SendSchedule`).
 //!
 //! What is typed is a [`Draft`]; [`check`] says whether it makes a [`Profile`], and
@@ -392,8 +392,8 @@ pub struct ScheduleEditor {
 }
 
 impl ScheduleEditor {
-    /// Opens the sheet for `device`, with the schedule this app last sent it, or an
-    /// empty one in this Mac's time zone.
+    /// Opens the sheet for `device`, with the last schedule sent to it from Scent
+    /// Control, or an empty one in this Mac's time zone.
     pub fn open(&mut self, device: &DeviceView, now: i64) {
         let mac = local_utc_offset_secs(now) as f64 / 3600.0;
         self.mac_hours = mac;
