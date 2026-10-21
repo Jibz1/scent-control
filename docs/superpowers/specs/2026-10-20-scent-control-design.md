@@ -645,9 +645,9 @@ app's accent. HIG lets an app set its own accent.
 - The raw (masked) JSON shows in SF Mono only when a row is expanded.
 
 **Schedules.**
-- When the app knows the schedule (the last one this Mac sent, saved with the diffusers), the
-  detail pane shows a "Today"
-  strip: 24 hours, scheduled windows filled with the accent, and a marker for now.
+- When the app knows the schedule (the last one sent from Scent Control, saved with the
+  diffusers and shared through the broker), the detail pane shows a "Today" strip: 24
+  hours, scheduled windows filled with the accent, and a marker for now.
 - The schedule editor shows a week grid (7 rows × 24 h) previewing its entries, so overlaps
   and gaps show before sending.
 
@@ -677,6 +677,15 @@ The header has no glyph tile of its own: the hero card already carries the glyph
    - online means answering pings, sent every 30 s;
    - "what the schedule says it should be doing now" appears alongside.
 6. **Developer view:** the conversation log from the bench.
+
+### Shared schedules (interim, owner 2026-10-20)
+
+- **Topic:** `scent-control/v1/schedule/<deviceId>`, valid IDs only; never under `scentiment-mqtt-prod/`, where a retained message would be replayed to the diffuser.
+- **Payload:** `{"v":1,"profile":<the schedule as desktop.json stores it>,"sent_at":<unix seconds>}`, with no secrets; other versions are ignored.
+- **Publishing:** retained at QoS 1, once the broker has accepted that schedule's `UPDATE_PROFILE`; never after a failed one.
+- **Newer wins:** each copy subscribes to `scent-control/v1/#` on every ConnAck and adopts a copy only if its `sent_at` is newer than its own (or it has none).
+- **Persistence:** the broker keeps retained messages on a volume at `/mosquitto/data`; without one, they are lost on every restart.
+- **Interim:** the Phase 2 server's master copy of each schedule replaces this.
 
 ### Not in desktop v1
 
