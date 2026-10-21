@@ -85,6 +85,81 @@ def test_any_key_with_password_in_its_name_is_ignored(tmp_path):
     assert len(result.stderr.splitlines()) == 2, result.stderr
 
 
+def test_inline_comments_and_crlf_line_ends_are_not_part_of_a_value(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_bytes(
+        b"SCENT_BROKER_URL=wss://broker.example.test/mqtt # mine\r\n"
+        b'SCENT_BROKER_USERNAME="example # user" # the comment, not the hash inside\r\n'
+        b"SCENT_ROUTE_ID=route#1\r\n"
+    )
+    result = load(env_file)
+    got = exported(result)
+    assert got["SCENT_BROKER_URL"] == "wss://broker.example.test/mqtt"
+    assert got["SCENT_BROKER_USERNAME"] == "example # user"
+    # A # with no space before it is part of the value.
+    assert got["SCENT_ROUTE_ID"] == "route#1"
+    assert "\r" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_an_empty_variable_in_the_environment_does_not_hide_the_file(tmp_path):
+    # As in Python's tools: empty is the same as not set.
+    env_file = tmp_path / ".env"
+    env_file.write_text("SCENT_BROKER_URL=wss://broker.example.test/mqtt\n")
+    result = load(env_file, {"SCENT_BROKER_URL": ""})
+    assert exported(result)["SCENT_BROKER_URL"] == "wss://broker.example.test/mqtt"
+
+
+def test_a_malformed_password_line_is_told_by_its_number_never_its_text(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "SCENT_ROUTE_ID=route-test-1\n"
+        f"PASSWORD: {SECRET}=x\n"
+    )
+    result = load(env_file)
+    assert SECRET not in result.stdout + result.stderr
+    warning = result.stderr.splitlines()
+    assert len(warning) == 1, result.stderr
+    assert "line 2" in warning[0]
+    assert exported(result)["SCENT_ROUTE_ID"] == "route-test-1"
+
+
+def check_url(url: str) -> subprocess.CompletedProcess:
+    """Runs the bundle script's check of the broker address on `url`, and prints the
+    environment the build would get."""
+    script = 'set -euo pipefail; source "$1"; check_broker_url; env'
+    return subprocess.run(
+        ["bash", "-c", script, "bash", str(LOADER)],
+        env={"PATH": "/usr/bin:/bin", "SCENT_BROKER_URL": url},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_a_broker_url_the_app_would_turn_down_is_left_out_with_a_warning():
+    for bad in [
+        "mqtt://broker.example.test",
+        "broker.example.test/mqtt",
+        f"wss://someone:{SECRET}@broker.example.test/mqtt",
+    ]:
+        result = check_url(bad)
+        assert "SCENT_BROKER_URL" not in exported(result), bad
+        warning = result.stderr.splitlines()
+        assert len(warning) == 1, result.stderr
+        assert "wss://" in warning[0] and "Settings" in warning[0]
+        # The address itself is never shown: it may hold a password.
+        assert bad not in result.stderr and SECRET not in result.stdout + result.stderr
+
+
+def test_a_good_or_missing_broker_url_passes_the_check_quietly():
+    good = check_url("wss://broker.example.test/mqtt")
+    assert exported(good)["SCENT_BROKER_URL"] == "wss://broker.example.test/mqtt"
+    assert good.stderr == ""
+    empty = check_url("")
+    assert empty.stderr == ""
+
+
 def test_no_env_file_exports_nothing_and_says_nothing(tmp_path):
     result = load(tmp_path / ".env")
     got = exported(result)
@@ -107,8 +182,9 @@ def test_the_scripts_parse():
 def test_the_bundle_script_loads_the_repo_root_env_before_it_builds():
     text = BUNDLE.read_text()
     loads = text.index('load_broker_env "$root/.env"')
+    checks = text.index("check_broker_url")
     builds = text.index("cargo build")
-    assert loads < builds
+    assert loads < checks < builds
     # A password never goes to the build, from .env or from the shell.
     assert "unset_passwords" in text[:builds]
 

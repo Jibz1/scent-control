@@ -25,6 +25,7 @@ export SCENT_BUILD_COMMIT
 # shellcheck source=scripts/broker-env.sh
 source "$root/scripts/broker-env.sh"
 load_broker_env "$root/.env"
+check_broker_url
 unset_passwords
 echo "Default broker: ${SCENT_BROKER_URL:-none, so the app asks for one in Settings}" >&2
 cargo build --release -p scent-desktop

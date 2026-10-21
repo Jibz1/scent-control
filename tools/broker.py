@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -26,8 +27,10 @@ SETTING_FILES = (Path(__file__).resolve().parent.parent / ".env", ENV_LOCAL)
 
 
 def env_file_value(path: Path, name: str) -> str | None:
-    """The value of `name` in a KEY=value file, or None. Skips blank lines and comments,
-    and takes `export KEY=value` and a value in quotes."""
+    """The value of `name` in a KEY=value file, or None, read as scripts/broker-env.sh
+    reads it: blank lines and comments skipped, `export KEY=value` taken, Unix or Windows
+    line ends. A value in quotes is what is between them; one without ends at a # after
+    a space (an inline comment)."""
     if not path.is_file():
         return None
     for line in path.read_text().splitlines():
@@ -40,8 +43,10 @@ def env_file_value(path: Path, name: str) -> str | None:
         if not sep or key.strip() != name:
             continue
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        if value[:1] in ("'", '"'):
+            value = value[1:].partition(value[0])[0]
+        else:
+            value = re.split(r"\s#", value, maxsplit=1)[0].strip()
         return value or None
     return None
 

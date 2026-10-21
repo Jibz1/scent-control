@@ -49,6 +49,26 @@ def test_a_broker_setting_comes_from_the_environment_then_the_repo_env_then_env_
     assert broker_setting("SCENT_BROKER_URL") == "wss://shell.example.test/mqtt"
 
 
+def test_inline_comments_and_crlf_line_ends_are_not_part_of_a_setting(setting_files):
+    root_env, _ = setting_files
+    root_env.write_bytes(
+        b"SCENT_BROKER_URL=wss://root.example.test/mqtt # mine\r\n"
+        b'SCENT_BROKER_USERNAME="example # user" # the comment, not the hash inside\r\n'
+        b"SCENT_ROUTE_ID=route#1\r\n"
+    )
+    assert broker_setting("SCENT_BROKER_URL") == "wss://root.example.test/mqtt"
+    assert broker_setting("SCENT_BROKER_USERNAME") == "example # user"
+    # A # with no space before it is part of the value.
+    assert broker_setting("SCENT_ROUTE_ID") == "route#1"
+
+
+def test_an_empty_setting_in_the_environment_does_not_hide_the_files(setting_files, monkeypatch):
+    root_env, _ = setting_files
+    root_env.write_text("SCENT_BROKER_URL=wss://root.example.test/mqtt\n")
+    monkeypatch.setenv("SCENT_BROKER_URL", "")
+    assert broker_setting("SCENT_BROKER_URL") == "wss://root.example.test/mqtt"
+
+
 def test_a_broker_setting_found_nowhere_is_none(setting_files):
     for key in BROKER_KEYS:
         assert broker_setting(key) is None
