@@ -3,7 +3,8 @@
 //! diffusing at Medium and its Today strip, then with a command on its way; a diffuser
 //! that is off; the diffusers grouped by room in the sidebar, with the name and room in
 //! Details and the list of rooms open; the log open with one row open to its message; the
-//! empty state; a diffuser found nearby; the Settings window; the notices; the Add
+//! empty state; a diffuser found nearby; the Settings window with its Appearance and
+//! About boxes, Light and Dark chosen and following the system; the notices; the Add
 //! Diffuser sheet as it
 //! opens, asks for a network, waits, is done, fails and asks for the network again; the
 //! Edit Schedule sheet with its week grid, valid and with a mistake; and the glyphs on
@@ -25,9 +26,9 @@ use super::add_sheet::Target;
 use super::device_panel::DevicePanel;
 use super::glyphs::{self, Ink, Mark};
 use super::schedule_editor::{DraftEntry, test_time};
-use super::settings::{self, SettingsWindow};
+use super::settings::{self, Build, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
-use super::theme::{self, Palette};
+use super::theme::{self, Appearance, Palette};
 use crate::add_flow::{AddStep, wait_outcome};
 use crate::hub::NO_BROKER_PASSWORD;
 use crate::mqtt::BrokerSettings;
@@ -572,13 +573,23 @@ fn time(start: &str, end: &str, days: &[u8], level: u8) -> DraftEntry {
     }
 }
 
-/// The Settings window as the app draws it, at the height it asks for, showing
-/// a failed save.
-fn settings_window(name: &str, dark: bool) {
+/// The Settings window as the app draws it, at the height it asks for, on a Mac set to
+/// light or dark, with `appearance` chosen in it, About telling of `build`, and `error`
+/// from a failed save if there is one.
+fn settings_window(
+    name: &str,
+    dark: bool,
+    appearance: Appearance,
+    build: Build,
+    error: Option<&str>,
+) {
     let theme = if dark { Theme::Dark } else { Theme::Light };
     let mut window = SettingsWindow::default();
     window.open(&BrokerSettings::default());
-    window.fail("The Keychain refused the password. Nothing was saved and the connection is unchanged. Type the password again to try again.".to_owned());
+    window.set_build(build);
+    if let Some(error) = error {
+        window.fail(error.to_owned());
+    }
     let mut frames = 0;
     let mut harness = Harness::builder()
         .with_size(vec2(settings::WIDTH, 400.0))
@@ -591,7 +602,7 @@ fn settings_window(name: &str, dark: bool) {
                 frames += 1;
                 if frames == 1 {
                     theme::install(ui.ctx(), Path::new(theme::SYSTEM_FONTS));
-                    ui.ctx().set_theme(theme);
+                    theme::set_appearance(ui.ctx(), appearance);
                     ui.ctx().request_repaint();
                     return;
                 }
@@ -599,6 +610,8 @@ fn settings_window(name: &str, dark: bool) {
             },
             window,
         );
+    // What the Mac is set to, which System follows.
+    harness.input_mut().system_theme = Some(theme);
     harness.run_steps(4);
     let height = harness.state().fitted_height().expect("drawn");
     harness.set_size(vec2(settings::WIDTH, height));
@@ -861,9 +874,30 @@ fn render_screens() {
     assert_seams(&empty_light, false, false);
     let _ = main_window("empty_dark", true, empty, None);
 
-    for (name, dark) in [("settings_light", false), ("settings_dark", true)] {
-        settings_window(name, dark);
+    // Settings from the bundle, Light or Dark chosen, after a save that failed; then as
+    // `cargo run` builds it (no commit) on a Mac set to light, following the system.
+    let bundled = Build {
+        commit: Some("1a2b3c4"),
+        ..Build::THIS
+    };
+    let refused = "The Keychain refused the password. Nothing was saved and the connection is unchanged. Type the password again to try again.";
+    for (name, dark, appearance) in [
+        ("settings_light", false, Appearance::Light),
+        ("settings_dark", true, Appearance::Dark),
+    ] {
+        settings_window(name, dark, appearance, bundled, Some(refused));
     }
+    let plain = Build {
+        commit: None,
+        ..Build::THIS
+    };
+    settings_window(
+        "settings_system_light",
+        false,
+        Appearance::System,
+        plain,
+        None,
+    );
 
     // Adding the diffuser found nearby: it isn't on WiFi, so the sheet asks for the
     // network; then, with one given, it waits for the diffuser on the broker; and then
