@@ -252,15 +252,18 @@ async fn discovery_control_ha_restart_and_disconnect_over_real_sockets() {
         h.home.until(AVAILABILITY, b"online").await;
         drop(h.upstream);
         assert!(h.task.await.unwrap().is_err());
-        // The other session must close too, causing the HA broker to send its LWT.
+        // The other session must close too, causing the HA broker to send its LWT. It is
+        // aborted, not disconnected (a DISCONNECT would cancel the will), so the socket
+        // ends in a reset rather than a FIN if our last PUBACK was still unread.
         let mut byte = [0];
-        assert_eq!(
-            timeout(Duration::from_secs(2), h.home.0.read(&mut byte))
-                .await
-                .unwrap()
-                .unwrap(),
-            0
-        );
+        match timeout(Duration::from_secs(2), h.home.0.read(&mut byte))
+            .await
+            .expect("the Home Assistant session stayed open")
+        {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("expected the Home Assistant session to close: {other:?}"),
+        }
 
         // A fresh pair of connections advertises unknown state and sends only PING.
         let task = spawn(h.config);
