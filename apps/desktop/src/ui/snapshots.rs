@@ -30,7 +30,7 @@ use super::settings::{self, Build, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
 use super::theme::{self, Appearance, Palette};
 use crate::add_flow::{AddStep, wait_outcome};
-use crate::hub::NO_BROKER_PASSWORD;
+use crate::hub::{NO_BROKER, NO_BROKER_PASSWORD, SCAN_FAILED};
 use crate::mqtt::BrokerSettings;
 use crate::state::{
     Adding, AppState, BrokerState, DeviceView, Event, Field, LogEntry, Reading, ScanHit,
@@ -873,6 +873,27 @@ fn render_screens() {
     let empty_light = main_window("empty_light", false, empty.clone(), None);
     assert_seams(&empty_light, false, false);
     let _ = main_window("empty_dark", true, empty, None);
+
+    // The first launch of a build given no broker: the notice that asks for one, and the
+    // first scan failing before Bluetooth was ready, which Found Nearby says.
+    let first = AppState {
+        broker: BrokerState::Disconnected(NO_BROKER.to_owned()),
+        ..AppState::default()
+    };
+    for (name, dark) in [("no_broker_light", false), ("no_broker_dark", true)] {
+        let _ = main_window_with(name, dark, size, first.clone(), None, |screens, _| {
+            let _ = screens.list.scan();
+            screens.on_event(&Event::Failed {
+                device_id: None,
+                what: SCAN_FAILED.to_owned(),
+                error: "Bluetooth isn't ready on this Mac. If macOS asked, allow Scent \
+                        Control to use Bluetooth (System Settings, Privacy & Security, \
+                        Bluetooth)."
+                    .to_owned(),
+                at: NOW,
+            });
+        });
+    }
 
     // Settings from the bundle, Light or Dark chosen, after a save that failed; then as
     // `cargo run` builds it (no commit) on a Mac set to light, following the system.
