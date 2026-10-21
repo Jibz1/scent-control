@@ -1,5 +1,6 @@
-//! The Add Diffuser sheet: names a diffuser found over Bluetooth and puts it on our
-//! broker (see `add_flow`), showing each step as the hub reports it.
+//! The Add Diffuser sheet: names a diffuser found over Bluetooth, and puts it in a room
+//! if the person gives one, then puts it on our broker (see `add_flow`), showing each step
+//! as the hub reports it.
 //!
 //! It opens from a diffuser's "Add…" button under Found Nearby, from the notice on a
 //! diffuser that hasn't been heard on our broker, or from Set Up Again… on one that has,
@@ -12,25 +13,30 @@
 
 use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
-    self, Id, Key, KeyboardShortcut, Modifiers, Rect, RichText, Sense, Spinner, Stroke, TextStyle,
-    WidgetInfo, WidgetType, pos2, vec2,
+    self, Id, Key, KeyboardShortcut, Modifiers, Rect, RichText, ScrollArea, Sense, Spinner, Stroke,
+    TextStyle, WidgetInfo, WidgetType, pos2, vec2,
 };
 use scent_core::Secret;
 
-use super::theme::{GRID, Palette, headline};
+use super::device_panel::{CHOOSE_ROOM, ROOM_HINT};
+use super::theme::{GRID, Palette, TOOLBAR_HEIGHT, headline};
 use super::widgets::{
-    NoticeKind, default_button, footnote, grouped, notice_with, one_line, plain_button, row,
-    secondary, sheet,
+    self, NoticeKind, combo_field, combo_open, default_button, footnote, grouped, notice_with,
+    one_line, plain_button, row, secondary, sheet, text_field,
 };
 use crate::add_flow::{AddRequest, AddStep};
 use crate::hub::UiCommand;
-use crate::state::{Adding, AppState};
+use crate::state::{Adding, AppState, NAME_MAX_CHARS};
 
 /// The sheet's width.
 pub const WIDTH: f32 = 460.0;
 
 /// The width of the text fields.
-const FIELD_WIDTH: f32 = 240.0;
+pub const FIELD_WIDTH: f32 = 240.0;
+
+/// What the sheet holds besides its scrolling body: its margins, title and note, and the
+/// buttons, with a little room under it.
+const FIXED_ROOM: f32 = 180.0;
 
 /// The height of a step's line, and the size of the mark beside it.
 const STEP_HEIGHT: f32 = 22.0;
@@ -171,6 +177,10 @@ impl AddSheet {
         Id::new("add_sheet_wifi_password")
     }
 
+    fn room_id() -> Id {
+        Id::new("add_sheet_room")
+    }
+
     /// Opens the sheet for `target`, with its name and room in the fields and the network
     /// empty.
     pub fn open(&mut self, target: Target) {
@@ -211,6 +221,7 @@ impl AddSheet {
     fn close(&mut self, ctx: &egui::Context) {
         self.forget_password(ctx);
         self.target = None;
+        self.room = String::new();
         self.network = String::new();
         self.submitted = false;
     }
@@ -254,8 +265,11 @@ impl AddSheet {
         });
         let enter = ctx.input(|input| input.key_pressed(Key::Enter))
             && ctx.memory(|memory| memory.focused().is_none());
+        // Escape in the list of rooms closes the list, not the sheet.
+        let escape = escape && !combo_open(ctx, Self::room_id());
+        let rooms = state.rooms();
         let mut action = sheet(ctx, Id::new("add_sheet"), WIDTH, |ui| {
-            self.contents(ui, &phase)
+            self.contents(ui, &phase, &rooms)
         });
         if escape || command_w || closing {
             action = Some(Action::Close);
@@ -323,9 +337,13 @@ impl AddSheet {
         })
     }
 
-    /// What the sheet holds: the name, the network when it is asked for, the steps, what
-    /// went wrong, and the buttons.
-    fn contents(&mut self, ui: &mut egui::Ui, phase: &Phase<'_>) -> Option<Action> {
+    /// What the sheet holds: its title and note, its [`body`](Self::body), and the buttons.
+    fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        phase: &Phase<'_>,
+        rooms: &[String],
+    ) -> Option<Action> {
         let palette = Palette::of(ui);
         let mut action = None;
         ui.label(
@@ -340,22 +358,90 @@ impl AddSheet {
         );
         ui.add_space(2.0 * GRID);
 
+        // The sheet fits the window: what doesn't fit scrolls, between the note above and
+        // the buttons, which stay in view. As in Edit Schedule, the scrolling part is told
+        // its height outright, or it would grow a little each frame from the first guess.
+        let room = (ui.ctx().content_rect().height() - TOOLBAR_HEIGHT - FIXED_ROOM).max(160.0);
+        let (enter, again) = ScrollArea::vertical()
+            .max_height(room)
+            .min_scrolled_height(room)
+            .auto_shrink([false, true])
+            .show(ui, |ui| self.body(ui, phase, rooms))
+            .inner;
+        if again {
+            action = Some(Action::TryAgain);
+        }
+
+        ui.add_space(2.0 * GRID);
+        let can_add = self.can_add(phase);
+        egui::Sides::new().show(
+            ui,
+            |_| {},
+            |ui| {
+                if let Phase::Done(_) = phase {
+                    if default_button(ui, "Done").clicked() {
+                        action = Some(Action::Close);
+                    }
+                    return;
+                }
+                if !matches!(phase, Phase::Failed(..)) {
+                    let add = ui.add_enabled_ui(can_add, |ui| default_button(ui, "Add"));
+                    if add.inner.clicked() {
+                        action = Some(Action::Add);
+                    }
+                }
+                if plain_button(ui, "Cancel").clicked() {
+                    action = Some(Action::Close);
+                }
+            },
+        );
+        if action.is_none() && enter && can_add {
+            action = Some(Action::Add);
+        }
+        action
+    }
+
+    /// The sheet's middle, which scrolls when the window is short: the name and the room
+    /// (typed, or picked from `rooms`, those in use), the network when it is asked for, the
+    /// steps, and what went wrong. Returns whether Enter was pressed in a field, and whether
+    /// Try Again was clicked.
+    fn body(&mut self, ui: &mut egui::Ui, phase: &Phase<'_>, rooms: &[String]) -> (bool, bool) {
         let editable = matches!(
             phase,
             Phase::Ready | Phase::NeedWifi(_) | Phase::RetryWifi | Phase::Failed(..)
         );
         let mut enter = false;
+        let mut again = false;
         ui.add_enabled_ui(editable, |ui| {
             grouped(ui, "", |ui| {
                 row(ui, "Name", |ui| {
-                    let name = egui::TextEdit::singleline(&mut self.name)
-                        .id(Id::new("add_sheet_name"))
-                        .hint_text("Name");
-                    enter |= field(ui, name);
+                    let name = widgets::Field {
+                        id: Id::new("add_sheet_name"),
+                        label: "Name",
+                        hint: "Name",
+                        width: FIELD_WIDTH,
+                        max_chars: NAME_MAX_CHARS,
+                    };
+                    let name = text_field(ui, &mut self.name, &name);
+                    enter |= entered(ui, &name);
+                });
+                row(ui, "Room", |ui| {
+                    let room = widgets::Field {
+                        id: Self::room_id(),
+                        label: "Room",
+                        hint: ROOM_HINT,
+                        width: FIELD_WIDTH,
+                        max_chars: NAME_MAX_CHARS,
+                    };
+                    let room = combo_field(ui, &mut self.room, &room, rooms, CHOOSE_ROOM);
+                    enter |= entered(ui, &room.field);
                 });
             });
         });
-        footnote(ui, "What it is called in the list.");
+        footnote(
+            ui,
+            "What it is called in the list, and the room it is listed under.",
+        );
 
         let wifi_note = match phase {
             Phase::NeedWifi(_) => Some("It isn't connected to WiFi right now."),
@@ -414,47 +500,22 @@ impl AddSheet {
         }
         if let Phase::Failed(_, why) = phase {
             ui.add_space(2.0 * GRID);
-            let (again, _) = notice_with(ui, NoticeKind::Error, why, |ui| {
+            (again, _) = notice_with(ui, NoticeKind::Error, why, |ui| {
                 plain_button(ui, "Try Again").clicked()
             });
-            if again {
-                action = Some(Action::TryAgain);
-            }
         }
-
-        ui.add_space(2.0 * GRID);
-        let can_add = self.can_add(phase);
-        egui::Sides::new().show(
-            ui,
-            |_| {},
-            |ui| {
-                if let Phase::Done(_) = phase {
-                    if default_button(ui, "Done").clicked() {
-                        action = Some(Action::Close);
-                    }
-                    return;
-                }
-                if !matches!(phase, Phase::Failed(..)) {
-                    let add = ui.add_enabled_ui(can_add, |ui| default_button(ui, "Add"));
-                    if add.inner.clicked() {
-                        action = Some(Action::Add);
-                    }
-                }
-                if plain_button(ui, "Cancel").clicked() {
-                    action = Some(Action::Close);
-                }
-            },
-        );
-        if action.is_none() && enter && can_add {
-            action = Some(Action::Add);
-        }
-        action
+        (enter, again)
     }
 }
 
 /// A one-line text box of the fields' width. True when Enter was pressed in it.
 fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> bool {
     let response = ui.add(edit.desired_width(FIELD_WIDTH));
+    entered(ui, &response)
+}
+
+/// Whether Enter was pressed in the text box of `response`, which it leaves.
+fn entered(ui: &egui::Ui, response: &egui::Response) -> bool {
     response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
 }
 
@@ -523,9 +584,10 @@ fn step_line(ui: &mut egui::Ui, line: &str, mark: Mark) {
 mod tests {
     use std::path::Path;
 
+    use eframe::egui::accesskit::Role;
     use eframe::egui::{Key, Modifiers, ViewportEvent, ViewportId};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
     use super::super::theme;
     use super::*;
@@ -612,7 +674,7 @@ mod tests {
     fn harness(sheet: AddSheet, state: AppState) -> Harness<'static, Rig> {
         let mut frames = 0;
         let mut harness = Harness::builder()
-            .with_size(egui::vec2(900.0, 600.0))
+            .with_size(egui::Vec2::from(super::super::theme::MIN_WINDOW_SIZE))
             .with_os(egui::os::OperatingSystem::Mac)
             .build_ui_state(
                 move |ui, rig: &mut Rig| {
@@ -708,6 +770,18 @@ mod tests {
     }
 
     #[test]
+    fn at_the_smallest_window_the_buttons_stay_in_view_and_the_rest_scrolls() {
+        // The tallest the sheet gets before an add: it asks for the network as well.
+        let harness = typed_in();
+        let [width, height] = super::super::theme::MIN_WINDOW_SIZE;
+        assert_eq!(harness.ctx.content_rect().size(), egui::vec2(width, height));
+        let cancel = harness.get_by_label("Cancel").rect();
+        assert!(cancel.bottom() <= height, "{cancel:?}");
+        let add = harness.get_by_label("Add").rect();
+        assert!(add.bottom() <= height, "{add:?}");
+    }
+
+    #[test]
     fn cancel_forgets_the_wifi_password() {
         let mut harness = typed_in();
         harness.get_by_label("Cancel").click();
@@ -786,6 +860,72 @@ mod tests {
                 .query_by(|node| node.placeholder() == Some("WiFi password"))
                 .is_none()
         );
+    }
+
+    /// The state with a diffuser in "Bedroom", so that the Room field has a room to offer.
+    fn with_a_room() -> AppState {
+        let mut known = crate::state::DeviceView::new("TESTDEVICE01");
+        known.room = Some("Bedroom".to_owned());
+        AppState {
+            devices: [("TESTDEVICE01".to_owned(), known)].into(),
+            ..AppState::default()
+        }
+    }
+
+    #[test]
+    fn add_hands_over_the_room_typed() {
+        let mut harness = harness(opened(), with_a_room());
+        let room = harness.get_by_role_and_label(Role::TextInput, "Room");
+        assert_eq!(room.accesskit_node().placeholder(), Some("None"));
+        room.focus();
+        room.type_text("Office");
+        harness.run_steps(2);
+        harness.get_by_label("Add").click();
+        harness.run_steps(2);
+        let [UiCommand::Add(request)] = &harness.state().sent[..] else {
+            panic!("one Add");
+        };
+        assert_eq!(
+            (request.label.as_str(), request.room.as_str()),
+            ("Air 2", "Office")
+        );
+    }
+
+    #[test]
+    fn a_room_in_use_can_be_picked_and_escape_closes_only_the_list() {
+        let mut harness = harness(opened(), with_a_room());
+        harness
+            .get_by_role_and_label(Role::Button, "Choose a Room")
+            .click();
+        harness.run_steps(2);
+        let _ = harness.get_by_role_and_label(Role::Button, "Bedroom");
+        // Escape closes the list, and leaves the sheet open.
+        harness.key_press(Key::Escape);
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, "Bedroom")
+                .is_none()
+        );
+        assert!(harness.state().sheet.is_open());
+        harness
+            .get_by_role_and_label(Role::Button, "Choose a Room")
+            .click();
+        harness.run_steps(2);
+        harness
+            .get_by_role_and_label(Role::Button, "Bedroom")
+            .click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().sheet.room, "Bedroom");
+        harness.get_by_label("Add").click();
+        harness.run_steps(2);
+        let [UiCommand::Add(request)] = &harness.state().sent[..] else {
+            panic!("one Add");
+        };
+        assert_eq!(request.room, "Bedroom");
+        // With no room in use there is nothing to pick from.
+        let harness = super::tests::harness(opened(), AppState::default());
+        assert!(harness.query_by_label("Choose a Room").is_none());
     }
 
     #[test]

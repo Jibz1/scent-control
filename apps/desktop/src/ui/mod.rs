@@ -7,7 +7,8 @@
 //! the app.
 //!
 //! The screens only read the state they are given and hand back what they want done
-//! ([`Requests`]); the app sends the commands to the hub and saves the settings.
+//! ([`Requests`]); the app sends the commands to the hub, makes the edits to a diffuser's
+//! name or room, and saves the settings.
 
 pub mod add_sheet;
 pub mod clock;
@@ -52,7 +53,7 @@ use self::widgets::{
 use crate::add_flow::AddStep;
 use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
-use crate::state::{AppState, BrokerState, Event};
+use crate::state::{AppState, BrokerState, Edit, Event};
 
 /// ⌘, opens Settings, as in every Mac app.
 const SETTINGS_SHORTCUT: KeyboardShortcut =
@@ -73,6 +74,8 @@ pub struct Requests {
     /// The settings were saved. The app stores them and reconnects, then tells the
     /// Settings window how that went.
     pub settings: Option<Submitted>,
+    /// Changes to a diffuser's name or room, for the app to make to the state and save.
+    pub edits: Vec<Edit>,
 }
 
 /// What the screens remember between frames. The hub never sees any of it.
@@ -275,6 +278,7 @@ impl Screens {
             .as_ref()
             .and_then(|ble_id| hits.iter().find(|hit| &hit.ble_id == ble_id));
         if let Some(hit) = found {
+            requests.edits.extend(self.panel.end_typing());
             let name = name_from_scan(&hit.name);
             let model = Model::from_scan(&hit.name);
             let draw = move |painter: &egui::Painter, rect, color, ground| {
@@ -306,10 +310,12 @@ impl Screens {
             return;
         }
         if let Some(device) = self.selected.as_ref().and_then(|id| state.devices.get(id)) {
-            let commands = self.panel.show(ui, state, device, now, sheet);
+            let edits = &mut requests.edits;
+            let commands = self.panel.show(ui, state, device, now, sheet, edits);
             requests.commands.extend(commands);
             return;
         }
+        requests.edits.extend(self.panel.end_typing());
         let (title, sentence) = if state.devices.is_empty() {
             (
                 "No diffusers yet",
@@ -547,6 +553,7 @@ mod tests {
             state.broker = broker;
             let requests = draw(&mut screens, &state);
             assert!(requests.commands.is_empty() && requests.settings.is_none());
+            assert!(requests.edits.is_empty());
         }
         // The first diffuser is open, and the log and the Settings window draw too.
         assert_eq!(screens.selected.as_deref(), Some(ONE));

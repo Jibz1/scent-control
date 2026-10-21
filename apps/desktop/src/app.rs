@@ -201,6 +201,15 @@ impl eframe::App for ScentApp {
         if let Some(submitted) = requests.settings {
             self.apply_settings(ui.ctx(), submitted);
         }
+        if !requests.edits.is_empty() {
+            self.change_state(|state| {
+                for edit in requests.edits {
+                    state.edit(edit);
+                }
+            });
+            // A name or a room is the person's own work: saved at once.
+            self.save();
+        }
 
         self.save_if_due();
         ui.ctx().request_repaint_after(REDRAW_EVERY);
