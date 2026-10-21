@@ -2,7 +2,8 @@
 //! is doing, and the power and intensity to change it), then grouped boxes, as in
 //! System Settings: "Schedule" (what this app sent, today's times, and Edit Schedule…),
 //! "Details" (the power source, the WiFi signal, the last report, the firmware and the
-//! ID) and "Connection" (Send Over, and Read Status).
+//! ID) and "Connection" (Send Over, Read Status, and Set Up Again… for a diffuser on our
+//! broker).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -46,6 +47,9 @@ const BARS_GAP: f32 = 6.0;
 
 /// What the hero says under the state while what was sent is waited for.
 const WAITING: &str = "Sent, waiting for the diffuser";
+
+/// What Set Up Again… does, under the Connection box.
+const SET_UP_AGAIN: &str = "Points it at the broker in Settings and restarts it.";
 
 /// How a reading looks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +103,9 @@ pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     Some(expected_text(&expected_state(profile, now)))
 }
 
-/// The add sheet for a diffuser known over Bluetooth that isn't on our broker yet, named
-/// as it is, or after its model.
+/// The add sheet for a diffuser known over Bluetooth, named as it is, or after its model:
+/// to put it on our broker (Add to Broker…), or to point it at the broker in Settings
+/// again once it is there (Set Up Again…).
 fn add_target(device: &DeviceView) -> Option<Target> {
     let ble_id = device.ble_id.clone()?;
     let name = if device.label == device.id {
@@ -378,7 +383,7 @@ impl DevicePanel {
     }
 
     /// Shows the diffuser and returns the commands the controls asked for. `sheet` is set
-    /// when Edit Schedule… or Add to Broker… was clicked.
+    /// when Edit Schedule…, Add to Broker… or Set Up Again… was clicked.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -456,7 +461,11 @@ impl DevicePanel {
                 )
                 .clicked()
         };
+        // Once it is on our broker, the notice and its Add to Broker… are gone: this is
+        // the way to point it at the broker again, after the broker changes in Settings.
+        let again = on_our_broker(device).then(|| add_target(device)).flatten();
         let mut read = false;
+        let mut set_up = false;
         grouped_with(
             ui,
             "Connection",
@@ -469,8 +478,19 @@ impl DevicePanel {
                             "Auto: Bluetooth when the diffuser is in range, otherwise WiFi",
                         );
                 });
+                if again.is_some() {
+                    row(ui, "Broker", |ui| {
+                        set_up = plain_button(ui, "Set Up Again…").clicked();
+                    });
+                }
             },
         );
+        if let Some(target) = again {
+            footnote(ui, SET_UP_AGAIN);
+            if set_up {
+                *sheet = Some(OpenSheet::Add(target));
+            }
+        }
         // A read writes nothing and may say nothing, so it isn't waited for.
         if read {
             commands.push(UiCommand::ReadStatus {

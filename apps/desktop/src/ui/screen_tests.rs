@@ -252,6 +252,63 @@ fn add_on_a_diffuser_found_nearby_opens_the_sheet_and_hands_over_the_add() {
     );
 }
 
+#[test]
+fn a_diffuser_on_our_broker_can_be_set_up_again() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(state());
+    harness.run_steps(2);
+    // Bedroom has been heard on the broker: no notice to add it, and in Connection the
+    // way to point it at the broker in Settings again.
+    assert!(harness.query_by_label("Add to Broker…").is_none());
+    let _ = harness.get_by_label("Points it at the broker in Settings and restarts it.");
+    // At the foot of the pane: scrolled to, as a person would.
+    harness.get_by_label("Set Up Again…").scroll_to_me();
+    harness.run_steps(4);
+    harness.get_by_label("Set Up Again…").click();
+    harness.run_steps(2);
+    // The add sheet, for that diffuser, with the same add as any other.
+    assert!(harness.state().screens.add_sheet.is_for("ble-1"));
+    let _ = harness.get_by_label("Add Diffuser");
+    assert!(harness.state().commands.is_empty());
+    harness.get_by_label("Add").click();
+    harness.run_steps(2);
+    let [UiCommand::Add(request)] = &harness.state().commands[..] else {
+        panic!("one Add");
+    };
+    assert_eq!(request.ble_id, "ble-1");
+    assert_eq!(request.label, "Bedroom");
+    assert!(request.wifi.is_none());
+}
+
+#[test]
+fn a_diffuser_not_yet_on_our_broker_keeps_add_to_broker() {
+    use egui_kittest::kittest::Queryable as _;
+    // The second diffuser, never heard on the broker: known over Bluetooth, and not.
+    for ble_id in [Some("ble-2"), None] {
+        let mut state = state();
+        state.devices.get_mut(super::tests::TWO).unwrap().ble_id = ble_id.map(str::to_owned);
+        let mut screens = harness(state);
+        screens.run_steps(2);
+        screens
+            .get_by_label("Diffuser CE02, not pinged yet")
+            .click();
+        screens.run_steps(2);
+        assert!(
+            screens.query_by_label("Set Up Again…").is_none(),
+            "{ble_id:?}"
+        );
+        match ble_id {
+            Some(ble_id) => {
+                screens.get_by_label("Add to Broker…").click();
+                screens.run_steps(2);
+                assert!(screens.state().screens.add_sheet.is_for(ble_id));
+            }
+            // Nothing to set it up by.
+            None => assert!(screens.query_by_label("Add to Broker…").is_none()),
+        }
+    }
+}
+
 /// Opens Edit Schedule on the open diffuser, and lets the sheet settle: its scrolling
 /// part takes a few frames to measure what it holds.
 fn open_schedule(harness: &mut egui_kittest::Harness<'static, Rig>) {

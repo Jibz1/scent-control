@@ -1,8 +1,9 @@
 //! The Add Diffuser sheet: names a diffuser found over Bluetooth and puts it on our
 //! broker (see `add_flow`), showing each step as the hub reports it.
 //!
-//! It opens from a diffuser's "Add…" button under Found Nearby, or from the notice on a
-//! diffuser that hasn't been heard on our broker. When the diffuser isn't on WiFi yet,
+//! It opens from a diffuser's "Add…" button under Found Nearby, from the notice on a
+//! diffuser that hasn't been heard on our broker, or from Set Up Again… on one that has,
+//! to point it at the broker in Settings again. When the diffuser isn't on WiFi yet,
 //! the hub stops and the sheet asks for the network; and when an add that gave one
 //! fails, Try Again asks for it again, filled in, with the password to type again. Its password is typed into a masked
 //! field and handed over as a [`Secret`] once; the field, and the copy of it the text
