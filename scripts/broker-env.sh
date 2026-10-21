@@ -63,7 +63,9 @@ load_broker_env() {
       \'*) value="${value#\'}" && value="${value%%\'*}" ;;
       *) value="$(_broker_env_trim "${value%%[[:space:]]#*}")" ;;
     esac
-    if [[ -z "${!key:-}" ]]; then
+    # printenv, not ${!key}: indirect expansion is bash-only, and zsh users source this
+    # file too (examples/mqtt_roundtrip.rs). An empty value counts as unset, as in Python.
+    if [[ -z "$(printenv "$key")" ]]; then
       export "$key=$value"
     fi
   done <"$file"
