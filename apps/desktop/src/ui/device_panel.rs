@@ -256,6 +256,31 @@ struct Draft {
     text: String,
 }
 
+/// `device` as it is once `edits` are made. The app makes them after the frame, so this is
+/// what a sheet opened in the frame that typing in Details ended starts from.
+fn after_edits(state: &AppState, device: &DeviceView, edits: &[Edit]) -> DeviceView {
+    if edits.is_empty() {
+        return device.clone();
+    }
+    let mut after = AppState {
+        devices: state.devices.clone(),
+        ..AppState::default()
+    };
+    for edit in edits {
+        after.edit(edit.clone());
+    }
+    after
+        .devices
+        .remove(&device.id)
+        .unwrap_or_else(|| device.clone())
+}
+
+/// Whether a Details field still has the keyboard focus, as egui keeps it: also while the
+/// window doesn't, when the person is in another app, so that the typing isn't ended.
+fn keeps_focus(ui: &egui::Ui, field: &egui::Response) -> bool {
+    ui.memory(|memory| memory.has_focus(field.id))
+}
+
 /// What a Details field for `device_id` shows: what is being typed in it, else `stored`.
 fn shown_text(draft: Option<&Draft>, device_id: &str, stored: &str) -> String {
     match draft {
@@ -462,7 +487,8 @@ impl DevicePanel {
                 max_chars: NAME_MAX_CHARS,
             };
             let mut text = shown_text(self.name.as_ref(), id, stored);
-            let focused = text_field(ui, &mut text, &field).has_focus();
+            let field = text_field(ui, &mut text, &field);
+            let focused = keeps_focus(ui, &field);
             if let Some(done) = typed(&mut self.name, id, stored, text, focused, escape) {
                 edits.push(Edit::Name {
                     device_id: done.device_id,
@@ -481,7 +507,11 @@ impl DevicePanel {
             };
             let mut text = shown_text(self.room.as_ref(), id, stored);
             let combo = combo_field(ui, &mut text, &field, &state.rooms(), CHOOSE_ROOM);
-            let focused = combo.field.has_focus();
+            let focused = keeps_focus(ui, &combo.field);
+            if combo.picked.is_some() {
+                // What was typed gives way to what was picked.
+                let _ = self.room.take_if(|draft| draft.device_id == id);
+            }
             if let Some(done) = typed(&mut self.room, id, stored, text, focused, escape) {
                 edits.push(Edit::Room {
                     device_id: done.device_id,
@@ -547,23 +577,20 @@ impl DevicePanel {
     ) -> Vec<UiCommand> {
         let mut commands = Vec::new();
         let mut pref = self.prefs.get(&device.id).copied().unwrap_or_default();
+        // Add to Broker… or Set Up Again… was clicked: the sheet opens at the end.
+        let mut open_add = false;
 
         header(ui, state.online(&device.id, now), device);
         if !on_our_broker(device) {
             ui.add_space(2.0 * GRID);
             let text = "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this Mac is in range.";
-            match add_target(device) {
-                Some(target) => {
-                    let (add, _) = notice_with(ui, NoticeKind::Warning, text, |ui| {
-                        plain_button(ui, "Add to Broker…").clicked()
-                    });
-                    if add {
-                        *sheet = Some(OpenSheet::Add(target));
-                    }
-                }
-                None => {
-                    notice(ui, NoticeKind::Warning, text);
-                }
+            if add_target(device).is_some() {
+                let (add, _) = notice_with(ui, NoticeKind::Warning, text, |ui| {
+                    plain_button(ui, "Add to Broker…").clicked()
+                });
+                open_add |= add;
+            } else {
+                notice(ui, NoticeKind::Warning, text);
             }
         }
         ui.add_space(SECTION_GAP);
@@ -618,7 +645,7 @@ impl DevicePanel {
         };
         // Once it is on our broker, the notice and its Add to Broker… are gone: this is
         // the way to point it at the broker again, after the broker changes in Settings.
-        let again = on_our_broker(device).then(|| add_target(device)).flatten();
+        let again = on_our_broker(device) && add_target(device).is_some();
         let mut read = false;
         let mut set_up = false;
         grouped_with(
@@ -633,18 +660,16 @@ impl DevicePanel {
                             "Auto: Bluetooth when the diffuser is in range, otherwise WiFi",
                         );
                 });
-                if again.is_some() {
+                if again {
                     row(ui, "Broker", |ui| {
                         set_up = plain_button(ui, "Set Up Again…").clicked();
                     });
                 }
             },
         );
-        if let Some(target) = again {
+        if again {
             footnote(ui, SET_UP_AGAIN);
-            if set_up {
-                *sheet = Some(OpenSheet::Add(target));
-            }
+            open_add |= set_up;
         }
         // A read writes nothing and may say nothing, so it isn't waited for.
         if read {
@@ -654,6 +679,12 @@ impl DevicePanel {
             });
         }
         ui.add_space(SECTION_GAP);
+        // The click on the button may be what ended the typing in Details, this frame: the
+        // sheet starts from what was typed, not from the name or room before it.
+        if open_add {
+            let latest = after_edits(state, device, edits);
+            *sheet = add_target(&latest).map(OpenSheet::Add);
+        }
 
         self.prefs.insert(device.id.clone(), pref);
         commands

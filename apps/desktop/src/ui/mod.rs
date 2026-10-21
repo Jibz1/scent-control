@@ -109,6 +109,12 @@ impl Screens {
         }
     }
 
+    /// Ends any typing in the open diffuser's name or room, as when the app quits: what was
+    /// typed is kept, as it is when the field is left.
+    pub fn end_typing(&mut self) -> Vec<Edit> {
+        self.panel.end_typing()
+    }
+
     /// Shows a problem in a notice at the top, in place of any earlier one.
     pub fn set_notice(&mut self, notice: String) {
         self.notice = Some(notice);

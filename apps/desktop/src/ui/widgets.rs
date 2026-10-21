@@ -289,6 +289,10 @@ pub fn combo_field(
     );
     // Over the field's end, so that it takes the clicks there.
     let button = ui.interact(rect, field.id.with("chevron"), Sense::click());
+    // Opening the list doesn't end the typing: the field keeps the focus, as on the Mac.
+    if button.clicked() && ui.memory(|memory| memory.had_focus_last_frame(field.id)) {
+        response.request_focus();
+    }
     let enabled = ui.is_enabled();
     button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, chooser));
     ui.ctx()

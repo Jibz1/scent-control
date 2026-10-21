@@ -225,6 +225,12 @@ impl eframe::App for ScentApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.drain_events();
+        let edits = self.screens.end_typing();
+        self.change_state(|state| {
+            for edit in edits {
+                state.edit(edit);
+            }
+        });
         self.save();
     }
 }

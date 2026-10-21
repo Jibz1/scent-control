@@ -215,10 +215,16 @@ impl DeviceView {
 pub struct Adding {
     /// The diffuser being added, by its Bluetooth ID.
     pub ble_id: String,
-    /// What it is to be called once it is added; empty keeps its device ID.
+    /// What it is to be called once it is added; empty keeps the name it has.
     pub label: String,
-    /// The room it goes in once it is added; empty leaves it in the one it is in.
-    pub room: String,
+    /// The room it goes in once it is added, empty for none; `None` for an add the
+    /// screens didn't start, which leaves it where it is.
+    pub room: Option<String>,
+    /// Its label and room as the add began (`None` for a diffuser not known yet), so that
+    /// a name or room given in Details while the add waits, which is the more recent, is
+    /// not undone when it is done.
+    pub had_label: Option<String>,
+    pub had_room: Option<String>,
     /// The network it was given to join, if any: never its password.
     pub network: Option<String>,
     /// Where it is, as the hub last said.
@@ -445,10 +451,16 @@ impl AppState {
         {
             return;
         }
+        let known = self
+            .devices
+            .values()
+            .find(|device| device.ble_id.as_deref() == Some(ble_id));
         let adding = Adding {
             ble_id: ble_id.to_owned(),
             label: label.to_owned(),
-            room: room.to_owned(),
+            room: Some(room.to_owned()),
+            had_label: known.map(|device| device.label.clone()),
+            had_room: known.and_then(|device| device.room.clone()),
             network: network.map(str::to_owned),
             step: AddStep::ReadInfo,
             reached: None,
@@ -457,8 +469,9 @@ impl AppState {
     }
 
     /// The hub says where the add of `ble_id` is. Once it is done, the diffuser takes its
-    /// name and its room. How each add ended is logged, as its sheet may have been closed:
-    /// a failure as one, and an add as heard on the broker, where it showed up.
+    /// name and its room, each unless it was changed in Details since the add began. How
+    /// each add ended is logged, as its sheet may have been closed: a failure as one, and an
+    /// add as heard on the broker, where it showed up.
     fn on_adding(&mut self, ble_id: &str, step: AddStep, now: i64) {
         let adding = self
             .adding
@@ -466,7 +479,9 @@ impl AppState {
             .or_insert_with(|| Adding {
                 ble_id: ble_id.to_owned(),
                 label: String::new(),
-                room: String::new(),
+                room: None,
+                had_label: None,
+                had_room: None,
                 network: None,
                 step: AddStep::ReadInfo,
                 reached: None,
@@ -475,17 +490,21 @@ impl AppState {
             adding.reached = Some(step.clone());
         }
         adding.step = step.clone();
-        let (label, room) = (adding.label.clone(), adding.room.clone());
+        let given = adding.clone();
         let (via, direction, text) = match step {
             AddStep::Done(id) => {
-                if !label.is_empty() {
-                    let device_id = id.clone();
+                // A diffuser not known as the add began had its ID for a label, no room.
+                let (label, room) = self.devices.get(&id).map_or((false, false), |device| {
+                    let had_label = given.had_label.as_deref().unwrap_or(&id);
+                    (device.label == had_label, device.room == given.had_room)
+                });
+                if label && !given.label.is_empty() {
                     self.edit(Edit::Name {
-                        device_id,
-                        name: label,
+                        device_id: id.clone(),
+                        name: given.label,
                     });
                 }
-                if !room.is_empty() {
+                if let Some(room) = given.room.filter(|_| room) {
                     self.edit(Edit::Room {
                         device_id: id,
                         room,
@@ -1970,16 +1989,74 @@ mod tests {
             room: "Office".into(),
         });
         s.begin_add(BLE1, "Bedside", " bedroom ", None);
-        assert_eq!(s.adding[BLE1].room, " bedroom ");
+        assert_eq!(s.adding[BLE1].room.as_deref(), Some(" bedroom "));
         // Not before it is done.
         s.apply_at(adding(BLE1, AddStep::WaitConnected), NOW);
         assert_eq!(s.devices[ID1].room.as_deref(), Some("Office"));
         s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
         assert_eq!(s.devices[ID1].room.as_deref(), Some("bedroom"));
-        // An add that names no room leaves it in the one it is in.
+        // The sheet starts from the room it is in: emptied, it takes it out of it.
         s.begin_add(BLE1, "Bedside", "", None);
         s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
-        assert_eq!(s.devices[ID1].room.as_deref(), Some("bedroom"));
+        assert_eq!(s.devices[ID1].room, None);
+    }
+
+    #[test]
+    fn a_name_or_room_changed_in_details_while_an_add_waits_is_kept_when_it_is_done() {
+        let mut s = known_air2();
+        let edit = |s: &mut AppState, name: &str, room: &str| {
+            let device_id = ID1.to_owned();
+            s.edit(Edit::Name {
+                device_id: device_id.clone(),
+                name: name.into(),
+            });
+            s.edit(Edit::Room {
+                device_id,
+                room: room.into(),
+            });
+        };
+        edit(&mut s, "Bedroom", "Upstairs");
+        // Set Up Again…, as the sheet opens it, then a rename and a move while it waits:
+        // the most recent change is the person's, and wins.
+        s.begin_add(BLE1, "Bedroom", "Upstairs", None);
+        s.apply_at(adding(BLE1, AddStep::WaitConnected), NOW);
+        edit(&mut s, "Bedside", "Office");
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].label, "Bedside");
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("Office"));
+        // Unchanged since, they take what the sheet said.
+        s.begin_add(BLE1, "Nightstand", "Bedroom", None);
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].label, "Nightstand");
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("Bedroom"));
+    }
+
+    #[test]
+    fn a_new_diffuser_named_in_details_while_it_is_added_keeps_that_name() {
+        let mut s = AppState::default();
+        s.begin_add(BLE1, "Mini", "Office", None);
+        // Its info is read: it is in the sidebar, and can be renamed there.
+        s.apply_at(ble_info(BLE1, ID1, 10), NOW);
+        s.edit(Edit::Name {
+            device_id: ID1.into(),
+            name: "Desk".into(),
+        });
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].label, "Desk");
+        // Its room was not changed since: the sheet's is given.
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("Office"));
+    }
+
+    #[test]
+    fn an_add_the_screens_did_not_start_leaves_the_room_alone() {
+        let mut s = known_air2();
+        s.edit(Edit::Room {
+            device_id: ID1.into(),
+            room: "Office".into(),
+        });
+        s.apply_at(adding(BLE1, AddStep::Done(ID1.to_owned())), NOW);
+        assert_eq!(s.devices[ID1].room.as_deref(), Some("Office"));
+        assert_eq!(s.devices[ID1].label, ID1);
     }
 
     // Names and rooms

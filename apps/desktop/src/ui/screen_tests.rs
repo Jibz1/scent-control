@@ -896,3 +896,122 @@ fn set_up_again_keeps_the_room_it_is_in() {
         ("Bedroom", "Upstairs")
     );
 }
+
+#[test]
+fn set_up_again_right_after_typing_a_name_opens_with_that_name() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    // Typed, and not left with Return: the click on the button ends the typing.
+    type_over(&mut harness, "Name", "Bedside", None);
+    harness.get_by_label("Set Up Again…").scroll_to_me();
+    harness.run_steps(4);
+    harness.get_by_label("Set Up Again…").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state.devices[ONE].label, "Bedside");
+    let names: Vec<_> = harness
+        .get_all_by_role_and_label(Role::TextInput, "Name")
+        .map(|field| field.value())
+        .collect();
+    assert_eq!(
+        names,
+        [Some("Bedside".to_owned()), Some("Bedside".to_owned())]
+    );
+    harness.get_by_label("Add").click();
+    harness.run_steps(2);
+    let [UiCommand::Add(request)] = &harness.state().commands[..] else {
+        panic!("one Add");
+    };
+    assert_eq!(request.label, "Bedside");
+}
+
+#[test]
+fn add_to_broker_right_after_typing_a_room_opens_with_that_room() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = calm();
+    let two = state.devices.get_mut(super::tests::TWO).unwrap();
+    two.ble_id = Some("ble-2".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    harness
+        .get_by_label("Diffuser CE02, not pinged yet")
+        .click();
+    harness.run_steps(2);
+    // The notice's button is above Details: it opens the sheet in the frame the typing ends.
+    type_over(&mut harness, "Room", "Office", None);
+    harness.get_by_label("Add to Broker…").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.add_sheet.is_for("ble-2"));
+    let rooms: Vec<_> = harness
+        .get_all_by_role_and_label(Role::TextInput, "Room")
+        .map(|field| field.value())
+        .collect();
+    assert_eq!(
+        rooms,
+        [Some("Office".to_owned()), Some("Office".to_owned())]
+    );
+}
+
+#[test]
+fn switching_to_another_app_while_typing_ends_nothing() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Bedsi", None);
+    harness.input_mut().focused = false;
+    harness.run_steps(2);
+    assert!(harness.state().edits.is_empty());
+    // Back in the app, the typing goes on, and Return ends it.
+    harness.input_mut().focused = true;
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Name")
+        .type_text("de");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state.devices[ONE].label, "Bedside");
+}
+
+#[test]
+fn the_list_of_rooms_opens_without_ending_the_typing() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let mut state = calm();
+    state.devices.get_mut(super::tests::TWO).unwrap().room = Some("Upstairs".to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    type_over(&mut harness, "Room", "Up", None);
+    harness
+        .get_by_role_and_label(Role::Button, "Choose a Room")
+        .click();
+    harness.run_steps(2);
+    // Nothing half typed went into the state, and the field still has the typing.
+    assert!(harness.state().edits.is_empty());
+    let room = harness.get_by_role_and_label(Role::TextInput, "Room");
+    assert!(room.accesskit_node().is_focused());
+    harness
+        .get_by_role_and_label(Role::Button, "Upstairs")
+        .click();
+    harness.run_steps(2);
+    let picked = Edit::Room {
+        device_id: ONE.to_owned(),
+        room: "Upstairs".to_owned(),
+    };
+    assert_eq!(harness.state().edits, [picked]);
+}
+
+#[test]
+fn what_is_being_typed_is_kept_when_the_app_quits() {
+    let mut harness = harness(calm());
+    harness.run_steps(2);
+    type_over(&mut harness, "Name", "Bedside", None);
+    let edits = harness.state_mut().screens.end_typing();
+    let typed = Edit::Name {
+        device_id: ONE.to_owned(),
+        name: "Bedside".to_owned(),
+    };
+    assert_eq!(edits, [typed]);
+}

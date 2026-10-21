@@ -708,7 +708,9 @@ mod tests {
         let adding = Adding {
             ble_id: BLE.to_owned(),
             label: "Air 2".to_owned(),
-            room: String::new(),
+            room: None,
+            had_label: None,
+            had_room: None,
             network: network.map(str::to_owned),
             step,
             reached,
