@@ -20,9 +20,10 @@ and to the workflow's component choices.
 
 1. Choose the component's next SemVer version. Update its version source and any
    associated app metadata in a PR, run the component's checks, and merge it into
-   `main`. For Rust versions, commit the updated `Cargo.lock`; for desktop, keep
-   `CFBundleShortVersionString` and `CFBundleVersion` in
-   `apps/desktop/macos/Info.plist` in sync. The tagger does not edit versions.
+   `main`. For Rust versions, commit the updated `Cargo.lock`. The desktop app shows
+   its version in Settings → About, and `scripts/bundle-macos.sh` writes it to the
+   bundle's `CFBundleShortVersionString` and `CFBundleVersion`, so there is nothing
+   else to keep in sync. The tagger does not edit versions.
 2. Open **Actions → Tag component release → Run workflow**. Select `main`, choose
    the component, and enter the exact manifest version without `v`.
 3. The workflow tags the `main` commit selected when the run was dispatched. It

@@ -99,6 +99,39 @@ pub const SECTION_GAP: f32 = 24.0;
 /// segmented control's selection, and the log pane opening.
 pub const MOTION_SECS: f32 = 0.2;
 
+/// How the app looks, as chosen in Settings: as the Mac is set (the default), or always
+/// light or always dark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appearance {
+    System,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    /// The appearance `ctx` is set to show.
+    pub fn of(ctx: &egui::Context) -> Appearance {
+        match ctx.options(|options| options.theme_preference) {
+            ThemePreference::System => Appearance::System,
+            ThemePreference::Light => Appearance::Light,
+            ThemePreference::Dark => Appearance::Dark,
+        }
+    }
+}
+
+/// Shows the app in `appearance`, in every window, from what is drawn next: egui picks
+/// the light or dark style by it, and tells each window's title bar to match
+/// (`Options::sync_window_theme`, on by default). The main window, which Settings is
+/// drawn within, is drawn again at once.
+pub fn set_appearance(ctx: &egui::Context, appearance: Appearance) {
+    ctx.set_theme(match appearance {
+        Appearance::System => ThemePreference::System,
+        Appearance::Light => ThemePreference::Light,
+        Appearance::Dark => ThemePreference::Dark,
+    });
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
+}
+
 /// Apple's system colors for one appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
@@ -360,7 +393,8 @@ fn put_first(fonts: &mut FontDefinitions, family: FontFamily, name: &str) {
         .insert(0, name.to_owned());
 }
 
-/// Sets the app's look on `ctx`: it follows the system's light or dark setting, with
+/// Sets the app's look on `ctx`: it follows the system's light or dark setting (until
+/// [`set_appearance`] says otherwise), with
 /// the fonts from `fonts_dir` (see [`font_definitions`]), the text styles, and the
 /// colors and spacing of each appearance. The fonts take effect from the next pass.
 pub fn install(ctx: &egui::Context, fonts_dir: &Path) {
@@ -510,6 +544,39 @@ mod tests {
         // systemIndigo, the app's own accent (HIG lets an app set one).
         assert_eq!(Palette::for_dark(false).accent, rgb(0x5856D6));
         assert_eq!(Palette::for_dark(true).accent, rgb(0x5E5CE6));
+    }
+
+    #[test]
+    fn choosing_an_appearance_sets_the_theme_egui_shows() {
+        let ctx = egui::Context::default();
+        install(&ctx, Path::new("/nonexistent"));
+        assert_eq!(Appearance::of(&ctx), Appearance::System);
+        for (appearance, preference, theme) in [
+            (Appearance::Dark, ThemePreference::Dark, Theme::Dark),
+            (Appearance::Light, ThemePreference::Light, Theme::Light),
+        ] {
+            set_appearance(&ctx, appearance);
+            assert_eq!(ctx.options(|o| o.theme_preference), preference);
+            assert_eq!(ctx.theme(), theme);
+            assert_eq!(Appearance::of(&ctx), appearance);
+        }
+        set_appearance(&ctx, Appearance::System);
+        assert_eq!(ctx.options(|o| o.theme_preference), ThemePreference::System);
+        // The title bars follow: egui tells each window when the preference changes.
+        assert!(ctx.options(|o| o.sync_window_theme));
+    }
+
+    #[test]
+    fn choosing_an_appearance_draws_the_main_window_again() {
+        let ctx = egui::Context::default();
+        // Settled: nothing is waiting to be drawn.
+        for _ in 0..3 {
+            let output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.drop_without_applying_deltas();
+        }
+        assert!(!ctx.has_requested_repaint_for(&egui::ViewportId::ROOT));
+        set_appearance(&ctx, Appearance::Dark);
+        assert!(ctx.has_requested_repaint_for(&egui::ViewportId::ROOT));
     }
 
     #[test]

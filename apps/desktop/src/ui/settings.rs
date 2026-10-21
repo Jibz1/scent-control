@@ -4,6 +4,9 @@
 //!
 //! The password is typed into a masked field, goes to the Keychain through the app,
 //! and is not kept here: the window hands it over as a [`Secret`] and empties the field.
+//!
+//! Under the broker's box are Appearance and About. An appearance chosen there shows at
+//! once and goes to the app to save, without Save; About gives the app's version.
 
 use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
@@ -13,14 +16,14 @@ use eframe::egui::{
 use scent_core::Secret;
 
 use super::format::broker_text;
-use super::theme::{GRID, MARGIN, Palette, broker_color};
-use super::widgets::{default_button, footnote, grouped, plain_button, row, status_dot};
+use super::theme::{Appearance, GRID, MARGIN, Palette, SECTION_GAP, broker_color, set_appearance};
+use super::widgets::{default_button, footnote, grouped, plain_button, row, segmented, status_dot};
 use crate::mqtt::{BrokerSettings, BrokerUrl};
 use crate::state::BrokerState;
 
 /// The window's width, and its height before it has measured what it holds.
 pub const WIDTH: f32 = 560.0;
-const FIRST_HEIGHT: f32 = 360.0;
+const FIRST_HEIGHT: f32 = 560.0;
 
 /// The width of the text fields.
 const FIELD_WIDTH: f32 = 340.0;
@@ -60,6 +63,52 @@ fn validate(url: &str, username: &str, route_id: &str) -> Result<BrokerSettings,
     })
 }
 
+/// The segments of the Appearance box.
+const APPEARANCES: [(Appearance, &str); 3] = [
+    (Appearance::System, "System"),
+    (Appearance::Light, "Light"),
+    (Appearance::Dark, "Dark"),
+];
+
+/// Which build of the app this is, for About: the desktop app's version, which its
+/// releases are tagged with (`desktop/v0.1.0`, see `docs/releases.md`), and the commit it
+/// was built from when the build said so. `scripts/bundle-macos.sh` does, in
+/// `SCENT_BUILD_COMMIT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Build {
+    pub version: &'static str,
+    pub commit: Option<&'static str>,
+}
+
+impl Build {
+    pub const THIS: Build = Build {
+        version: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("SCENT_BUILD_COMMIT"),
+    };
+
+    /// The commit, if the build gave one.
+    fn commit(&self) -> Option<&'static str> {
+        self.commit
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty())
+    }
+
+    /// "Version 0.1.0", with the commit after it as a Mac app's About gives its build:
+    /// "Version 0.1.0 (abc1234)".
+    pub fn text(&self) -> String {
+        match self.commit() {
+            Some(commit) => format!("Version {} ({commit})", self.version),
+            None => format!("Version {}", self.version),
+        }
+    }
+}
+
+impl Default for Build {
+    fn default() -> Build {
+        Build::THIS
+    }
+}
+
 #[derive(Default)]
 pub struct SettingsWindow {
     open: bool,
@@ -73,6 +122,10 @@ pub struct SettingsWindow {
     position: Option<Pos2>,
     /// How tall the window was drawn last time, so that it fits what it holds.
     height: Option<f32>,
+    /// What About says.
+    build: Build,
+    /// The appearance chosen here, until the app takes it to save.
+    chosen: Option<Appearance>,
 }
 
 impl SettingsWindow {
@@ -205,6 +258,18 @@ impl SettingsWindow {
         self.open
     }
 
+    /// Has About tell of `build` in place of this one.
+    #[cfg(test)]
+    pub fn set_build(&mut self, build: Build) {
+        self.build = build;
+    }
+
+    /// The appearance the person chose here since this was last asked, for the app to
+    /// save. It is shown already.
+    pub fn take_appearance(&mut self) -> Option<Appearance> {
+        self.chosen.take()
+    }
+
     /// What the window holds: the broker fields in a grouped box, the connection's
     /// state, what went wrong, and Cancel and Save. Returns what the person did.
     pub fn contents(&mut self, ui: &mut egui::Ui, broker: &BrokerState) -> Option<Action> {
@@ -242,6 +307,10 @@ impl SettingsWindow {
             ui.add_space(GRID / 2.0);
             ui.label(RichText::new(error).color(palette.red));
         }
+        ui.add_space(SECTION_GAP);
+        self.appearance(ui);
+        ui.add_space(SECTION_GAP);
+        about(ui, &self.build);
         ui.add_space(2.0 * GRID);
         let (mut save, mut cancel) = (enter, false);
         // Cancel and Save at the right, Save last.
@@ -270,6 +339,23 @@ impl SettingsWindow {
         }
     }
 
+    /// The Appearance box: System, Light or Dark. A choice is shown at once, in this
+    /// window and the main one, and kept for the app to save; Cancel doesn't undo it, as
+    /// in System Settings.
+    fn appearance(&mut self, ui: &mut egui::Ui) {
+        let mut appearance = Appearance::of(ui.ctx());
+        let changed = grouped(ui, "Appearance", |ui| {
+            row(ui, "Appearance", |ui| {
+                let choice = segmented(ui, &mut appearance, &APPEARANCES, "Appearance");
+                choice.response.changed()
+            })
+        });
+        if changed {
+            set_appearance(ui.ctx(), appearance);
+            self.chosen = Some(appearance);
+        }
+    }
+
     /// What Save hands over: the settings as typed and the password typed this time, if
     /// any. The password moves out of the field into the [`Secret`] and the field and
     /// the text box's undo copy are emptied. If the settings can't be used nothing is
@@ -283,6 +369,28 @@ impl SettingsWindow {
     }
 }
 
+/// The About box: the app's name, and the version it is with the commit it was built
+/// from. The version can be selected, or copied from its context menu, for a bug report.
+fn about(ui: &mut egui::Ui, build: &Build) {
+    grouped(ui, "About", |ui| {
+        row(ui, "Scent Control", |ui| {
+            let text = build.text();
+            let palette = Palette::of(ui);
+            let version = egui::Label::new(RichText::new(&text).color(palette.secondary_label))
+                .selectable(true);
+            let mut response = ui.add(version);
+            if let Some(commit) = build.commit() {
+                response = response.on_hover_text(format!("Built from commit {commit}"));
+            }
+            response.context_menu(|ui| {
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(text.clone());
+                }
+            });
+        });
+    });
+}
+
 /// A one-line text box of the fields' width. True when Enter was pressed in it.
 fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> bool {
     let response = ui.add(edit.desired_width(FIELD_WIDTH));
@@ -293,9 +401,10 @@ fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> bool {
 mod tests {
     use std::path::Path;
 
+    use eframe::egui::accesskit::{Role, Toggled};
     use eframe::egui::{ViewportEvent, ViewportId};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
     use super::super::theme;
     use super::*;
@@ -314,7 +423,7 @@ mod tests {
         window.open(&BrokerSettings::default());
         let mut frames = 0;
         let mut harness = Harness::builder()
-            .with_size(egui::vec2(WIDTH, 480.0))
+            .with_size(egui::vec2(WIDTH, 640.0))
             .with_os(egui::os::OperatingSystem::Mac)
             .build_ui_state(
                 move |ui, rig: &mut Rig| {
@@ -478,6 +587,119 @@ mod tests {
         let mut window = SettingsWindow::default();
         window.open(&BrokerSettings::default());
         window
+    }
+
+    /// A build with a version and a commit of its own, so that the tests don't depend on
+    /// the real ones.
+    const BUILD: Build = Build {
+        version: "1.2.3",
+        commit: Some("abc1234"),
+    };
+
+    /// The window open with the default settings and [`BUILD`], drawn and settled.
+    fn shown() -> Harness<'static, Rig> {
+        let mut window = open_window();
+        window.set_build(BUILD);
+        let mut frames = 0;
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(WIDTH, 640.0))
+            .with_os(egui::os::OperatingSystem::Mac)
+            .build_ui_state(
+                move |ui, rig: &mut Rig| {
+                    frames += 1;
+                    if frames == 1 {
+                        theme::install(ui.ctx(), Path::new("/nonexistent"));
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    if let Some(saved) = rig.window.show(ui.ctx(), &BrokerState::Connected) {
+                        rig.saved = Some(saved);
+                    }
+                },
+                Rig {
+                    window,
+                    saved: None,
+                },
+            );
+        harness.run_steps(2);
+        harness
+    }
+
+    /// Whether the Appearance segment titled `title` shows as chosen.
+    fn chosen(harness: &Harness<'_, Rig>, title: &str) -> bool {
+        let segment = harness.get_by_role_and_label(Role::RadioButton, title);
+        segment.accesskit_node().toggled() == Some(Toggled::True)
+    }
+
+    #[test]
+    fn the_appearance_shown_is_the_one_in_use() {
+        let mut harness = shown();
+        let _ = harness.get_by_role_and_label(Role::RadioGroup, "Appearance");
+        assert!(chosen(&harness, "System"));
+        assert!(!chosen(&harness, "Light") && !chosen(&harness, "Dark"));
+        // Set elsewhere, as when the app starts with the saved one.
+        theme::set_appearance(&harness.ctx, Appearance::Light);
+        harness.run_steps(2);
+        assert!(chosen(&harness, "Light") && !chosen(&harness, "System"));
+        // That is not a choice made here, to save.
+        assert_eq!(harness.state_mut().window.take_appearance(), None);
+    }
+
+    #[test]
+    fn choosing_dark_shows_the_app_dark_at_once_and_hands_the_choice_over() {
+        let mut harness = shown();
+        harness
+            .get_by_role_and_label(Role::RadioButton, "Dark")
+            .click();
+        harness.run_steps(1);
+        assert_eq!(
+            harness.ctx.options(|o| o.theme_preference),
+            egui::ThemePreference::Dark
+        );
+        assert_eq!(harness.ctx.theme(), egui::Theme::Dark);
+        assert!(chosen(&harness, "Dark"));
+        let rig = harness.state_mut();
+        // Handed over once, for the app to save.
+        assert_eq!(rig.window.take_appearance(), Some(Appearance::Dark));
+        assert_eq!(rig.window.take_appearance(), None);
+        // Not a save of the broker settings: the window stays open.
+        assert!(rig.saved.is_none());
+        assert!(rig.window.is_open());
+    }
+
+    #[test]
+    fn about_shows_the_name_and_the_version_with_its_commit() {
+        let harness = shown();
+        let _ = harness.get_by_label("About");
+        let _ = harness.get_by_label("Scent Control");
+        let _ = harness.get_by_label("Version 1.2.3 (abc1234)");
+    }
+
+    #[test]
+    fn the_version_says_the_commit_only_when_the_build_knows_it() {
+        let text = |commit| Build { commit, ..BUILD }.text();
+        assert_eq!(text(Some("abc1234")), "Version 1.2.3 (abc1234)");
+        assert_eq!(text(None), "Version 1.2.3");
+        assert_eq!(text(Some(" ")), "Version 1.2.3");
+        // The version the release is tagged with (docs/releases.md).
+        assert_eq!(Build::THIS.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(SettingsWindow::default().build, Build::THIS);
+    }
+
+    #[test]
+    fn the_version_can_be_copied() {
+        let mut harness = shown();
+        harness
+            .get_by_label("Version 1.2.3 (abc1234)")
+            .click_secondary();
+        harness.run_steps(2);
+        harness.get_by_label("Copy").click();
+        harness.step();
+        let commands = &harness.output().platform_output.commands;
+        let copied = commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == "Version 1.2.3 (abc1234)")
+        });
+        assert!(copied, "{commands:?}");
     }
 
     #[test]
