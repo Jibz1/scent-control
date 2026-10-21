@@ -106,7 +106,8 @@ pub struct DeviceView {
     /// When we last pinged it over WiFi.
     pub ping_at: Option<i64>,
     pub sent: Option<Sent>,
-    /// The schedule table we believe the diffuser holds, from what we sent it.
+    /// The schedule table we believe the diffuser holds, from what this Mac last sent
+    /// it. Saved with the diffuser, so that it is known again after a relaunch.
     pub sent_profile: Option<Profile>,
     /// When it last said it joined the broker (`device_connected`, on either topic).
     /// An add waits for one that comes after the restart.
@@ -1945,6 +1946,11 @@ mod tests {
         s.apply_at(note(BLE1, "enable:0-|", 2_000), NOW);
         s.apply_at(report(ID2, "S:1,L:1", 3_000), NOW);
         s.devices.get_mut(ID1).unwrap().label = "Bedroom".into();
+        // The last schedule this Mac sent is remembered with the diffuser.
+        s.apply_at(
+            sent_profile(ID1, profile(true, vec![], ScheduleFlag::Replace), 4_002),
+            NOW,
+        );
         // Things that are live, not remembered.
         s.apply_at(
             Event::Pinged {
@@ -1954,10 +1960,6 @@ mod tests {
             NOW,
         );
         s.apply_at(sent(ID1, Some(true), None, 4_001), NOW);
-        s.apply_at(
-            sent_profile(ID1, profile(true, vec![], ScheduleFlag::Replace), 4_002),
-            NOW,
-        );
         s.apply_at(Event::BrokerConnected, NOW);
         s.apply_at(fixture_event(CONNECTED_AGAIN, 4_003), NOW);
         s.apply_at(note(BLE1, "Credentials saved", 4_004), NOW);
@@ -1980,7 +1982,10 @@ mod tests {
             (after.heard_wifi, after.heard_ble, after.ping_at),
             (None, None, None)
         );
-        assert!(after.sent.is_none() && after.sent_profile.is_none());
+        assert!(after.sent.is_none());
+        assert!(before.sent_profile.is_some());
+        assert_eq!(after.sent_profile, before.sent_profile);
+        assert_eq!(loaded.devices[ID2].sent_profile, None);
         assert_eq!(
             (
                 after.connected_at,

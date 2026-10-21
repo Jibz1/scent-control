@@ -7,8 +7,8 @@
 //! changes, not every frame: a frame draws from the copy and locks nothing.
 //!
 //! The saved file is written only when what it holds has changed (new readings, a new
-//! name, other broker settings), not for every ping and reply: a write is a full
-//! flush to disk, and it is done here, on the thread that draws.
+//! name, a schedule sent, other broker settings), not for every ping and reply: a write
+//! is a full flush to disk, and it is done here, on the thread that draws.
 
 use std::path::Path;
 use std::sync::mpsc::Receiver;

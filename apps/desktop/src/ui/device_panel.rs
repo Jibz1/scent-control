@@ -92,8 +92,8 @@ pub fn detail_rows(device: &DeviceView, now: i64) -> [ReadingRow; 2] {
 }
 
 /// What the schedule this app last sent says the diffuser should be doing now. `None`
-/// when this app hasn't sent one since it started: the diffuser may hold one, but we
-/// don't know what it says.
+/// when this Mac has never sent it one (the last one it sent is saved with the
+/// diffusers): the diffuser may hold one, but we don't know what it says.
 pub fn expected_line(device: &DeviceView, now: i64) -> Option<String> {
     let profile = device.sent_profile.as_ref()?;
     Some(expected_text(&expected_state(profile, now)))
@@ -523,9 +523,9 @@ fn header_line(device: &DeviceView, name: &str, online: Online) -> String {
     }
 }
 
-/// "Schedule": today's times when this app knows them (it sent the schedule this
-/// session), and what they say it should be doing now. True when Edit Schedule… was
-/// clicked.
+/// "Schedule": today's times when this app knows them (the last schedule this Mac sent,
+/// saved with the diffusers), and what they say it should be doing now. True when Edit
+/// Schedule… was clicked.
 fn schedule_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) -> bool {
     let palette = Palette::of(ui);
     let mut edit = false;

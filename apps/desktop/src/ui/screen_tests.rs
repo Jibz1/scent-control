@@ -490,6 +490,47 @@ fn the_schedule_is_read_out_today_and_for_the_week() {
 }
 
 #[test]
+fn after_a_relaunch_the_schedule_sent_still_shows_today_and_what_to_expect() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use scent_core::{Entry, HhMm, Level};
+    let dir = crate::store::TempDir::new("screens-after-relaunch");
+    let store = crate::store::Store {
+        dir: dir.path().to_owned(),
+    };
+    let mut before = state();
+    // A time this morning, Tuesday at UTC-5, as well as always on.
+    let profile = before
+        .devices
+        .get_mut(ONE)
+        .unwrap()
+        .sent_profile
+        .as_mut()
+        .unwrap();
+    profile.entries.push(Entry {
+        start: HhMm::parse("07:00").unwrap(),
+        end: HhMm::parse("09:00").unwrap(),
+        weekdays: vec![2],
+        level: Level::new(2).unwrap(),
+        enable: true,
+    });
+    store.save(&before, &BrokerSettings::default()).unwrap();
+
+    // The next run starts from the file alone.
+    let mut harness = harness(store.load().state);
+    harness.run_steps(2);
+    let today = harness.get_by_role_and_label(Role::Image, "Today");
+    assert_eq!(
+        today.accesskit_node().value().as_deref(),
+        Some("07:00 to 09:00 at Medium; always on at Low the rest of the day")
+    );
+    let _ = harness.get_by_label(
+        "Based on the schedule this app last sent, it should be on at Low (always-on entry).",
+    );
+    assert!(harness.query_by_label("Nothing yet").is_none());
+}
+
+#[test]
 fn an_opened_row_is_brought_into_view_once_and_let_go_when_filtered_out() {
     use egui_kittest::kittest::Queryable as _;
     let mut state = state();

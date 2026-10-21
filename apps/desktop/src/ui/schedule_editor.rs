@@ -985,6 +985,29 @@ mod tests {
     }
 
     #[test]
+    fn after_a_relaunch_the_editor_opens_from_the_schedule_saved_with_the_diffuser() {
+        use crate::mqtt::BrokerSettings;
+        use crate::store::{Store, TempDir, sent_schedule};
+        let dir = TempDir::new("editor-after-relaunch");
+        let store = Store {
+            dir: dir.path().to_owned(),
+        };
+        let mut device = DeviceView::new("TESTDEVICE01");
+        device.sent_profile = Some(sent_schedule());
+        let mut state = AppState::default();
+        state.devices.insert(device.id.clone(), device);
+        store.save(&state, &BrokerSettings::default()).unwrap();
+
+        // The next run: what was saved, and nothing else.
+        let loaded = store.load().state;
+        let mut editor = ScheduleEditor::default();
+        editor.open(&loaded.devices["TESTDEVICE01"], NOW);
+        assert_eq!(editor.draft, Draft::from_profile(&sent_schedule()));
+        // So Send goes out with the times it holds, not an empty table.
+        assert_eq!(check(&editor.draft, 99), Ok(sent_schedule()));
+    }
+
+    #[test]
     fn the_time_zone_note_names_the_macs_offset_when_it_differs() {
         assert_eq!(
             zone_note("-4", -4.0),

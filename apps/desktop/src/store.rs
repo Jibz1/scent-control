@@ -1,16 +1,19 @@
-//! The app's memory between runs: the diffusers it knows, their names and their
-//! last readings, and where the broker is, in `desktop.json`.
+//! The app's memory between runs: the diffusers it knows, their names, their last
+//! readings and the last schedule this Mac sent each, and where the broker is, in
+//! `desktop.json`.
 //!
 //! The file holds devices and the broker's address and nothing else: no log, no live
 //! status, and no secrets (the broker password lives in the Keychain, and WiFi
-//! passwords are never kept).
+//! passwords are never kept; a schedule is times, days and levels).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use scent_core::{DeviceInfo, Via, valid_device_id};
+use scent_core::{
+    AlwaysOn, DeviceInfo, Entry, HhMm, Level, Profile, ScheduleFlag, Via, valid_device_id,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::mqtt::{BrokerSettings, BrokerUrl};
@@ -201,6 +204,37 @@ struct StoredDevice {
     info: Option<StoredInfo>,
     #[serde(default)]
     readings: BTreeMap<String, StoredReading>,
+    /// The last schedule this Mac sent it: what the screens show for today and the
+    /// editor opens from. Left out when none was sent, and missing from files written
+    /// before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sent_profile: Option<StoredProfile>,
+}
+
+/// A schedule as the editor shows it: times as `HH:MM`, days from 0 (Sunday) to 6,
+/// levels from 1 to 3, and the zone's offset from UTC in hours. Nothing in it is secret.
+#[derive(Serialize, Deserialize)]
+struct StoredProfile {
+    always_on: StoredAlwaysOn,
+    entries: Vec<StoredEntry>,
+    timezone_hours: f64,
+    /// What the last `UPDATE_PROFILE` sent: `"replace"` or `"always_on_only"`.
+    flag: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredAlwaysOn {
+    enable: bool,
+    level: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredEntry {
+    start: String,
+    end: String,
+    weekdays: Vec<u8>,
+    level: u8,
+    enable: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -238,13 +272,21 @@ impl Stored {
                         .iter()
                         .map(|(field, reading)| (field.key().to_owned(), reading.into()))
                         .collect(),
+                    // A zone that isn't a number would be written as `null`, which would
+                    // make the whole file unreadable. The editor never sends one.
+                    sent_profile: device
+                        .sent_profile
+                        .as_ref()
+                        .filter(|profile| profile.timezone_hours.is_finite())
+                        .map(StoredProfile::from),
                 })
                 .collect(),
         }
     }
 
     /// Anything that can't be used is left out, with a note on stderr: a device
-    /// whose ID is not a device ID, a reading of a field or source we don't know.
+    /// whose ID is not a device ID, a reading of a field or source we don't know, a
+    /// schedule with a time, day, level or flag that can't be.
     fn into_loaded(self) -> Loaded {
         let mut state = AppState::default();
         for stored in self.devices {
@@ -259,6 +301,16 @@ impl Stored {
             device.label = stored.label;
             device.ble_id = stored.ble_id;
             device.info = stored.info.map(DeviceInfo::from);
+            device.sent_profile = stored.sent_profile.and_then(|profile| {
+                let profile = profile.into_profile();
+                if profile.is_none() {
+                    eprintln!(
+                        "scent-control: ignoring the saved schedule of {}: it can't be used",
+                        stored.id
+                    );
+                }
+                profile
+            });
             for (key, reading) in stored.readings {
                 let field = Field::from_key(&key);
                 let via = via_from_key(&reading.via);
@@ -330,6 +382,74 @@ impl From<&Reading> for StoredReading {
     }
 }
 
+impl From<&Profile> for StoredProfile {
+    fn from(profile: &Profile) -> StoredProfile {
+        StoredProfile {
+            always_on: StoredAlwaysOn {
+                enable: profile.always_on.enable,
+                level: profile.always_on.level.get(),
+            },
+            entries: profile
+                .entries
+                .iter()
+                .map(|entry| StoredEntry {
+                    start: entry.start.to_string(),
+                    end: entry.end.to_string(),
+                    weekdays: entry.weekdays.clone(),
+                    level: entry.level.get(),
+                    enable: entry.enable,
+                })
+                .collect(),
+            timezone_hours: profile.timezone_hours,
+            flag: flag_key(profile.flag).to_owned(),
+        }
+    }
+}
+
+impl StoredProfile {
+    /// The schedule, or `None` if any part of it can't be.
+    fn into_profile(self) -> Option<Profile> {
+        let entries = self
+            .entries
+            .into_iter()
+            .map(|entry| {
+                if entry.weekdays.iter().any(|&day| day > 6) {
+                    return None;
+                }
+                Some(Entry {
+                    start: HhMm::parse(&entry.start)?,
+                    end: HhMm::parse(&entry.end)?,
+                    weekdays: entry.weekdays,
+                    level: Level::new(entry.level)?,
+                    enable: entry.enable,
+                })
+            })
+            .collect::<Option<Vec<Entry>>>()?;
+        Some(Profile {
+            always_on: AlwaysOn {
+                enable: self.always_on.enable,
+                level: Level::new(self.always_on.level)?,
+            },
+            entries,
+            timezone_hours: Some(self.timezone_hours).filter(|hours| hours.is_finite())?,
+            flag: flag_from_key(&self.flag)?,
+        })
+    }
+}
+
+fn flag_key(flag: ScheduleFlag) -> &'static str {
+    match flag {
+        ScheduleFlag::Replace => "replace",
+        ScheduleFlag::AlwaysOnOnly => "always_on_only",
+    }
+}
+
+fn flag_from_key(key: &str) -> Option<ScheduleFlag> {
+    [ScheduleFlag::Replace, ScheduleFlag::AlwaysOnOnly]
+        .into_iter()
+        .find(|&flag| flag_key(flag) == key)
+}
+
 fn via_key(via: Via) -> &'static str {
     match via {
         Via::Bluetooth => "bluetooth",
@@ -367,6 +487,32 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A schedule as the editor sends it: two times, one switched off, always on at
+/// High, half an hour off a whole zone.
+#[cfg(test)]
+pub(crate) fn sent_schedule() -> scent_core::Profile {
+    use scent_core::{AlwaysOn, Entry, HhMm, Level, Profile, ScheduleFlag};
+    let time = |start: &str, end: &str, weekdays: Vec<u8>, level: u8, enable: bool| Entry {
+        start: HhMm::parse(start).unwrap(),
+        end: HhMm::parse(end).unwrap(),
+        weekdays,
+        level: Level::new(level).unwrap(),
+        enable,
+    };
+    Profile {
+        always_on: AlwaysOn {
+            enable: true,
+            level: Level::new(3).unwrap(),
+        },
+        entries: vec![
+            time("07:00", "09:30", vec![1, 2, 3, 4, 5], 2, true),
+            time("21:15", "23:59", vec![0, 6], 1, false),
+        ],
+        timezone_hours: 5.5,
+        flag: ScheduleFlag::Replace,
     }
 }
 
@@ -485,6 +631,90 @@ mod tests {
         assert_eq!(keys, ["broker", "devices"]);
     }
 
+    #[test]
+    fn the_last_schedule_sent_is_saved_with_its_diffuser() {
+        let dir = TempDir::new("schedule-round-trip");
+        let mut s = AppState::default();
+        let mut one = DeviceView::new(ID1);
+        one.sent_profile = Some(sent_schedule());
+        s.devices.insert(ID1.to_owned(), one);
+        // Only the always-on entry went out last; the times kept are the ones before.
+        let mut two = DeviceView::new("TESTDEVICE02");
+        two.sent_profile = Some(scent_core::Profile {
+            flag: scent_core::ScheduleFlag::AlwaysOnOnly,
+            ..sent_schedule()
+        });
+        s.devices.insert("TESTDEVICE02".to_owned(), two);
+        s.devices
+            .insert("TESTDEVICE03".to_owned(), DeviceView::new("TESTDEVICE03"));
+        store(&dir).save(&s, &BrokerSettings::default()).unwrap();
+
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.notice, None);
+        assert_eq!(loaded.state.devices, s.devices);
+        // It is saved only once there is one, and holds nothing secret.
+        let text = fs::read_to_string(dir.path().join("desktop.json")).unwrap();
+        assert_eq!(text.matches("sent_profile").count(), 2, "{text}");
+        assert!(!text.to_lowercase().contains("password"), "{text}");
+    }
+
+    #[test]
+    fn a_file_from_before_schedules_were_saved_loads_cleanly() {
+        let dir = TempDir::new("no-schedule");
+        fs::write(
+            dir.path().join("desktop.json"),
+            r#"{"devices":[{"id":"TESTDEVICE01","label":"Bedroom","ble_id":"ble-1"}]}"#,
+        )
+        .unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.notice, None);
+        let device = &loaded.state.devices[ID1];
+        assert_eq!(device.label, "Bedroom");
+        assert_eq!(device.sent_profile, None);
+        assert!(dir.path().join("desktop.json").exists());
+        assert!(!dir.path().join("desktop.json.corrupt").exists());
+    }
+
+    #[test]
+    fn a_saved_schedule_that_cannot_be_used_is_left_out() {
+        let good = r#"{"start":"07:00","end":"09:00","weekdays":[1],"level":2,"enable":true}"#;
+        for bad in [
+            r#"{"start":"7:00","end":"09:00","weekdays":[1],"level":2,"enable":true}"#,
+            r#"{"start":"07:00","end":"24:00","weekdays":[1],"level":2,"enable":true}"#,
+            r#"{"start":"07:00","end":"09:00","weekdays":[7],"level":2,"enable":true}"#,
+            r#"{"start":"07:00","end":"09:00","weekdays":[1],"level":4,"enable":true}"#,
+        ] {
+            let dir = TempDir::new("bad-schedule");
+            let file = format!(
+                r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedroom","sent_profile":
+                    {{"always_on":{{"enable":false,"level":1}},"entries":[{good},{bad}],
+                      "timezone_hours":-5.0,"flag":"replace"}}}}]}}"#
+            );
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            // The diffuser is kept, without the schedule; the file is not damaged.
+            assert_eq!(loaded.notice, None, "{bad}");
+            let device = &loaded.state.devices[ID1];
+            assert_eq!(device.label, "Bedroom", "{bad}");
+            assert_eq!(device.sent_profile, None, "{bad}");
+            assert!(!dir.path().join("desktop.json.corrupt").exists(), "{bad}");
+        }
+        // So is one whose always-on level or flag can't be.
+        for (level, flag) in [(0, "replace"), (1, "sometimes")] {
+            let dir = TempDir::new("bad-schedule-head");
+            let file = format!(
+                r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedroom","sent_profile":
+                    {{"always_on":{{"enable":false,"level":{level}}},"entries":[{good}],
+                      "timezone_hours":-5.0,"flag":"{flag}"}}}}]}}"#
+            );
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            assert_eq!(loaded.notice, None, "{level} {flag}");
+            let device = &loaded.state.devices[ID1];
+            assert_eq!(device.sent_profile, None, "{level} {flag}");
+        }
+    }
+
     fn custom_broker() -> BrokerSettings {
         BrokerSettings {
             url: "wss://broker.example.test:8443/mqtt".into(),
@@ -599,7 +829,7 @@ mod tests {
         );
         assert_eq!(Store::contents(&s, &broker).unwrap(), before);
 
-        // A reading, a name or the broker's address does change it.
+        // A reading, a name, a schedule sent or the broker's address does change it.
         let mut changed = s.clone();
         changed
             .devices
@@ -613,6 +843,9 @@ mod tests {
         let mut renamed = s.clone();
         renamed.devices.get_mut(ID1).unwrap().label = "Bedroom".into();
         assert_ne!(Store::contents(&renamed, &broker).unwrap(), before);
+        let mut scheduled = s.clone();
+        scheduled.devices.get_mut(ID1).unwrap().sent_profile = Some(sent_schedule());
+        assert_ne!(Store::contents(&scheduled, &broker).unwrap(), before);
         let elsewhere = BrokerSettings {
             username: "someone".into(),
             ..BrokerSettings::default()

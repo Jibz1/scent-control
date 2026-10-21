@@ -48,9 +48,9 @@ fn entry(start: &str, end: &str, weekdays: &[u8], level: u8, enable: bool) -> En
 }
 
 /// The diffusers the brief asks for: an Air 2 that answers, diffusing at Medium, with
-/// fresh readings and a schedule sent this session (it is 10:30 on a Tuesday in its zone,
-/// inside a time); an HVAC 2 that is silent and off; one diffuser found nearby; and a
-/// short log in the shapes the app really logs.
+/// fresh readings and the last schedule this Mac sent it (it is 10:30 on a Tuesday in
+/// its zone, inside a time); an HVAC 2 that is silent and off; one diffuser found
+/// nearby; and a short log in the shapes the app really logs.
 fn snapshot_state() -> AppState {
     let info = |id: &str, model: &str| DeviceInfo {
         manufacturer_id: "TEST".into(),
