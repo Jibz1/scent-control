@@ -10,7 +10,8 @@ use serde_json::Value;
 
 use super::format::{Model, intensity, power_source, via_name};
 use crate::hub::SCAN_FAILED;
-use crate::state::LogEntry;
+use crate::shared_schedule::{self, Unreadable};
+use crate::state::{LogEntry, SHARED_SCHEDULE, UNREADABLE_SCHEDULE};
 
 /// What `power_source` says when it has nothing to go on.
 const NOTHING: &str = "not reported yet";
@@ -179,6 +180,8 @@ fn heard(entry: &LogEntry, label: &str, via: Option<Via>) -> String {
         "acknowledgement" => return acknowledged(text, label),
         "device_connected" => return format!("{label} connected to the broker"),
         "initial_load" | "update_profile" => return format!("{label} sent its schedule"),
+        SHARED_SCHEDULE => return format!("Loaded {label}'s schedule from the broker"),
+        UNREADABLE_SCHEDULE => return unreadable_schedule(entry, label),
         _ => {}
     }
     if says_credentials_saved(text) {
@@ -193,6 +196,20 @@ fn heard(entry: &LogEntry, label: &str, via: Option<Via>) -> String {
         }
         _ => format!("{label} sent {}", entry.action),
     }
+}
+
+/// A message under our own topics that the app ignored, and why, read again from the
+/// message itself.
+fn unreadable_schedule(entry: &LogEntry, label: &str) -> String {
+    if entry.device_id.is_none() {
+        return "Ignored a message under Scent Control's topics on the broker that it can't use"
+            .to_owned();
+    }
+    let why = match shared_schedule::decode(entry.text.as_bytes()) {
+        Err(Unreadable::Version) => "another version of Scent Control stored it",
+        _ => "it can't be read",
+    };
+    format!("Ignored {label}'s schedule on the broker: {why}")
 }
 
 /// The info string read over Bluetooth: the model and firmware it gives.
@@ -598,6 +615,38 @@ mod tests {
         for (entry, expected) in &table {
             assert_eq!(sentence(entry, "Bedroom"), *expected, "{entry:?}");
         }
+    }
+
+    #[test]
+    fn schedules_read_from_the_broker_read_as_sentences() {
+        let body = crate::shared_schedule::encode(&crate::store::sent_schedule(), 100).unwrap();
+        let body = String::from_utf8(body).unwrap();
+        let loaded = heard(SHARED_SCHEDULE, &body);
+        assert_eq!(
+            sentence(&loaded, "Bedroom"),
+            "Loaded Bedroom's schedule from the broker"
+        );
+        let mut later: Value = serde_json::from_str(&body).unwrap();
+        later["v"] = 2.into();
+        let later = heard(UNREADABLE_SCHEDULE, &later.to_string());
+        assert_eq!(
+            sentence(&later, "Bedroom"),
+            "Ignored Bedroom's schedule on the broker: another version of Scent Control stored it"
+        );
+        let broken = heard(UNREADABLE_SCHEDULE, "{ not json");
+        assert_eq!(
+            sentence(&broken, "Bedroom"),
+            "Ignored Bedroom's schedule on the broker: it can't be read"
+        );
+        // On a topic that names no diffuser.
+        let nobodys = LogEntry {
+            device_id: None,
+            ..heard(UNREADABLE_SCHEDULE, &body)
+        };
+        assert_eq!(
+            sentence(&nobodys, "App"),
+            "Ignored a message under Scent Control's topics on the broker that it can't use"
+        );
     }
 
     #[test]
