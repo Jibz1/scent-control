@@ -51,7 +51,7 @@ use self::widgets::{
     NoticeKind, empty_state, gear_button, hairline, notice_with, plain_button, toolbar_button,
 };
 use crate::add_flow::AddStep;
-use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
+use crate::hub::{NO_BROKER, NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
 use crate::state::{AppState, BrokerState, Edit, Event};
 
@@ -115,6 +115,15 @@ impl Screens {
     /// typed is kept, as it is when the field is left.
     pub fn end_typing(&mut self) -> Vec<Edit> {
         self.panel.end_typing()
+    }
+
+    /// Opens Settings when there is no broker, for the app to call as it starts: a build
+    /// given none, with nothing saved yet. Once closed it stays closed; the notice for it
+    /// is the way back.
+    pub fn ask_for_broker(&mut self, broker: &BrokerSettings) {
+        if !broker.is_set() {
+            self.settings.open(broker);
+        }
     }
 
     /// Shows a problem in a notice at the top, in place of any earlier one.
@@ -374,16 +383,16 @@ impl Screens {
         });
     }
 
-    /// The notices at the top of the detail pane: a refused login, no password saved,
-    /// and a problem with the saved file.
+    /// The notices at the top of the detail pane: a refused login, no broker set, no
+    /// password saved, and a problem with the saved file.
     fn notices(&mut self, ui: &mut egui::Ui, state: &AppState, broker: &BrokerSettings) {
         let broker_notice = match &state.broker {
             BrokerState::LoginRefused(_) => Some((
                 NoticeKind::Error,
                 "Broker login refused. Check the username and password in Settings, then save to try again.",
             )),
-            BrokerState::Disconnected(why) if why == NO_BROKER_PASSWORD => {
-                Some((NoticeKind::Warning, NO_BROKER_PASSWORD))
+            BrokerState::Disconnected(why) if why == NO_BROKER || why == NO_BROKER_PASSWORD => {
+                Some((NoticeKind::Warning, why.as_str()))
             }
             _ => None,
         };

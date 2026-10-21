@@ -36,7 +36,8 @@ pub struct Store {
 #[derive(Debug)]
 pub struct Loaded {
     pub state: AppState,
-    /// The default settings when the file doesn't say.
+    /// The build's default settings when the file doesn't say (see
+    /// [`BrokerSettings::default`]). An empty address is no broker.
     pub broker: BrokerSettings,
     /// How the app looks, as chosen in Settings: the system's when the file doesn't say.
     pub appearance: Appearance,
@@ -67,7 +68,7 @@ impl Store {
         self.dir.join(FILE_NAME)
     }
 
-    /// What was saved, or an empty state and the default settings when there is
+    /// What was saved, or an empty state and the build's default settings when there is
     /// nothing usable: no file yet, a file we can't read, or one that isn't what we
     /// wrote. The problem goes to stderr. A file that is damaged is kept as
     /// `desktop.json.corrupt`, and the notice says so. No file yet is not a problem.
@@ -381,14 +382,20 @@ impl Stored {
             state.devices.insert(stored.id, device);
         }
         let mut broker = BrokerSettings::from(self.broker);
-        // A hand-edited address that can't be used would otherwise surface later as a
-        // missing password. The default is no worse than none; who we are on the broker
-        // stays.
-        let notice = BrokerUrl::parse(&broker.url).err().map(|error| {
-            eprintln!("scent-control: the saved broker address is not usable: {error}");
-            broker.url = BrokerSettings::default().url;
-            BAD_BROKER_ADDRESS.to_owned()
-        });
+        let notice = if broker.is_set() {
+            // A hand-edited address that can't be used would otherwise surface later as a
+            // missing password. The build's default (which may be none) is no worse; who
+            // we are on the broker stays.
+            BrokerUrl::parse(&broker.url).err().map(|error| {
+                eprintln!("scent-control: the saved broker address is not usable: {error}");
+                broker.url = BrokerSettings::default().url;
+                BAD_BROKER_ADDRESS.to_owned()
+            })
+        } else {
+            // None was set yet: nothing wrong with the file, and the screens ask for one.
+            broker.url = String::new();
+            None
+        };
         Loaded {
             state,
             broker,
@@ -961,7 +968,6 @@ mod tests {
     fn a_saved_broker_address_that_is_not_valid_is_replaced_and_the_notice_says_so() {
         for bad in [
             "ws://broker.example/mqtt",
-            "",
             "wss://bad host/mqtt",
             "wss://x:0/mqtt",
         ] {
@@ -971,7 +977,8 @@ mod tests {
             );
             fs::write(dir.path().join("desktop.json"), file).unwrap();
             let loaded = store(&dir).load();
-            // The address goes back to the default; who we are on the broker stays.
+            // The address goes back to the build's default, which may be none; who we are
+            // on the broker stays.
             let defaults = BrokerSettings::default();
             assert_eq!(loaded.broker.url, defaults.url, "{bad:?}");
             assert_eq!(loaded.broker.username, "someone", "{bad:?}");
@@ -983,6 +990,38 @@ mod tests {
             assert!(dir.path().join("desktop.json").exists());
             assert!(!dir.path().join("desktop.json.corrupt").exists());
         }
+    }
+
+    #[test]
+    fn an_empty_saved_broker_address_is_no_broker_and_no_problem() {
+        // Written by a build that was given no broker, before one was added in Settings.
+        for empty in ["", "  "] {
+            let dir = TempDir::new("empty-broker-address");
+            let file = format!(
+                r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedroom"}}],"broker":{{"url":{empty:?},"username":"someone","route_id":"route-9"}}}}"#
+            );
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            // No broker, whatever this build's default is: the screens ask for one.
+            assert_eq!(loaded.broker.url, "", "{empty:?}");
+            assert!(!loaded.broker.is_set(), "{empty:?}");
+            assert_eq!(loaded.broker.username, "someone", "{empty:?}");
+            assert_eq!(loaded.broker.route_id, "route-9", "{empty:?}");
+            // Nothing wrong with the file: no notice, and it stays where it is.
+            assert_eq!(loaded.notice, None, "{empty:?}");
+            assert_eq!(loaded.state.devices[ID1].label, "Bedroom", "{empty:?}");
+            assert!(!dir.path().join("desktop.json.corrupt").exists());
+        }
+    }
+
+    #[test]
+    fn a_file_saved_with_no_broker_loads_cleanly_and_still_has_none() {
+        let dir = TempDir::new("no-broker-round-trip");
+        let none = BrokerSettings::from_values(None, None, None);
+        store(&dir).save(&AppState::default(), &none).unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.broker, none);
+        assert_eq!(loaded.notice, None);
     }
 
     #[test]

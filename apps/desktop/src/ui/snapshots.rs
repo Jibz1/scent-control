@@ -585,7 +585,7 @@ fn settings_window(
 ) {
     let theme = if dark { Theme::Dark } else { Theme::Light };
     let mut window = SettingsWindow::default();
-    window.open(&BrokerSettings::default());
+    window.open(&BrokerSettings::example());
     window.set_build(build);
     if let Some(error) = error {
         window.fail(error.to_owned());

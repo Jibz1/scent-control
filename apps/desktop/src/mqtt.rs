@@ -51,13 +51,51 @@ pub struct BrokerSettings {
     pub route_id: String,
 }
 
-impl Default for BrokerSettings {
-    fn default() -> Self {
+impl BrokerSettings {
+    /// The settings from the values a build was given: each one trimmed, and empty when
+    /// there was none.
+    pub fn from_values(
+        url: Option<&str>,
+        username: Option<&str>,
+        route_id: Option<&str>,
+    ) -> BrokerSettings {
+        let value = |value: Option<&str>| value.unwrap_or_default().trim().to_owned();
         BrokerSettings {
-            url: "wss://test-broker-production.up.railway.app/mqtt".to_owned(),
-            username: "scent-test".to_owned(),
+            url: value(url),
+            username: value(username),
+            route_id: value(route_id),
+        }
+    }
+
+    /// Whether there is a broker at all. An empty address means none: a build that was
+    /// given none, with nothing saved, or a saved file that holds none.
+    pub fn is_set(&self) -> bool {
+        !self.url.trim().is_empty()
+    }
+
+    /// A broker for the tests: an example host, and the synthetic route ID.
+    #[cfg(test)]
+    pub fn example() -> BrokerSettings {
+        BrokerSettings {
+            url: "wss://broker.example.test/mqtt".to_owned(),
+            username: "example-user".to_owned(),
             route_id: "route-test-1".to_owned(),
         }
+    }
+}
+
+/// The broker a build was given, for when nothing is saved: `SCENT_BROKER_URL`,
+/// `SCENT_BROKER_USERNAME` and `SCENT_ROUTE_ID` at build time, which
+/// `scripts/bundle-macos.sh` takes from the repo-root `.env`. Each is empty when the build
+/// had none, and then there is no broker until one is added in Settings. Never a password:
+/// that is in the Keychain.
+impl Default for BrokerSettings {
+    fn default() -> Self {
+        BrokerSettings::from_values(
+            option_env!("SCENT_BROKER_URL"),
+            option_env!("SCENT_BROKER_USERNAME"),
+            option_env!("SCENT_ROUTE_ID"),
+        )
     }
 }
 
@@ -522,8 +560,8 @@ mod tests {
 
     #[test]
     fn broker_url_parsing() {
-        let url = BrokerUrl::parse("wss://test-broker-production.up.railway.app/mqtt").unwrap();
-        assert_eq!(url.host, "test-broker-production.up.railway.app");
+        let url = BrokerUrl::parse("wss://broker.example.test/mqtt").unwrap();
+        assert_eq!(url.host, "broker.example.test");
         assert_eq!(url.port, 443);
         assert_eq!(url.path, "/mqtt");
 
@@ -594,14 +632,47 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_the_test_broker() {
-        let settings = BrokerSettings::default();
-        assert_eq!(
-            settings.url,
-            "wss://test-broker-production.up.railway.app/mqtt"
+    fn without_a_broker_from_the_build_the_defaults_are_empty() {
+        let none = BrokerSettings::from_values(None, None, None);
+        assert_eq!(none.url, "");
+        assert_eq!(none.username, "");
+        assert_eq!(none.route_id, "");
+        assert!(!none.is_set());
+        // Empty or blank values from the build are none either.
+        let blank = BrokerSettings::from_values(Some(""), Some(" "), Some("\t"));
+        assert_eq!(blank, none);
+    }
+
+    #[test]
+    fn a_broker_from_the_build_is_the_default() {
+        let built = BrokerSettings::from_values(
+            Some(" wss://broker.example.test/mqtt "),
+            Some("example-user"),
+            Some("route-test-1"),
         );
-        assert_eq!(settings.username, "scent-test");
-        assert_eq!(settings.route_id, "route-test-1");
+        assert_eq!(built, BrokerSettings::example());
+        assert!(built.is_set());
+        // `default()` is what this build was given, and nothing else.
+        assert_eq!(
+            BrokerSettings::default(),
+            BrokerSettings::from_values(
+                option_env!("SCENT_BROKER_URL"),
+                option_env!("SCENT_BROKER_USERNAME"),
+                option_env!("SCENT_ROUTE_ID"),
+            )
+        );
+    }
+
+    #[test]
+    fn a_broker_is_set_only_when_it_has_an_address() {
+        assert!(BrokerSettings::example().is_set());
+        for url in ["", "  "] {
+            let settings = BrokerSettings {
+                url: url.to_owned(),
+                ..BrokerSettings::example()
+            };
+            assert!(!settings.is_set(), "{url:?}");
+        }
     }
 
     /// The largest schedule the editor lets through on firmware 2.30: 99 times, each on
@@ -642,7 +713,7 @@ mod tests {
 
     #[test]
     fn the_connection_takes_packets_up_to_the_limit() {
-        let options = build_options(&BrokerSettings::default(), &Secret::new("x".into())).unwrap();
+        let options = build_options(&BrokerSettings::example(), &Secret::new("x".into())).unwrap();
         // rumqttc reads back only the incoming limit; the outgoing one is set in the same
         // call, from the same constant.
         assert_eq!(options.max_packet_size(), MAX_PACKET_SIZE);

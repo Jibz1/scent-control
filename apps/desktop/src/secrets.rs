@@ -9,7 +9,8 @@ use crate::mqtt::{BrokerSettings, BrokerUrl};
 
 const SERVICE: &str = "scent-control";
 
-/// The Keychain account for these settings: `scent-test@test-broker-production.up.railway.app`.
+/// The Keychain account for these settings, such as `someone@broker.example.test`. None
+/// for an empty or invalid broker address, so the Keychain is never asked about one.
 fn account(settings: &BrokerSettings) -> Result<String, String> {
     let url = BrokerUrl::parse(&settings.url)?;
     Ok(format!("{}@{}", settings.username, url.host))
@@ -22,6 +23,7 @@ fn entry(settings: &BrokerSettings) -> Result<Entry, String> {
 /// The saved broker password. `None` means one of two things the caller can't tell
 /// apart: nothing is saved, or the Keychain couldn't be read (a read error is also
 /// reported on stderr). So a prompt for the password should mention the Keychain.
+/// With no broker, or an address that isn't one, the Keychain is not asked at all.
 pub fn broker_password(settings: &BrokerSettings) -> Option<Secret> {
     match entry(settings).ok()?.get_password() {
         Ok(password) => Some(Secret::new(password)),
@@ -49,8 +51,8 @@ mod tests {
     #[test]
     fn the_account_is_username_at_host() {
         assert_eq!(
-            account(&BrokerSettings::default()).as_deref(),
-            Ok("scent-test@test-broker-production.up.railway.app")
+            account(&BrokerSettings::example()).as_deref(),
+            Ok("example-user@broker.example.test")
         );
     }
 
@@ -58,8 +60,23 @@ mod tests {
     fn a_bad_broker_address_has_no_account() {
         let settings = BrokerSettings {
             url: "ws://broker.example/mqtt".into(),
-            ..BrokerSettings::default()
+            ..BrokerSettings::example()
         };
         assert!(account(&settings).is_err());
+    }
+
+    #[test]
+    fn no_broker_has_no_account_so_the_keychain_is_not_asked() {
+        // `broker_password` stops at the account, before it makes a Keychain entry.
+        for url in ["", "  "] {
+            let settings = BrokerSettings {
+                url: url.to_owned(),
+                ..BrokerSettings::example()
+            };
+            assert!(account(&settings).is_err(), "{url:?}");
+            assert!(entry(&settings).is_err(), "{url:?}");
+        }
+        let none = BrokerSettings::from_values(None, None, None);
+        assert!(entry(&none).is_err());
     }
 }
