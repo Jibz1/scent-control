@@ -21,7 +21,7 @@ use eframe::epaint::PathShape;
 
 /// The grid the glyphs are drawn on, and the stroke on it.
 pub const UNIT: f32 = 28.0;
-const STROKE: f32 = 1.5;
+pub(super) const STROKE: f32 = 1.5;
 /// The thinnest a stroke gets, at small sizes, so that it stays crisp.
 const MIN_STROKE: f32 = 1.25;
 
@@ -45,8 +45,13 @@ const OUTER_LEAN: f32 = 0.75;
 pub const INK_X: [f32; 2] = [8.0, 20.0];
 
 /// Where each body runs down the grid, top to bottom, under its mist.
-const AIR2_BODY: [f32; 2] = [14.0, 24.0];
+pub(super) const AIR2_BODY: [f32; 2] = [14.0, 24.0];
 const HVAC2_BODY: [f32; 2] = [15.5, 23.5];
+
+/// Where the Air 2's capsule runs across the grid, 6 units wide, and its mist outlet: a
+/// short slit from one end to the other.
+pub(super) const AIR2_SIDES: [f32; 2] = [11.0, 17.0];
+pub(super) const AIR2_OUTLET: [[f32; 2]; 2] = [[13.0, 16.75], [15.0, 16.75]];
 
 /// The colors a diffuser glyph is drawn in.
 #[derive(Debug, Clone, Copy)]
@@ -163,33 +168,43 @@ fn wisp_shares(level: f32) -> [f32; 3] {
     [outer, middle, outer]
 }
 
+/// The line of wisp `i` (the left, middle or right one) on the grid, from its foot up,
+/// `length` of the way (1 for all of it).
+pub(super) fn wisp_line(i: usize, length: f32) -> Vec<Pos2> {
+    // The left one sways and leans the other way from the right one: the plume is
+    // symmetric.
+    let (side, foot) = match i {
+        0 => (-1.0, WISP_FOOT - OUTER_LIFT),
+        1 => (1.0, WISP_FOOT),
+        _ => (1.0, WISP_FOOT - OUTER_LIFT),
+    };
+    let lean = if i == 1 { 0.0 } else { OUTER_LEAN * side };
+    let line = WISP_LINES[i];
+    let steps = 20;
+    (0..=steps)
+        .map(|step| {
+            let along = length * step as f32 / steps as f32;
+            let x = line + side * WISP_SWAY * (TAU * along).sin() + lean * along;
+            pos2(x, foot - WISP_HEIGHT * along)
+        })
+        .collect()
+}
+
 /// The wisps of mist over a body, for `level`. A wisp part-way in is drawn part of the
 /// way from its track (or the ground) to its own color, and, with no track, a little
 /// shorter.
 fn wisps(painter: &Painter, grid: &Grid, ink: &Ink, level: f32) {
     let lit = solid(ink.mist, ink.ground);
     let track = ink.track.map(|track| solid(track, ink.ground));
-    for (i, (line, shown)) in WISP_LINES.into_iter().zip(wisp_shares(level)).enumerate() {
+    for (i, shown) in wisp_shares(level).into_iter().enumerate() {
         let (from, length) = match track {
             Some(track) => (track, 1.0),
             None if shown <= 0.0 => continue,
             None => (ink.ground, 0.7 + 0.3 * shown),
         };
-        // The left one sways and leans the other way from the right one: the plume is
-        // symmetric.
-        let (side, foot) = match i {
-            0 => (-1.0, WISP_FOOT - OUTER_LIFT),
-            1 => (1.0, WISP_FOOT),
-            _ => (1.0, WISP_FOOT - OUTER_LIFT),
-        };
-        let lean = if i == 1 { 0.0 } else { OUTER_LEAN * side };
-        let steps = 20;
-        let points = (0..=steps)
-            .map(|step| {
-                let along = length * step as f32 / steps as f32;
-                let x = line + side * WISP_SWAY * (TAU * along).sin() + lean * along;
-                grid.at(x, foot - WISP_HEIGHT * along)
-            })
+        let points = wisp_line(i, length)
+            .into_iter()
+            .map(|point| grid.at(point.x, point.y))
             .collect();
         round_line(
             painter,
@@ -208,15 +223,16 @@ pub fn air2(painter: &Painter, rect: Rect, ink: &Ink, level: f32) {
     let body = solid(ink.body, ink.ground);
     // 6 by 10 units: a capsule, so its radius is half its width.
     let [top, bottom] = AIR2_BODY;
-    let capsule = grid.rect(11.0, top, 17.0, bottom);
+    let [left, right] = AIR2_SIDES;
+    let capsule = grid.rect(left, top, right, bottom);
     painter.rect_stroke(
         capsule,
-        CornerRadius::from(grid.len(3.0)),
+        CornerRadius::from(grid.len((right - left) / 2.0)),
         Stroke::new(grid.stroke(), body),
         StrokeKind::Middle,
     );
     // The mist outlet: a short slit across the top, under the wisps.
-    let outlet = vec![grid.at(13.0, 16.75), grid.at(15.0, 16.75)];
+    let outlet = AIR2_OUTLET.map(|[x, y]| grid.at(x, y)).to_vec();
     round_line(painter, outlet, grid.stroke(), body);
     wisps(painter, &grid, ink, level);
 }
