@@ -438,9 +438,11 @@ impl<T: Transport> Shared<T> {
     /// point in the rest, so a failure there stops here.
     ///
     /// A copy the broker didn't take is tried once more after the time sync (a full
-    /// queue has drained by then). Only if that fails too is it said, after the time
-    /// sync's `Sent`, which would otherwise clear it from the hero at once. A failed time
-    /// sync is said last, as it is the one that matters for the diffuser.
+    /// queue has drained by then), unless a newer one was adopted from the broker in the
+    /// meantime: that one is stored, and ours would replace it with an older schedule.
+    /// Only if the retry fails too is it said, after the time sync's `Sent`, which would
+    /// otherwise clear it from the hero at once. A failed time sync is said last, as it
+    /// is the one that matters for the diffuser.
     async fn send_schedule(&self, device_id: &str, profile: Profile) {
         let held = self.held_after(device_id, &profile);
         let [(_, table), (wait, time)] = schedule_steps(profile, unix_now());
@@ -456,6 +458,7 @@ impl<T: Transport> Shared<T> {
             .deliver(device_id, &Work::send(time), TransportPref::Wifi)
             .await;
         if shared.is_err()
+            && !self.newer_schedule_known(device_id, at)
             && let Err(error) = self.share_schedule(device_id, &held, at)
         {
             self.failed(
@@ -481,6 +484,16 @@ impl<T: Transport> Shared<T> {
             .get(device_id)
             .and_then(|device| device.sent_profile.clone());
         remember_profile(earlier, profile.clone())
+    }
+
+    /// Whether the state knows a schedule for the diffuser sent after `at`: a copy another
+    /// copy of the app stored, adopted since.
+    fn newer_schedule_known(&self, device_id: &str, at: i64) -> bool {
+        lock(&self.state)
+            .devices
+            .get(device_id)
+            .and_then(|device| device.sent_profile_at)
+            .is_some_and(|known| known > at)
     }
 
     /// Stores `held`, sent at `at` (the time of its `Sent` event, so that the app hears
@@ -1596,6 +1609,44 @@ mod tests {
         let stored = lock(&rig.fake().stored).clone();
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[0], stored[1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_copy_is_stored_over_a_newer_one_adopted_while_waiting_to_retry() {
+        let rig = Rig::new().device(ONE, None);
+        rig.broker_up();
+        lock(&rig.fake().store).push_back(Err(
+            "The broker connection is too busy to take this message.".to_owned(),
+        ));
+        // Two seconds in, another copy of the app sends a schedule of its own, and this
+        // one adopts its copy from the broker.
+        let theirs = Profile {
+            timezone_hours: 1.0,
+            ..profile()
+        };
+        let now = unix_now();
+        rig.apply_later(
+            secs(2),
+            Event::Mqtt {
+                topic: scent_core::schedule_topic(ONE).unwrap(),
+                body: crate::shared_schedule::encode(&theirs, now + 60).unwrap(),
+                at: now,
+            },
+        );
+        rig.shared.send_schedule(ONE, profile()).await;
+        assert_eq!(lock(&rig.state).devices[ONE].sent_profile, Some(theirs));
+        // Ours is older: storing it again would put it back over theirs.
+        assert_eq!(
+            rig.fake().labels(),
+            [
+                "wifi TESTDEVICE01 UPDATE_PROFILE",
+                "store TESTDEVICE01 schedule",
+                "wifi TESTDEVICE01 SYNC_TIME",
+            ]
+        );
+        // And there is nothing to say: the newer copy is the one stored.
+        let events = rig.events();
+        assert!(failed(&events).is_empty(), "{events:?}");
     }
 
     #[tokio::test(start_paused = true)]
