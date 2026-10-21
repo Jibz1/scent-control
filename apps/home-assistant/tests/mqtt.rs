@@ -190,15 +190,18 @@ impl Harness {
     }
 
     async fn report(&mut self) {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        let status = fixture_text(include_str!(
             "../../../fixtures/scentiment/air2-mqtt-update-status-object.json"
-        ))
-        .unwrap();
-        self.upstream
-            .publish(REPORT, fixture["text"].as_str().unwrap().as_bytes(), false)
-            .await;
+        ));
+        self.upstream.publish(REPORT, &status, false).await;
         self.home.until(DEVICE_AVAILABILITY, b"online").await;
     }
+}
+
+/// The message body a sanitized capture holds.
+fn fixture_text(json: &str) -> Vec<u8> {
+    let fixture: serde_json::Value = serde_json::from_str(json).unwrap();
+    fixture["text"].as_str().unwrap().as_bytes().to_vec()
 }
 
 fn spawn(config: Config) -> tokio::task::JoinHandle<Result<(), &'static str>> {
@@ -279,6 +282,14 @@ async fn discovery_control_ha_restart_and_disconnect_over_real_sockets() {
                 .await
                 .is_err()
         );
+        // Once the diffuser answers, a session that knows nothing asks for its status.
+        let ack = fixture_text(include_str!(
+            "../../../fixtures/scentiment/air2-mqtt-ack-already-added.json"
+        ));
+        upstream.publish(REPORT, &ack, false).await;
+        let (flags, topic, body) = upstream.next_publish().await;
+        assert_eq!((flags, topic.as_str()), (0x30, DEVICE));
+        assert_eq!(body, br#"{"action":"GET_STATUS","payload":{}}"#);
         task.abort();
     })
     .await

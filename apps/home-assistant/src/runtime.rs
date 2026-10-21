@@ -135,7 +135,7 @@ pub async fn session(
             format!("scent-ha-{}-devices", config.instance_id),
             upstream_password,
             None,
-        ),
+        )?,
         vec![config.report_topic(), CONNECTED_TOPIC.to_owned()],
         Side::Diffuser,
         events.clone(),
@@ -153,7 +153,7 @@ pub async fn session(
             format!("scent-ha-{}-home", config.instance_id),
             ha_password,
             Some(will),
-        ),
+        )?,
         subscriptions,
         Side::HomeAssistant,
         events,
@@ -221,6 +221,7 @@ pub async fn session(
             }
             ha.publish(changed)?;
             upstream.publish(bridge.pings(now))?;
+            upstream.publish(bridge.status_requests(now))?;
         }
     }
 }

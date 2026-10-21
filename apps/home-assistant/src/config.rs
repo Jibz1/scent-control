@@ -165,13 +165,21 @@ impl Broker {
             .ok_or("A broker password environment variable is missing or empty.")
     }
 
-    pub fn options(&self, id: String, password: &Secret, will: Option<LastWill>) -> MqttOptions {
+    pub fn options(
+        &self,
+        id: String,
+        password: &Secret,
+        will: Option<LastWill>,
+    ) -> Result<MqttOptions, &'static str> {
         let (host, transport) = match self.transport {
             Protocol::Wss => (
                 format!("wss://{}:{}{}", self.host, self.port, self.path),
-                Transport::wss_with_default_config(),
+                system_roots(Transport::wss_with_default_config)?,
             ),
-            Protocol::Mqtts => (self.host.clone(), Transport::tls_with_default_config()),
+            Protocol::Mqtts => (
+                self.host.clone(),
+                system_roots(Transport::tls_with_default_config)?,
+            ),
             Protocol::Tcp => (self.host.clone(), Transport::Tcp),
         };
         let mut options = MqttOptions::new(id, host, self.port);
@@ -184,6 +192,13 @@ impl Broker {
         if let Some(will) = will {
             options.set_last_will(will);
         }
-        options
+        Ok(options)
     }
+}
+
+/// rumqttc panics if any of the system's root certificates fails to load. Make that
+/// an ordinary session failure, retried like the rest, as the desktop app does.
+fn system_roots(transport: fn() -> Transport) -> Result<Transport, &'static str> {
+    std::panic::catch_unwind(transport)
+        .map_err(|_| "Could not load the system's root certificates.")
 }

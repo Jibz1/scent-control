@@ -1,9 +1,15 @@
-use scent_home_assistant::{bridge::Bridge, config::Config};
+use scent_home_assistant::{
+    bridge::{Bridge, Publication},
+    config::Config,
+};
 use serde_json::{Value, json};
 
 const EXAMPLE: &str = include_str!("../config.example.json");
 const REPORT: &str = "scentiment-mqtt-prod/user/route-test-1";
 const PREFIX: &str = "scent-control/example-home/TESTDEVICE01";
+const DEVICE: &str = "scentiment-mqtt-prod/device/TESTDEVICE01";
+const TURN_ON: &str = r#"{"action":"TURN_ON","payload":{"on":1}}"#;
+const GET_STATUS: &str = r#"{"action":"GET_STATUS","payload":{}}"#;
 
 fn bridge() -> Bridge {
     Bridge::new(Config::parse(EXAMPLE.as_bytes()).unwrap())
@@ -36,6 +42,17 @@ fn state(bridge: &Bridge, field: &str, at: i64) -> String {
             .payload,
     )
     .unwrap()
+}
+
+/// Command bodies, after checking each is an unretained publish to the device.
+fn bodies(commands: Vec<Publication>) -> Vec<String> {
+    commands
+        .into_iter()
+        .map(|p| {
+            assert!(!p.retain && p.topic == DEVICE);
+            String::from_utf8(p.payload).unwrap()
+        })
+        .collect()
 }
 
 #[test]
@@ -75,17 +92,16 @@ fn real_fixtures_drive_state_including_firmware_invalid_json() {
 }
 
 #[test]
-fn pings_do_not_refresh_old_readings_and_fields_expire_independently() {
+fn quiet_diffusers_keep_their_last_report_but_still_go_offline() {
+    // Firmware reports only on a change, so an hour of silence means nothing changed.
     let mut b = bridge();
     report(&mut b, "air2-mqtt-update-status-object.json", 10);
     report(&mut b, "air2-mqtt-notification-invalid-json.json", 20);
-    report(&mut b, "air2-mqtt-ack-already-added.json", 310);
-    assert_eq!(state(&b, "availability", 311), "online");
-    assert_eq!(state(&b, "power/state", 311), "OFF");
-    assert_eq!(state(&b, "level/state", 311), "None");
-    assert_eq!(state(&b, "power/state", 321), "None");
-    assert_eq!(state(&b, "availability", 385), "online");
-    assert_eq!(state(&b, "availability", 386), "offline");
+    report(&mut b, "air2-mqtt-ack-already-added.json", 3_600);
+    assert_eq!(state(&b, "power/state", 3_600), "OFF");
+    assert_eq!(state(&b, "level/state", 3_600), "2");
+    assert_eq!(state(&b, "availability", 3_675), "online");
+    assert_eq!(state(&b, "availability", 3_676), "offline");
 }
 
 #[test]
@@ -123,18 +139,54 @@ fn commands_use_exact_codec_and_never_confirm_themselves() {
 }
 
 #[test]
-fn turning_on_uses_reported_level_or_defaults_to_low() {
+fn turning_on_keeps_the_diffusers_own_intensity() {
+    let power = format!("{PREFIX}/power/set");
+    let mut b = bridge();
+    // Intensity unknown: the level the diffuser remembers must not become Low.
+    report(&mut b, "air2-mqtt-ack-already-added.json", 0);
+    assert_eq!(
+        bodies(b.command(&power, b"ON", false, 1).unwrap()),
+        [TURN_ON]
+    );
+    // Intensity known: it is already set, so nothing sends it again.
+    report(&mut b, "air2-mqtt-update-status-object.json", 2);
+    assert_eq!(
+        bodies(b.command(&power, b"ON", false, 3).unwrap()),
+        [TURN_ON]
+    );
+}
+
+#[test]
+fn status_is_requested_once_a_reset_diffuser_is_reachable() {
+    let mut b = bridge();
+    assert!(
+        b.status_requests(0).is_empty(),
+        "unreachable: nobody to ask"
+    );
+    report(&mut b, "air2-mqtt-ack-already-added.json", 0);
+    assert_eq!(bodies(b.status_requests(0)), [GET_STATUS]);
+    assert!(b.status_requests(1).is_empty(), "asked already");
+    // A reconnect resets the readings, so ask again straight away.
+    report(&mut b, "air2-mqtt-device-connected-user.json", 2);
+    assert_eq!(bodies(b.status_requests(2)), [GET_STATUS]);
+}
+
+#[test]
+fn status_is_asked_again_only_after_five_quiet_minutes() {
     let mut b = bridge();
     report(&mut b, "air2-mqtt-ack-already-added.json", 0);
-    let commands = b
-        .command(&format!("{PREFIX}/power/set"), b"ON", false, 1)
-        .unwrap();
-    assert!(String::from_utf8_lossy(&commands[0].payload).contains("\"intensity\":1"));
-    report(&mut b, "air2-mqtt-update-status-object.json", 2);
-    let commands = b
-        .command(&format!("{PREFIX}/power/set"), b"ON", false, 3)
-        .unwrap();
-    assert!(String::from_utf8_lossy(&commands[0].payload).contains("\"intensity\":2"));
+    assert_eq!(bodies(b.status_requests(0)), [GET_STATUS]);
+    // No answer (firmware 2.30 answers only sometimes): retry, but not in a burst.
+    report(&mut b, "air2-mqtt-ack-already-added.json", 300);
+    assert!(b.status_requests(300).is_empty());
+    report(&mut b, "air2-mqtt-ack-already-added.json", 301);
+    assert_eq!(bodies(b.status_requests(301)), [GET_STATUS]);
+    // A report settles it until reports have been quiet for the same five minutes.
+    report(&mut b, "air2-mqtt-update-status-object.json", 310);
+    report(&mut b, "air2-mqtt-ack-already-added.json", 610);
+    assert!(b.status_requests(610).is_empty());
+    report(&mut b, "air2-mqtt-ack-already-added.json", 611);
+    assert_eq!(bodies(b.status_requests(611)), [GET_STATUS]);
 }
 
 #[test]

@@ -71,6 +71,8 @@ The HA broker can use either TLS transport, or `tcp` with explicit `allow_insecu
 true` on a trusted local network. TCP to the diffuser broker is allowed only on
 `localhost` or `127.0.0.1` for testing. `--check` validates the config structure; it
 does not test credentials, certificates, access permissions or device reachability.
+If the OS's root certificates cannot all be loaded, each connection attempt fails
+and is retried, like a lost connection.
 Passwords cannot be embedded in the JSON or broker addresses. Errors and logs never
 include raw config, message bodies, passwords or device identifiers.
 
@@ -98,8 +100,8 @@ Discovery is retained at
 `homeassistant/fan/scent_control_<instance>_<id>/config`. Home Assistant's
 [MQTT fan](https://www.home-assistant.io/integrations/fan.mqtt/) maps its percentage
 slider to the configured three speeds; it sends 1–3 to this adapter, not 33–100.
-Setting a nonzero speed also turns the diffuser on. Turning on uses its latest
-fresh reported intensity, or Low when no valid reading is available.
+Setting a nonzero speed also turns the diffuser on. Turning on sends only `TURN_ON`,
+as the desktop app does, so the diffuser comes back at its own intensity.
 
 Commands are unretained, QoS 0, and best effort. Offline, retained-replay, malformed,
 and unconfigured-device commands are discarded. MQTT 3.1.1 does not mark a retained
@@ -122,10 +124,14 @@ Changing the instance ID requires cleaning up the old discovery topics too.
 - The adapter pings every 30 seconds with the existing route ID. A diffuser is
   available only when heard from within the last 75 seconds. A broker connection
   or echoed command alone is not evidence that a diffuser is reachable.
-- Power and intensity are independently reset to unknown after 5 minutes without
-  a report of that field. Ping replies refresh reachability, not readings. Sending
-  a command never updates reported state. Firmware 2.30 often does not acknowledge
-  intensity, so a slider may remain at its old value until a later report.
+- Firmware reports only on a change, so the last reported power and intensity stay
+  shown until the adapter restarts or the diffuser reconnects; both reset them to
+  unknown. While either is unknown, or after 5 minutes without a report, the
+  adapter sends a reachable diffuser `GET_STATUS`, at most once every 5 minutes.
+  Firmware 2.30 answers it only sometimes. Ping replies refresh reachability, not
+  readings. Sending a command never updates reported state. Firmware 2.30 often
+  does not acknowledge intensity, so a slider may remain at its old value until a
+  later report.
 - A device reconnect invalidates old readings; it does not imply a user change.
   Restarting HA republishes discovery and current reported state.
 

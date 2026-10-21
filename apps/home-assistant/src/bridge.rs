@@ -33,11 +33,17 @@ impl Publication {
     }
 }
 
+/// Firmware reports only on a change, so a reading stays current, however old, until
+/// a reset (a new session or a device reconnect) clears it.
 #[derive(Default)]
 struct Readings {
     heard_at: Option<i64>,
-    power: Option<(bool, i64)>,
-    level: Option<(u8, i64)>,
+    power: Option<bool>,
+    level: Option<u8>,
+    /// When the diffuser last reported power or intensity.
+    reported_at: Option<i64>,
+    /// When we last sent it `GET_STATUS`.
+    asked_at: Option<i64>,
 }
 
 impl Readings {
@@ -125,22 +131,21 @@ impl Bridge {
             .collect()
     }
 
-    /// Republish after discovery / HA birth. Field timestamps are independent of pings.
+    /// Republish after discovery / HA birth. Only availability depends on `now`.
     pub fn snapshot(&self, now: i64) -> Vec<Publication> {
         self.readings
             .iter()
             .enumerate()
             .flat_map(|(i, state)| {
                 let prefix = self.device_prefix(i);
-                let power = match state.power.filter(|(_, at)| !is_stale(*at, now)) {
-                    Some((true, _)) => "ON",
-                    Some((false, _)) => "OFF",
+                let power = match state.power {
+                    Some(true) => "ON",
+                    Some(false) => "OFF",
                     None => "None",
                 };
                 let level = state
                     .level
-                    .filter(|(_, at)| !is_stale(*at, now))
-                    .map(|(value, _)| value.to_string())
+                    .map(|value| value.to_string())
                     .unwrap_or_else(|| "None".to_owned());
                 [
                     Publication::state(format!("{prefix}/power/state"), power),
@@ -190,10 +195,12 @@ impl Bridge {
                 let status = message.status.unwrap();
                 reading.heard_at = Some(now);
                 if let Some(power @ (0 | 1)) = status.power {
-                    reading.power = Some((power == 1, now));
+                    reading.power = Some(power == 1);
+                    reading.reported_at = Some(now);
                 }
                 if let Some(level @ 0..=3) = status.intensity {
-                    reading.level = Some((level as u8, now));
+                    reading.level = Some(level as u8);
+                    reading.reported_at = Some(now);
                 }
             }
             _ => {}
@@ -218,6 +225,28 @@ impl Bridge {
                         userid: Some(self.config.route_id.clone()),
                     },
                 )
+            })
+            .collect()
+    }
+
+    /// Firmware reports only on a change, and a reset leaves nothing known. Ask each
+    /// reachable diffuser for its status while its power or intensity is unknown, or
+    /// once its last report is older than `STALE_AFTER_S`. `GET_STATUS` answers only
+    /// sometimes, so asks are at least `STALE_AFTER_S` apart. Never changes readings.
+    pub fn status_requests(&mut self, now: i64) -> Vec<Publication> {
+        let due = |at: Option<i64>| at.is_none_or(|at| is_stale(at, now));
+        self.readings
+            .iter_mut()
+            .zip(&self.config.devices)
+            .filter_map(|(reading, device)| {
+                let unknown = reading.power.is_none() || reading.level.is_none();
+                let ask = reading.available(now)
+                    && (unknown || due(reading.reported_at))
+                    && due(reading.asked_at);
+                ask.then(|| {
+                    reading.asked_at = Some(now);
+                    Publication::command(&device.id, Command::GetStatus)
+                })
             })
             .collect()
     }
@@ -256,14 +285,8 @@ impl Bridge {
         let id = &self.config.devices[index].id;
         let commands = match (field, payload) {
             ("power", b"OFF") | ("level", b"0") => vec![Command::TurnOn { on: false }],
-            ("power", b"ON") => {
-                let level = self.readings[index]
-                    .level
-                    .filter(|(_, at)| !is_stale(*at, now))
-                    .and_then(|(value, _)| Level::new(value))
-                    .unwrap_or_else(|| Level::new(1).unwrap());
-                vec![Command::SetLevel(level), Command::TurnOn { on: true }]
-            }
+            // As the desktop does: the diffuser comes back at its own intensity.
+            ("power", b"ON") => vec![Command::TurnOn { on: true }],
             ("level", [level @ b'1'..=b'3']) => vec![
                 Command::SetLevel(Level::new(level - b'0').unwrap()),
                 Command::TurnOn { on: true },
