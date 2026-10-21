@@ -28,6 +28,15 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// How many commands can wait for the worker.
 const QUEUE: usize = 16;
 
+/// The largest MQTT packet the connection writes or reads, both ways. rumqttc's default
+/// is 10 KiB, and a packet over it is not sent: the connection drops and the message is
+/// lost, though `send` has already said it was queued. A full schedule on firmware 2.30
+/// (99 times and the always-on entry, about 130 bytes each) is about 13 KB. Incoming has
+/// to be as large: we hear our own commands back on the broker, and the diffuser's
+/// acknowledgement repeats the whole command as an escaped string. 256 KiB leaves
+/// ample room for both and still bounds what a bad message can make us hold.
+const MAX_PACKET_SIZE: usize = 256 * 1024;
+
 /// Where the broker is and who we are on it. The password is not part of this: it
 /// lives in the Keychain (see `secrets`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +241,7 @@ fn build_options(settings: &BrokerSettings, password: &Secret) -> Result<MqttOpt
     options
         .set_transport(transport)
         .set_keep_alive(KEEP_ALIVE)
+        .set_max_packet_size(MAX_PACKET_SIZE, MAX_PACKET_SIZE)
         .set_credentials(settings.username.clone(), password.expose().to_owned());
     Ok(options)
 }
@@ -504,6 +514,51 @@ mod tests {
         );
         assert_eq!(settings.username, "scent-test");
         assert_eq!(settings.route_id, "route-test-1");
+    }
+
+    /// The largest schedule the editor lets through on firmware 2.30: 99 times, each on
+    /// every day, plus the always-on entry.
+    fn full_schedule() -> Command {
+        use scent_core::{AlwaysOn, Entry, HhMm, Level, Profile, ScheduleFlag};
+        let entry = Entry {
+            start: HhMm::parse("23:57").unwrap(),
+            end: HhMm::parse("23:59").unwrap(),
+            weekdays: (0..7).collect(),
+            level: Level::new(3).unwrap(),
+            enable: true,
+        };
+        Command::UpdateProfile(Profile {
+            always_on: AlwaysOn {
+                enable: true,
+                level: Level::new(3).unwrap(),
+            },
+            entries: vec![entry; 99],
+            timezone_hours: -3.5,
+            flag: ScheduleFlag::Replace,
+        })
+    }
+
+    #[test]
+    fn a_full_schedule_fits_well_under_the_packet_limit() {
+        use rumqttc::{Packet, Publish};
+        let body = full_schedule().mqtt_body();
+        let publish = Publish::new(device_topic("TESTDEVICE01"), QoS::AtLeastOnce, body);
+        // The size rumqttc checks against the limit when it writes the packet.
+        let size = Packet::Publish(publish).size();
+        // rumqttc's own default (10 KiB) would drop it: that was the bug.
+        assert!(size > 10 * 1024, "{size}");
+        // Well under ours, with room for the diffuser's acknowledgement, which repeats
+        // the whole command as an escaped string, and for firmware that keeps more.
+        assert!(size * 8 < MAX_PACKET_SIZE, "{size} vs {MAX_PACKET_SIZE}");
+    }
+
+    #[test]
+    fn the_connection_takes_packets_up_to_the_limit() {
+        let options = build_options(&BrokerSettings::default(), &Secret::new("x".into())).unwrap();
+        // rumqttc reads back only the incoming limit; the outgoing one is set in the same
+        // call, from the same constant.
+        assert_eq!(options.max_packet_size(), MAX_PACKET_SIZE);
+        assert_eq!(MAX_PACKET_SIZE, 256 * 1024);
     }
 
     #[test]
