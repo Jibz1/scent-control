@@ -1,0 +1,40 @@
+# PR labels describe changed files; release versions use separate Git tags.
+desktop:
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/desktop/**
+          - scripts/bundle-macos.sh
+
+server:
+  - changed-files:
+      - any-glob-to-any-file: apps/server/**
+
+mobile:
+  - changed-files:
+      - any-glob-to-any-file: apps/mobile/**
+
+scent-core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/scent-core/**
+          - fixtures/scentiment/**
+
+tools:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tools/**
+          - scripts/release_tag.py
+
+infra:
+  - changed-files:
+      - any-glob-to-any-file: infra/**
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+          - turbo.json
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: '**/*.md'
