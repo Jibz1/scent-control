@@ -162,19 +162,22 @@ fn unavailable(error: &btleplug::Error) -> String {
     }
 }
 
-/// How long to give Bluetooth to say what state it is in. Right after the manager is
-/// made, CoreBluetooth hasn't said yet (its first `centralManagerDidUpdateState` comes a
-/// moment later), and btleplug reports that as `Unknown`.
+/// How long to give Bluetooth to become usable when it first says it isn't.
+///
+/// btleplug 0.13's `Adapter::new` waits for CoreBluetooth's first state update, but that
+/// first state can be one that isn't usable yet and turns to powered on a moment later:
+/// unknown, resetting, or unauthorized while macOS's permission prompt is open. btleplug
+/// reports all three as `Unknown`. A permission already refused never gets here: setting
+/// up the manager fails at once with `PermissionDenied`.
 const SETTLE_LIMIT: Duration = Duration::from_secs(3);
 
 /// How often to ask again meanwhile.
 const SETTLE_POLL: Duration = Duration::from_millis(100);
 
 /// The adapter's state once it has settled: `read` is asked again every [`SETTLE_POLL`]
-/// while it says `Unknown`, for up to [`SETTLE_LIMIT`], and then `Unknown` stands.
-/// btleplug 0.13 says `Unknown` for not allowed and resetting as well as for not known
-/// yet, so the first can't be told apart from the last until the wait is over. Any other
-/// state is taken at once, and a failure to ask ends the wait.
+/// while it says `Unknown`, for up to [`SETTLE_LIMIT`], and then `Unknown` stands (as
+/// btleplug can't say which of its three causes it is). Any other state is taken at
+/// once, and a failure to ask ends the wait.
 async fn settled_state<E, F, Fut>(mut read: F) -> Result<CentralState, E>
 where
     F: FnMut() -> Fut,
@@ -556,8 +559,8 @@ impl Shared {
 
     /// The Bluetooth adapter, set up on first use. An error says what the user can do
     /// about it: Bluetooth is off, macOS has not allowed this app to use it, or there
-    /// is no adapter. Bluetooth that hasn't said its state yet, as on the first request,
-    /// is given up to [`SETTLE_LIMIT`] to say it.
+    /// is no adapter. Bluetooth whose state isn't usable yet, as it can be on the first
+    /// request, is given up to [`SETTLE_LIMIT`] to become usable.
     async fn adapter(&self) -> Result<Adapter, String> {
         let adapter = self
             .adapter_cell
@@ -1545,8 +1548,8 @@ mod tests {
                     .to_owned()
             )
         );
-        // Unknown after the wait: not allowed (btleplug calls that Unknown too),
-        // resetting, or still starting.
+        // Unknown after the wait: the permission prompt still open (btleplug calls
+        // unauthorized Unknown too), resetting, or not known.
         assert_eq!(
             ready(CentralState::Unknown),
             Err(
