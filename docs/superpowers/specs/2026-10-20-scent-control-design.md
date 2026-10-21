@@ -441,6 +441,8 @@ way the Phase 0 test bench does, and the bench shows that's already useful.
 - **macOS only.** No Tauri, and no web view.
 - Both transports: Bluetooth first when in range, WiFi otherwise (goal 7).
 - Default intensity 1.
+- Apple design language: the macOS Human Interface Guidelines (see "Design language"
+  below).
 
 ### Designer's calls (patterned on github.com/michaelshimeles/bible-rs)
 
@@ -459,7 +461,7 @@ way the Phase 0 test bench does, and the bench shows that's already useful.
   and never stored or logged.
 - **Layout:** a Cargo workspace at the repo root, next to the Bun workspace (HCCNA keeps
   `apps/server-rs` the same way).
-  - `crates/scent-core`: pure, no I/O. It holds:
+  - `packages/scent-core`: pure, no I/O. It holds:
     - the codec;
     - tolerant message parsing, including the firmware's invalid JSON;
     - the command allow-list;
@@ -478,6 +480,178 @@ way the Phase 0 test bench does, and the bench shows that's already useful.
   `rustup update`.
 - **Local state:** known diffusers, their aliases and the last known readings live in
   `~/Library/Application Support/ScentControl/`. It holds no secrets.
+
+### Design language: Apple's macOS guidelines (owner, 2026-10-20)
+
+The desktop app follows Apple's Human Interface Guidelines for macOS, so it reads as a
+Mac app rather than a generic egui window. egui draws its own widgets, so we match the
+look with a theme and a few custom widgets.
+
+- **Appearance:**
+  - The app follows the system's light or dark setting (`ThemePreference::System`).
+  - The title bar is unified with the content: full-size content view, title hidden
+    and transparent, with the traffic lights over the sidebar.
+- **Color:** Apple's system colors, each with a light and a dark value.
+
+  | Role | Light | Dark |
+  |---|---|---|
+  | Accent (systemIndigo; was systemBlue before the polish) | `#5856D6` | `#5E5CE6` |
+  | Answering (systemGreen) | `#34C759` | `#30D158` |
+  | Waiting, pending (systemOrange) | `#FF9500` | `#FF9F0A` |
+  | Error, login refused (systemRed) | `#FF3B30` | `#FF453A` |
+  | Unknown, silent (systemGray) | `#8E8E93` | `#98989D` |
+  | Label | `#000000` at 85% | `#FFFFFF` at 85% |
+  | Secondary label | `#000000` at 50% | `#FFFFFF` at 55% |
+  | Separator | `#000000` at 10% | `#FFFFFF` at 10% |
+  | Window background | `#ECECEC` | `#323232` |
+  | Sidebar (approximates the material) | `#E3E3E6` | `#2B2B2D` |
+  | Grouped box | `#FFFFFF` | `#2C2C2E` |
+
+  Stale readings use the secondary label color. Pending values use orange. Color is
+  never the only signal: a status always has words too.
+- **Type:**
+  - SF Pro, the Mac's system font, loaded at run time from
+    `/System/Library/Fonts/SFNS.ttf`, with regular (`wght` 400) and semibold (`wght`
+    590) instances through epaint's variation coordinates.
+  - SF Mono (`SFNSMono.ttf`) for the log.
+  - Never copy Apple's fonts into the repo or the bundle. If a font file is missing,
+    fall back to egui's default fonts.
+  - Sizes follow macOS text styles:
+    - Title 1, 22 pt, for the diffuser's name;
+    - Headline, 13 pt semibold, for section headings;
+    - Body, 13 pt;
+    - Subheadline, 11 pt secondary, for ages, sources and sidebar section headings.
+- **Layout:** a split view.
+  - **Sidebar (source list):**
+    - sections "Diffusers" and "Found Nearby";
+    - each row has an 8 pt status dot, the name, and the model in secondary text;
+    - the selected row is an inset rounded rectangle (6 pt) in the accent color with
+      white text.
+  - **Detail pane:** grouped boxes, as in System Settings: rounded 10 pt boxes of
+    label–value rows with hairline separators.
+    - "Status": power, intensity, power source, WiFi signal, each with its age and
+      source in secondary text.
+    - "Controls".
+    - The expected-state line as a footnote.
+  - **Spacing:** 8 pt grid, 20 pt content margins.
+- **Controls:**
+  - a switch for power;
+  - segmented controls for intensity (Low, Medium, High) and Send Over (Auto, WiFi,
+    Bluetooth);
+  - rounded push buttons (6 pt), with the default action filled in the accent color.
+  - The custom widgets report their role and value to accessibility (AccessKit).
+- **Settings:**
+  - a separate "Settings" window, opened with ⌘, and from a gear button in the toolbar;
+  - its broker fields are in a grouped box;
+  - Save is the default button.
+  - If egui can't open a second window here, use a sheet attached to the top of the
+    main window instead.
+- **Notices:** an inline notice at the top of the detail pane, rounded 8 pt with a 12%
+  tint of its color, for login refused, a damaged save file, or no password saved. No
+  web-style banners.
+- **Log:** the activity log is a bottom pane, shown and hidden from the toolbar ("Show
+  Log" / "Hide Log"), in SF Mono 11 pt.
+- **Capitalization (HIG):**
+  - Title case for buttons, segmented-control items, menu items, window titles and
+    section headings: "Scan for Diffusers", "Read Status", "Send Over", "Found Nearby".
+  - Sentence case for row labels, switches, descriptions and status text: "Answering",
+    "sent, waiting for the diffuser".
+- **Motion:** only where a person's action causes it: the switch, the segmented
+  selection, and the log pane opening. No decorative animation.
+- **Icons:** none drawn from SF Symbols, since egui can't use them. Status dots and
+  words carry the meaning.
+
+### Design polish (owner, 2026-10-20: "make the desktop look nice using your best design skills")
+
+This builds on the Apple design language above and changes nothing about how the app behaves.
+
+**The subject.** A calm home utility for the air in a room. The owner glances at it to answer
+one question: is each diffuser diffusing, and how strongly? Today the layout is a settings form:
+- every row carries the same weight;
+- power and intensity appear twice, once as a reading and once as a control;
+- the answer is one row among many.
+
+**Bold in one place: the diffusion hero.** The top of the detail pane is one card that shows
+the state and changes it.
+
+```
+┌ sidebar ─────────┐┌ detail (centred column, max 640 pt) ─────────────────────┐
+│ ●●●              ││                                        [Show Log] [⚙]    │
+│ Diffusers        ││  Bedroom                                     (Title 1)   │
+│ ┌──┐ Bedroom     ││  Air 2, answering over WiFi                  (secondary) │
+│ │▯≈│ Diffusing   ││                                                          │
+│ └──┘ at Medium   ││  ╭─ hero card (radius 14) ─────────────────────────────╮ │
+│ ┌──┐ HVAC 2      ││  │  ((( ▯ )))   Diffusing                  (26 pt)  [◯━]│ │
+│ │▭≡│ Not         ││  │   arcs =     Medium intensity            (15 pt)     │ │
+│ └──┘ answering   ││  │   level      [  Low  |  Medium  |  High  ]           │ │
+│                  ││  ╰─────────────────────────────────────────────────────╯ │
+│ Found Nearby     ││  Today  ░░░░░██████░░░░░░░███░░░░ │now   (when known)    │
+│ ┌──┐ Air 2  ▂▄▆  ││  Details (grouped): Power source · WiFi signal ▂▄▆ Good  │
+│                  ││           · Last report · Firmware · Device ID           │
+│ ● Broker conn.   ││  Connection (grouped): Send over [Auto|WiFi|BT] · Read   │
+│ [Scan for Diff.] ││  Schedule (grouped): footnote + [Edit Schedule…]         │
+└──────────────────┘└──────────────────────────────────────────────────────────┘
+```
+
+**The hero card.**
+- A drawn diffuser glyph with one to three wisps of mist rising from its top for the level (centred,
+  body in the lower half; never arcs to one side, which reads as a speaker). Arcs are accent-filled
+  while it's diffusing and grey when it's off.
+- The state in words at 26 pt ("Diffusing", "Off", "Sending…") with "Low/Medium/High
+  intensity" under it.
+- The power switch at its trailing edge, and a full-width intensity segmented control.
+- The controls show the reported state. A command on its way shows in orange as "Sending…",
+  so nothing is duplicated.
+- The arcs ease (about 200 ms) only when the level changes. Nothing animates on its own.
+
+**Accent: systemIndigo.** Light `#5856D6`, dark `#5E5CE6`, replacing systemBlue as the
+app's accent. HIG lets an app set its own accent.
+- Indigo reads as calm, evening and ambience, which suits a scent app.
+- It stays clearly apart from the green, orange, red and grey used for status.
+- Every other system color stays as it is.
+
+**Sidebar.**
+- Each row gets a 28 pt rounded tile with a drawn glyph: Air 2 is a capsule with mist arcs,
+  HVAC 2 is a box with vent slits. The tile is indigo-tinted when answering and grey
+  otherwise, and the status dot sits on the tile's corner.
+- A failed command is never silent, even with the log hidden: the hero shows the last failure for
+  that diffuser in red until the next send or report.
+- The second line is what it's doing, in words: "Diffusing at Medium", "Off", "Not
+  answering", "Waiting".
+- A diffuser with no name shows its model ("HVAC 2"), never its raw ID.
+- Found Nearby rows show signal bars (dBm in the tooltip).
+- The broker status moves to the sidebar footer, above Scan for Diffusers. The toolbar
+  keeps only Show/Hide Log and the gear.
+
+**Layout and type.**
+- The detail pane is a single centered column, at most 640 pt wide, with 24 pt between
+  sections.
+- Radii follow hierarchy: hero 14, grouped boxes 10, controls 6.
+- Device name in Title 1 (22), hero state 26 semibold, section headings in Headline (13
+  semibold), body 13, secondary 11.
+- No middle-dot strings: separate facts with commas, or give them their own rows.
+
+**Log, hidden by default.**
+- Rows read as sentences: "Turned on, over WiFi", "Set intensity to High, over
+  Bluetooth", "Bedroom reported on, Medium, plugged in", "No answer over Bluetooth".
+- Each row has one disclosure triangle (▸, turning to ▾ when open), a direction mark that is not a chevron
+  (↗ sent, ↙ heard, an orange "!" for a failure) and the time in tabular figures.
+- The raw (masked) JSON shows in SF Mono only when a row is expanded.
+
+**Schedules.**
+- When the app knows the schedule (the last one this Mac sent, saved with the diffusers), the
+  detail pane shows a "Today"
+  strip: 24 hours, scheduled windows filled with the accent, and a marker for now.
+- The schedule editor shows a week grid (7 rows × 24 h) previewing its entries, so overlaps
+  and gaps show before sending.
+
+The header has no glyph tile of its own: the hero card already carries the glyph, so a second one would only repeat it.
+
+**Empty states.** Each is a glyph, one Title 2 line, one sentence, and one default button:
+- no diffusers: "No diffusers yet", "Scan to find the diffusers in Bluetooth range.",
+  [Scan for Diffusers];
+- nothing selected;
+- a found diffuser selected: [Add Diffuser…].
 
 ### What desktop v1 does: the test bench, as a real app
 

@@ -1,0 +1,12 @@
+[package]
+name = "scent-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# preserve_order keeps payload keys in the order the code writes them, so frames
+# match the Python tools byte for byte (e.g. ssid before password).
+serde_json = { workspace = true, features = ["preserve_order"] }

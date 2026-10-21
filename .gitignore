@@ -39,3 +39,6 @@ btsnoop_hci.log
 .DS_Store
 .idea/
 .vscode/
+
+# Rust
+/target

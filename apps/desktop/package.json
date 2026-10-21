@@ -1,0 +1,13 @@
+{
+  "name": "@scent-control/desktop",
+  "private": true,
+  "dependencies": {
+    "@scent-control/scent-core": "workspace:*"
+  },
+  "scripts": {
+    "build": "cargo build -p scent-desktop",
+    "test": "cargo test -p scent-desktop",
+    "lint": "cargo clippy -p scent-desktop --all-targets -- -D warnings",
+    "fmt:check": "cargo fmt -p scent-desktop --check"
+  }
+}

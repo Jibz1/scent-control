@@ -1,0 +1,30 @@
+[package]
+name = "scent-desktop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "scent-control"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+scent-core = { path = "../../packages/scent-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = "=7.0.0"
+rumqttc = { version = "=0.25.1", default-features = false, features = ["websocket", "use-rustls"] }
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "sync", "time"] }
+keyring = "=4.2.0"
+btleplug = "=0.13.4"
+uuid = "=1.27.0"
+libc = "=0.2.191"
+futures = "=0.3.34"
+
+[dev-dependencies]
+tokio = { version = "=1.53.2", features = ["test-util"] }
+# Renders the screens to PNGs for the ignored `render_screens` test; nothing else uses it.
+egui_kittest = { version = "=0.36.2", features = ["wgpu", "snapshot"] }

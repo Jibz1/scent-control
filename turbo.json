@@ -1,0 +1,10 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "agentGuidance": false,
+  "tasks": {
+    "build": { "dependsOn": ["^build"], "cache": false },
+    "test": { "dependsOn": ["^build"], "cache": false },
+    "lint": { "cache": false },
+    "fmt:check": { "cache": false }
+  }
+}

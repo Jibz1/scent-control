@@ -1,0 +1,10 @@
+{
+  "name": "@scent-control/scent-core",
+  "private": true,
+  "scripts": {
+    "build": "cargo build -p scent-core",
+    "test": "cargo test -p scent-core",
+    "lint": "cargo clippy -p scent-core --all-targets -- -D warnings",
+    "fmt:check": "cargo fmt -p scent-core --check"
+  }
+}
