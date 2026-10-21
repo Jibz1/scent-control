@@ -53,15 +53,20 @@ pub struct BrokerSettings {
 
 impl BrokerSettings {
     /// The settings from the values a build was given: each one trimmed, and empty when
-    /// there was none.
+    /// there was none. An address that [`BrokerUrl::parse`] turns down is none either, so
+    /// that it never counts as a broker; the username and route ID stay, for Settings.
     pub fn from_values(
         url: Option<&str>,
         username: Option<&str>,
         route_id: Option<&str>,
     ) -> BrokerSettings {
         let value = |value: Option<&str>| value.unwrap_or_default().trim().to_owned();
+        let mut url = value(url);
+        if !url.is_empty() && BrokerUrl::parse(&url).is_err() {
+            url.clear();
+        }
         BrokerSettings {
-            url: value(url),
+            url,
             username: value(username),
             route_id: value(route_id),
         }
@@ -112,11 +117,16 @@ impl BrokerUrl {
     /// Reads `wss://host[:port][/path]`. The port is 443 when left out and the path
     /// is `/`. Any other scheme is an error: the app only talks to the broker
     /// encrypted. So is a user name or password in the address, which would leak
-    /// into logs.
+    /// into logs, and whitespace or a control character anywhere, which no URL holds.
     pub fn parse(url: &str) -> Result<BrokerUrl, String> {
         let rest = url.strip_prefix("wss://").ok_or_else(|| {
             format!("The broker address must start with wss:// (encrypted only): {url:?}")
         })?;
+        if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!(
+                "The broker address has a space or another character no address can have: {url:?}"
+            ));
+        }
         let (authority, path) = match rest.find('/') {
             Some(at) => rest.split_at(at),
             None => (rest, "/"),
@@ -585,6 +595,12 @@ mod tests {
             "wss://broker.example:0/mqtt",
             "wss://broker.example:notaport/mqtt",
             "wss://user:secret@broker.example/mqtt",
+            // No whitespace or control characters, anywhere: a URL can't hold them, and
+            // a comment kept from a .env file would otherwise ride along in the path.
+            "wss://broker.example/mqtt # mine",
+            "wss://broker.example/mq tt",
+            "wss://broker.example/mqtt\r",
+            "wss://broker.example/mqtt\t",
         ] {
             assert!(BrokerUrl::parse(bad).is_err(), "{bad:?}");
         }
@@ -662,6 +678,25 @@ mod tests {
                 option_env!("SCENT_ROUTE_ID"),
             )
         );
+    }
+
+    #[test]
+    fn a_built_in_address_that_cannot_be_used_is_no_broker() {
+        for bad in [
+            // An inline comment that a .env loader kept.
+            "wss://broker.example.test/mqtt # mine",
+            "mqtt://broker.example.test",
+            "broker.example.test/mqtt",
+            "wss://someone:secret@broker.example.test/mqtt",
+        ] {
+            let built =
+                BrokerSettings::from_values(Some(bad), Some("example-user"), Some("route-test-1"));
+            assert_eq!(built.url, "", "{bad}");
+            assert!(!built.is_set(), "{bad}");
+            // Who we would be on the broker stays, for Settings to show.
+            assert_eq!(built.username, "example-user", "{bad}");
+            assert_eq!(built.route_id, "route-test-1", "{bad}");
+        }
     }
 
     #[test]
