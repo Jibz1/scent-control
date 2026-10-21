@@ -7,9 +7,10 @@
 //! Each is drawn on a grid of 28 units, the size of a sidebar tile, scaled to the square
 //! it is given: strokes are 1.5 units (1.5 pt on a tile, scaled with the glyph, never
 //! thinner than 1.25 pt), with round ends and joins, and corners rounded as the tiles'
-//! are. A diffuser is centered, its body in the lower half and its mist above. They are
-//! painted, not laid out: they have no accessibility node of their own, since the words
-//! beside them say what they show.
+//! are. A diffuser is centered: with mist or its tracks, the body is in the lower half and
+//! the mist above it; with neither, the body alone sits in the middle of its square. They
+//! are painted, not laid out: they have no accessibility node of their own, since the
+//! words beside them say what they show.
 
 use std::f32::consts::TAU;
 
@@ -42,6 +43,10 @@ const OUTER_LEAN: f32 = 0.75;
 /// Where a diffuser glyph's ink runs across the grid, its body and mist together, for a
 /// layout that lines the ink up rather than the square.
 pub const INK_X: [f32; 2] = [8.0, 20.0];
+
+/// Where each body runs down the grid, top to bottom, under its mist.
+const AIR2_BODY: [f32; 2] = [14.0, 24.0];
+const HVAC2_BODY: [f32; 2] = [15.5, 23.5];
 
 /// The colors a diffuser glyph is drawn in.
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +81,23 @@ impl Grid {
 
     fn at(&self, x: f32, y: f32) -> Pos2 {
         self.origin + vec2(x, y) * self.scale
+    }
+
+    /// The grid for a body that runs `body` down it (top and bottom), drawn with `ink`
+    /// at `level`. With mist or tracks above it, the body keeps its place in the lower
+    /// half. With neither, it alone is the glyph, so it moves up to the middle of the
+    /// square; while the first wisp eases in or out, it moves part of the way.
+    fn for_body(rect: Rect, body: [f32; 2], ink: &Ink, level: f32) -> Grid {
+        let grid = Grid::of(rect);
+        if ink.track.is_some() {
+            return grid;
+        }
+        let alone = 1.0 - level.clamp(0.0, 1.0);
+        let up = ((body[0] + body[1]) / 2.0 - UNIT / 2.0) * alone;
+        Grid {
+            origin: grid.origin - vec2(0.0, grid.len(up)),
+            scale: grid.scale,
+        }
     }
 
     fn len(&self, units: f32) -> f32 {
@@ -179,12 +201,14 @@ fn wisps(painter: &Painter, grid: &Grid, ink: &Ink, level: f32) {
 }
 
 /// The Air 2: an upright capsule in the lower half with its mist outlet, a short slit,
-/// near the top, and `level` wisps (0 to 3) rising over it.
+/// near the top, and `level` wisps (0 to 3) rising over it. With no wisps and no tracks,
+/// the capsule sits in the middle.
 pub fn air2(painter: &Painter, rect: Rect, ink: &Ink, level: f32) {
-    let grid = Grid::of(rect);
+    let grid = Grid::for_body(rect, AIR2_BODY, ink, level);
     let body = solid(ink.body, ink.ground);
     // 6 by 10 units: a capsule, so its radius is half its width.
-    let capsule = grid.rect(11.0, 14.0, 17.0, 24.0);
+    let [top, bottom] = AIR2_BODY;
+    let capsule = grid.rect(11.0, top, 17.0, bottom);
     painter.rect_stroke(
         capsule,
         CornerRadius::from(grid.len(3.0)),
@@ -198,12 +222,13 @@ pub fn air2(painter: &Painter, rect: Rect, ink: &Ink, level: f32) {
 }
 
 /// The HVAC 2: a low box in the lower half with two vent slits, and `level` wisps (0 to 3)
-/// rising over it.
+/// rising over it. With no wisps and no tracks, the box sits in the middle.
 pub fn hvac2(painter: &Painter, rect: Rect, ink: &Ink, level: f32) {
-    let grid = Grid::of(rect);
+    let grid = Grid::for_body(rect, HVAC2_BODY, ink, level);
     let body = solid(ink.body, ink.ground);
     // 12 by 8 units, with the tiles' corner language.
-    let case = grid.rect(8.0, 15.5, 20.0, 23.5);
+    let [top, bottom] = HVAC2_BODY;
+    let case = grid.rect(8.0, top, 20.0, bottom);
     painter.rect_stroke(
         case,
         CornerRadius::from(grid.len(2.0)),
@@ -328,6 +353,76 @@ mod tests {
         // Easing from Low to Medium, the middle one fades as the outer pair comes in.
         assert_eq!(wisp_shares(1.5), [0.5, 0.5, 0.5]);
         assert_eq!(wisp_shares(2.5), [1.0, 0.5, 1.0]);
+    }
+
+    type Draw = fn(&Painter, Rect, &Ink, f32);
+
+    /// Where a glyph's ink falls on its square, in grid units, drawn `side` points big:
+    /// the bounds of every shape it paints, strokes included.
+    fn ink_of(draw: Draw, ink: &Ink, level: f32, side: f32) -> Rect {
+        let ctx = eframe::egui::Context::default();
+        let square = Rect::from_min_size(Pos2::ZERO, vec2(side, side));
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            draw(ui.painter(), square, ink, level);
+        });
+        let shapes = std::mem::take(&mut output.shapes);
+        output.drop_without_applying_deltas();
+        let painted = shapes
+            .iter()
+            .map(|clipped| clipped.shape.visual_bounding_rect())
+            .fold(Rect::NOTHING, Rect::union);
+        assert!(painted.is_positive(), "nothing painted");
+        let units = UNIT / side;
+        Rect::from_min_max(
+            (painted.min.to_vec2() * units).to_pos2(),
+            (painted.max.to_vec2() * units).to_pos2(),
+        )
+    }
+
+    fn ink(track: Option<Color32>) -> Ink {
+        Ink {
+            body: Color32::GRAY,
+            mist: Color32::GRAY,
+            ground: Color32::WHITE,
+            track,
+        }
+    }
+
+    /// The models, and how far down the grid each body's ink reaches.
+    const BODIES: [(&str, Draw, f32); 2] = [("Air 2", air2, 24.75), ("HVAC 2", hvac2, 24.25)];
+
+    #[test]
+    fn a_body_with_no_mist_and_no_tracks_sits_in_the_middle_of_its_square() {
+        // A sidebar tile, the hero, and small enough for the stroke's floor.
+        for side in [28.0, 72.0, 20.0] {
+            for (model, draw, _) in BODIES {
+                let painted = ink_of(draw, &ink(None), 0.0, side);
+                let middle = painted.center().y;
+                assert!(
+                    (middle - UNIT / 2.0).abs() <= 0.5,
+                    "{model} at {side} pt: ink {painted:?}, middle {middle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn with_mist_or_tracks_the_body_stays_in_the_lower_half() {
+        for side in [28.0, 72.0] {
+            for (model, draw, bottom) in BODIES {
+                let mut drawn = vec![(ink(None), 1.0), (ink(None), 2.0), (ink(None), 3.0)];
+                // The hero while it diffuses: tracks, even with no level.
+                drawn.extend([0.0, 1.0, 3.0].map(|level| (ink(Some(Color32::LIGHT_GRAY)), level)));
+                for (ink, level) in drawn {
+                    let painted = ink_of(draw, &ink, level, side);
+                    assert!(
+                        (painted.bottom() - bottom).abs() < 0.01,
+                        "{model} at {side} pt, level {level}, tracks {:?}: {painted:?}",
+                        ink.track
+                    );
+                }
+            }
+        }
     }
 
     #[test]
