@@ -144,6 +144,14 @@ in the macOS Keychain and nowhere else. The first Bluetooth scan brings up macOS
 Bluetooth permission prompt. A diffuser accepts one Bluetooth connection at a time, so
 close Scentiment's app, or turn your phone's Bluetooth off, while you use this one.
 
+## Home Assistant (initial implementation)
+
+`apps/home-assistant` connects our diffuser broker to Home Assistant's MQTT broker.
+It exposes power and three intensity levels through MQTT Discovery and can feed
+HA's built-in HomeKit Bridge for Apple Home and Siri. It reuses the Rust protocol
+package and runs independently of the desktop app. Real HA/HomeKit and device
+validation is still pending. See [setup and limitations](docs/home-assistant.md).
+
 ## Docs
 
 - [docs/releases.md](docs/releases.md): independent component versions and Git tags.

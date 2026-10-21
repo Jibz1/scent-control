@@ -1,0 +1,23 @@
+{
+  "instance_id": "example-home",
+  "route_id": "route-test-1",
+  "diffuser_broker": {
+    "host": "broker.example.test",
+    "port": 443,
+    "transport": "wss",
+    "path": "/mqtt",
+    "username": "scent-ha",
+    "password_env": "SCENT_MQTT_PASSWORD"
+  },
+  "home_assistant_broker": {
+    "host": "homeassistant.local",
+    "port": 1883,
+    "transport": "tcp",
+    "allow_insecure": true,
+    "username": "scent-ha",
+    "password_env": "HA_MQTT_PASSWORD"
+  },
+  "devices": [
+    { "id": "TESTDEVICE01", "name": "Example diffuser", "model": "air2" }
+  ]
+}

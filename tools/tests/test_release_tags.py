@@ -31,6 +31,7 @@ class ReleaseTagTests(unittest.TestCase):
         self.git("remote", "add", "origin", str(self.remote))
         self.write("apps/desktop/Cargo.toml", '[package]\nname = "desktop"\nversion = "0.1.0"\n')
         self.write("packages/scent-core/Cargo.toml", '[package]\nversion = "0.1.0"\n')
+        self.write("apps/home-assistant/Cargo.toml", '[package]\nversion = "0.1.0"\n')
         self.write("tools/pyproject.toml", '[project]\nversion = "0.0.1"\n')
         self.commit()
         self.git("push", "origin", "main")
@@ -70,8 +71,9 @@ class ReleaseTagTests(unittest.TestCase):
     def test_components_have_independent_namespaces(self):
         self.publish()
         self.publish("scent-core")
+        self.publish("home-assistant")
         self.publish("tools", "0.0.1")
-        self.assertEqual(self.git("tag", "--list").splitlines(), ["desktop/v0.1.0", "scent-core/v0.1.0", "tools/v0.0.1"])
+        self.assertEqual(self.git("tag", "--list").splitlines(), ["desktop/v0.1.0", "home-assistant/v0.1.0", "scent-core/v0.1.0", "tools/v0.0.1"])
 
     def test_rejected_push_can_be_retried_without_recreating_tag(self):
         hook = self.remote / "hooks/pre-receive"

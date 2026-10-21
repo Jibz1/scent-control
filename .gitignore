@@ -11,6 +11,7 @@ __pycache__/
 .venv/
 *.egg-info/
 tools/devices.toml
+home-assistant.local.json
 
 # Secrets and local config
 .env

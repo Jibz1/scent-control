@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["packages/scent-core", "apps/desktop"]
+members = ["packages/scent-core", "apps/desktop", "apps/home-assistant"]
 
 [workspace.package]
 edition = "2024"

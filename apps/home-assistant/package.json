@@ -1,0 +1,13 @@
+{
+  "name": "@scent-control/home-assistant",
+  "private": true,
+  "dependencies": {
+    "@scent-control/scent-core": "workspace:*"
+  },
+  "scripts": {
+    "build": "cargo build -p scent-home-assistant",
+    "test": "cargo test -p scent-home-assistant",
+    "lint": "cargo clippy -p scent-home-assistant --all-targets -- -D warnings",
+    "fmt:check": "cargo fmt -p scent-home-assistant --check"
+  }
+}

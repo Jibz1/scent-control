@@ -11,6 +11,7 @@ import tomllib
 
 COMPONENTS = {
     "desktop": ("apps/desktop/Cargo.toml", "package"),
+    "home-assistant": ("apps/home-assistant/Cargo.toml", "package"),
     "server": ("apps/server/package.json", None),
     "mobile": ("apps/mobile/package.json", None),
     "scent-core": ("packages/scent-core/Cargo.toml", "package"),
