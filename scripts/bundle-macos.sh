@@ -17,6 +17,16 @@ cd "$root"
 # Settings → About shows the commit after the version. Empty outside a git checkout.
 SCENT_BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || true)"
 export SCENT_BUILD_COMMIT
+
+# The broker the app starts with when nothing is saved: SCENT_BROKER_URL,
+# SCENT_BROKER_USERNAME and SCENT_ROUTE_ID, from the shell or the repo-root .env (see
+# .env.example). Without them the app starts with no broker and asks for one in
+# Settings. A password is never compiled in: it goes in the Keychain, from Settings.
+# shellcheck source=scripts/broker-env.sh
+source "$root/scripts/broker-env.sh"
+load_broker_env "$root/.env"
+unset_passwords
+echo "Default broker: ${SCENT_BROKER_URL:-none, so the app asks for one in Settings}" >&2
 cargo build --release -p scent-desktop
 
 app="target/Scent Control.app"
