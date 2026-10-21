@@ -8,9 +8,7 @@ WiFi, controls them, and runs their schedules without Scentiment's cloud.
 ## Why
 
 Scentiment's official app has to reach Scentiment's servers before it will set up or
-control a diffuser. Those servers no longer work, so the diffusers can only be used
-with their physical buttons. Scent Control replaces the app and the cloud. It never
-contacts Scentiment's servers.
+control a diffuser. The app is not reliable also I wanted something to work with other brand and possibly HomeKit support.
 
 ## Supported devices
 
