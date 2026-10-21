@@ -1,0 +1,7 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "ble-info",
+  "text": "01|Diffuser|Black|TESTDEVICE01|2.30|true|3"
+}

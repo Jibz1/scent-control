@@ -37,9 +37,10 @@ eventually be open source and support other brands.
    private to their home.
 6. **Testers (owner).** iPhone builds go out through TestFlight, Android builds as
    an APK.
-7. **Bluetooth fallback (designer's call).** When a diffuser is offline from the
-   server but the phone is next to it, the app can control it directly over
-   Bluetooth.
+7. **Both Bluetooth and WiFi (owner, 2026-10-20).** Like Scentiment's own app,
+   the app talks to a diffuser over Bluetooth whenever the phone is in range and the
+   link connects. Otherwise it goes through the server over WiFi. This replaces the
+   earlier designer's call of Bluetooth only as a fallback.
 
 ### Definition of done for v1 (designer's call)
 
@@ -157,11 +158,12 @@ eventually be open source and support other brands.
 Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconciler)
     │                     │
     │ Bluetooth           │ MQTT (server's own login)
-    │ (setup + fallback)  ▼
+    │ (setup, and control │
+    │  when nearby)       ▼
     └──────────────▶ MQTT broker ◀──wss (one login per diffuser)── Diffusers on home WiFi
 ```
 
-- **Mobile app** (`apps/mobile`): Bluetooth for setup and fallback control, HTTPS to
+- **Mobile app** (`apps/mobile`): Bluetooth for setup and for control when in range, HTTPS to
   the server for everything else, and a live connection to the server for status
   updates (builder's call: SSE or WebSocket).
 - **Server** (`apps/server`): the API, accounts and homes, the device registry,
@@ -242,6 +244,9 @@ Phase 0.
   `SET_RGB_*`) if the device accepts them over MQTT.
 - **Over Bluetooth:** `TURN_ON`, `SET_LEVEL`, `SET_RGB_LEVEL` and `SET_RGB_LED`, as
   documented.
+- **Default intensity is 1 (owner, 2026-10-20)** wherever the app or server has to
+  pick one: switching on, new schedule times and the always-on entry. Scentiment's app
+  uses 2 for "Diffuser" models.
 - **Schedules:**
   - The server keeps the master schedule table for each device and sends the
     whole table with `UPDATE_PROFILE` (`schedule_flag: 1`), followed by
@@ -256,10 +261,14 @@ Phase 0.
   state. Store the latest state per device and stream changes to the app. The raw
   oil value is 0–100. The app shows Empty/Low/Medium/High with the same thresholds
   as Scentiment's app.
-- **Fallback over Bluetooth:** when the server marks a device offline and the phone
-  can see it, the app offers direct control. The app drops the Bluetooth connection
-  soon after, since a held connection blocks others and drains battery-powered
-  models.
+- **Bluetooth first when nearby, WiFi otherwise (owner, 2026-10-20).** When the
+  phone can reach the diffuser over Bluetooth, the app sends commands that way.
+  Bluetooth also has the fullest command support: intensity and replies are
+  immediate, per Phase 0. Otherwise commands go through the server and broker. The
+  app still drops idle Bluetooth connections soon after use, because a held
+  connection blocks others, drains battery models, and seemed to delay WiFi
+  commands in Phase 0. Anything changed over Bluetooth is reported to the server, so
+  the stored state stays current.
 
 ### 6.6 Desired state (from CLAUDE.md, adapted)
 
@@ -352,7 +361,8 @@ fixtures, the server and broker on Railway, and app setup and manual control.
 Android first, since the owner has a Pixel 6a for testing (designer's call).
 
 **Phase 2: schedules, status and resilience.** The schedule editor, the desired-state
-reconciler, status and oil level, the Bluetooth fallback, and the HVAC 2.
+reconciler, status, Bluetooth-first control, and the HVAC 2 (oil level is unavailable;
+see the Phase 0 appendix).
 
 **Phase 3: other people.** Sign-up, homes and invites, TestFlight and APK builds,
 and the privacy policy. Needs a domain for sign-in email first (§5).
@@ -374,3 +384,135 @@ and the privacy policy. Needs a domain for sign-in email first (§5).
   control of any device, before publishing anything that describes it.
 - Decide how much of the decompiled-app findings to publish.
 - Confirm the MIT license and the use of the "Scentiment" name (README disclaimer).
+
+## Appendix: Phase 0 results (2026-10-20)
+
+Phase 0 gate: **go.** Details and evidence are in `docs/findings.md`, under "Phase 0
+results". These are the places where reality differs from this design, and what
+follows for later phases:
+
+1. **Oil level isn't available on either unit.** Goal 4's oil display has nothing to
+   show for now. The capability stays in the driver model and is off for both models.
+2. **Light control doesn't work** over Bluetooth or WiFi on firmware 2.30. The LED
+   capability is off for both models until shown otherwise.
+3. **The schedule must be followed by `SYNC_TIME`**: send `UPDATE_PROFILE`
+   (`schedule_flag 1`), then `SYNC_TIME`. Sending the clock first didn't run the
+   schedule.
+4. **Over WiFi, intensity and power changes through the always-on entry get no
+   reply.** The server treats them as sent-but-unconfirmed until a later report.
+5. **Online status comes from active pings**, not the broker connection: the device
+   uses keepalive 1200 s and no will message. The server pings each diffuser regularly,
+   as Scentiment's app does, and a missed answer means offline.
+6. **The device reports state only on change**, and nothing triggers a full report
+   without changing something. The app shows each reading with its source and age,
+   alongside what the schedule says the device should be doing. This is the owner's
+   power-reporting rethink, prototyped in the test bench.
+7. **Parsing must tolerate the firmware's invalid JSON** (`"data":enable:0`) and the
+   object-shaped `update_status` data.
+8. **`WIFI_CONNECT` is only needed for diffusers not yet on WiFi.** Setup checks
+   `0xFEF4` first, and if WiFi is already configured it sends only `SAVE_MQTT` and a
+   soft restart.
+9. **Topics:** the server also handles `scentiment-mqtt-prod/server-notifications/device`
+   (a device announcing itself before it has a user ID). Per-device broker rules must
+   allow subscribing to `scentiment-mqtt-prod/announcements` and publishing there.
+10. **One WiFi home per diffuser.** A diffuser on our broker can't use Scentiment's
+    cloud at the same time. Bluetooth works for both apps, one at a time.
+11. **Not yet tested, moved to Phase 2:** button and touchscreen change reporting, a true
+    power cut (the Air 2 has a battery), HVAC 2 schedules, and **setting a schedule over
+    Bluetooth** (`UPDATE_PROFILE` + `SYNC_TIME` over BLE). That last one matters now that
+    Bluetooth is the first choice when nearby. Until it's confirmed, schedules go over WiFi.
+12. **macOS desktop clients must be app bundles that declare Bluetooth use**, which
+    matters for the desktop app (see the Phase 1 design addition).
+
+
+## Addendum: a Rust desktop app first (2026-10-20, for approval)
+
+### Why
+
+The owner wants a working app as soon as possible, before the React Native app
+(owner). A native macOS app is the quickest route. As an app bundle it can declare
+Bluetooth use, which removes Phase 0's main obstacle (macOS kills Bluetooth access
+from processes without that declaration). It can then talk to the diffusers the
+way the Phase 0 test bench does, and the bench shows that's already useful.
+
+### Decided by the owner
+
+- A desktop app written in **Rust**, built **before** the mobile app.
+- **macOS only.** No Tauri, and no web view.
+- Both transports: Bluetooth first when in range, WiFi otherwise (goal 7).
+- Default intensity 1.
+
+### Designer's calls (patterned on github.com/michaelshimeles/bible-rs)
+
+- **UI toolkit:** `eframe`/`egui` 0.36, pure Rust, immediate mode. `bible-rs` compared
+  egui with gpui, iced, AppKit/SwiftUI and web views for a fast Mac app and chose egui.
+  Its widgets don't look like stock AppKit, so it uses custom drawing where needed.
+- **Native touches, macOS only:**
+  - `muda` for a real menu bar;
+  - `objc2`/`objc2-app-kit` only where AppKit is needed, such as window chrome.
+- **Bluetooth:** `btleplug` (CoreBluetooth).
+- **MQTT:** `rumqttc` with its `websocket` and `rustls` features, for `wss://`.
+- **Async runtime:** `tokio`, kept off the UI thread. The UI and the device workers talk
+  over channels.
+- **Secrets:** the broker password is kept in the **macOS Keychain** (`keyring` crate),
+  never in a file. WiFi passwords are typed into a password field, sent over Bluetooth,
+  and never stored or logged.
+- **Layout:** a Cargo workspace at the repo root, next to the Bun workspace (HCCNA keeps
+  `apps/server-rs` the same way).
+  - `crates/scent-core`: pure, no I/O. It holds:
+    - the codec;
+    - tolerant message parsing, including the firmware's invalid JSON;
+    - the command allow-list;
+    - schedule building;
+    - expected-state calculation;
+    - online status;
+    - reading ages.
+    It's tested against `fixtures/scentiment/`, so the Python tools and Rust agree on
+    the same real messages.
+  - `apps/desktop`: the egui app, plus Bluetooth and MQTT workers.
+- **Packaging:** a `scripts/bundle-macos.sh` builds `Scent Control.app` with an Info.plist
+  that declares `NSBluetoothAlwaysUsageDescription`, and signs it ad hoc for local use.
+  The app is launched with `open`. Developer ID signing and notarization come later, when
+  testers need it, as in `bible-rs`'s `RELEASING.md`.
+- **Rust toolchain:** 1.95 or newer (egui 0.36's minimum). This Mac has 1.93, so it needs
+  `rustup update`.
+- **Local state:** known diffusers, their aliases and the last known readings live in
+  `~/Library/Application Support/ScentControl/`. It holds no secrets.
+
+### What desktop v1 does: the test bench, as a real app
+
+1. **Diffusers:** scan over Bluetooth, list `Scentiment` devices with model and color,
+   and remember the ones you add.
+2. **Add a diffuser:**
+   - read `0xFEF4` first;
+   - if it's already on WiFi, send only `SAVE_MQTT` to our broker plus a soft restart;
+   - otherwise ask for the WiFi name and password and send `WIFI_CONNECT` first;
+   - then wait for `device_connected` and send a `PING` with the route ID.
+3. **Control:** power and intensity, over Bluetooth when in range and WiFi otherwise.
+   Over WiFi, what was sent shows as "sent, waiting for the diffuser".
+4. **Schedules:** an editor that sends `UPDATE_PROFILE` (`schedule_flag 1`) and then
+   `SYNC_TIME`, over WiFi, the path Phase 0 confirmed.
+5. **Status, as in the owner's power-reporting rethink:**
+   - each reading shows its source and age, and greys out after 5 minutes;
+   - online means answering pings, sent every 30 s;
+   - "what the schedule says it should be doing now" appears alongside.
+6. **Developer view:** the conversation log from the bench.
+
+### Not in desktop v1
+
+Accounts, homes and the server. The app talks to the test broker directly, like the
+bench, with one shared login. Also out: light control and oil level (unavailable on
+firmware 2.30), firmware updates, Windows/Linux and the mobile app.
+
+### Revised phases
+
+- **Phase 1:** desktop v1 as above, talking to the diffusers and the Phase 0 test broker
+  directly. The test bench is retired once v1 covers it.
+- **Phase 2:** the server and the production broker (per-device logins, the reconciler,
+  pings, stored state). Desktop switches its WiFi path to the server's API. The HVAC 2
+  and Phase 2 device tests (buttons, touchscreen, power cut, Bluetooth schedules) happen
+  here too.
+- **Phase 3:** the mobile app, then accounts, homes and testers (needs a domain for
+  email).
+  - **Open for the owner before Phase 3:** React Native/Expo, as planned, or SwiftUI on
+    iPhone over the same Rust core through UniFFI, which is what `bible-rs` does.

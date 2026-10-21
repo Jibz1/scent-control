@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "test-bench",
+      "runtimeExecutable": "tools/.venv/bin/python",
+      "runtimeArgs": ["tools/control_server.py", "--url", "wss://test-broker-production.up.railway.app/mqtt", "--username", "scent-test"],
+      "port": 8765
+    }
+  ]
+}

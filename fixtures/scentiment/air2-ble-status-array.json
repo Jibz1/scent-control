@@ -1,0 +1,8 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "ble-notify",
+  "note": "after SET_LEVEL 3",
+  "text": "{\"data\":[85,170,11,255,1,2,200,100,255,3,3,255,255,0,41,106]}"
+}

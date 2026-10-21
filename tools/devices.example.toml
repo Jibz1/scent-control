@@ -1,0 +1,10 @@
+# Copy to devices.toml (gitignored) and fill in real values.
+# On macOS, addresses are CoreBluetooth UUIDs, not MAC addresses. scan.py prints them.
+
+[devices.air2]
+address = "00000000-0000-0000-0000-000000000001"
+name = "Scentiment-D ..."
+
+[devices.hvac]
+address = "00000000-0000-0000-0000-000000000002"
+name = "Scentiment-H ..."

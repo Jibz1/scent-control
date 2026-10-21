@@ -9,6 +9,8 @@ build/
 # Python tools
 __pycache__/
 .venv/
+*.egg-info/
+tools/devices.toml
 
 # Secrets and local config
 .env
@@ -29,6 +31,9 @@ __pycache__/
 captures/
 *.btsnoop
 btsnoop_hci.log
+
+# Agent working files (progress ledgers may hold device identifiers)
+.superpowers/
 
 # OS and editors
 .DS_Store

@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scent test bench</title>
+<style>
+:root {
+  --fog: #eef2f3;
+  --surface: #ffffff;
+  --ink: #1e2a30;
+  --ink-soft: #55656c;
+  --line: #c9d3d6;
+  --teal: #2f7f86;
+  --teal-ink: #ffffff;
+  --teal-wash: #dcecee;
+  --amber: #b7791f;
+  --amber-wash: #f6ead6;
+  --rose: #b4535a;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ui: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fog: #141b1e;
+    --surface: #1c2529;
+    --ink: #dce5e7;
+    --ink-soft: #93a4aa;
+    --line: #34444a;
+    --teal: #5fb3b9;
+    --teal-ink: #0f2224;
+    --teal-wash: #1f3739;
+    --amber: #e0a94e;
+    --amber-wash: #3a2f1c;
+    --rose: #e08a90;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--fog); color: var(--ink); font: 15px/1.45 var(--ui); font-variant-numeric: tabular-nums; }
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 1.15rem; }
+h2 { font-size: 1rem; }
+h3 { font-size: 0.95rem; }
+button, input, select { font: inherit; color: inherit; }
+button {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 6px;
+  padding: 0.35rem 0.7rem; cursor: pointer;
+}
+button:hover { border-color: var(--teal); }
+button.primary { background: var(--teal); color: var(--teal-ink); border-color: var(--teal); }
+button[aria-pressed="true"] { background: var(--teal-wash); border-color: var(--teal); }
+:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+input, select { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 0.25rem 0.4rem; }
+
+.bar { display: flex; align-items: baseline; gap: 1rem; padding: 0.9rem 1.25rem; border-bottom: 1px solid var(--line); }
+.link { margin: 0; color: var(--ink-soft); font-size: 0.85rem; }
+.link.up::before { content: ""; display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--teal); margin-right: 0.4rem; }
+.link.down { color: var(--rose); }
+
+.bench { display: grid; grid-template-columns: minmax(340px, 30rem) 1fr; gap: 0; height: calc(100vh - 3.2rem); }
+.controls { overflow-y: auto; padding: 1rem 1.25rem; border-right: 1px solid var(--line); display: grid; gap: 1rem; align-content: start; }
+
+.device { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.9rem 1rem; display: grid; gap: 0.7rem; }
+.device.selected { border-color: var(--teal); box-shadow: inset 4px 0 0 var(--teal); }
+.device header { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+.device .meta { color: var(--ink-soft); font-size: 0.8rem; text-align: right; }
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr)); gap: 0.25rem 0.75rem; margin: 0; }
+.readout div { display: grid; }
+.readout dt { color: var(--ink-soft); font-size: 0.75rem; }
+.readout dd { margin: 0; font-weight: 600; }
+.readout small { display: block; font-weight: 400; font-size: 0.72rem; }
+.offline { margin: 0; padding: 0.4rem 0.6rem; border-radius: 6px; background: var(--amber-wash); font-size: 0.82rem; }
+.offline[hidden], .busy[hidden] { display: none; }
+.busy { margin: 0; color: var(--teal); font-size: 0.85rem; }
+.readout small { color: var(--ink-soft); }
+.readout small.pending { color: var(--amber); }
+.stale { opacity: 0.55; }
+.expected { margin: 0; color: var(--ink-soft); font-size: 0.85rem; }
+.expected:empty, .online:empty { display: none; }
+.device .online { margin: 0; }
+button:disabled { opacity: 0.5; cursor: progress; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.row > .name { width: 5.5rem; color: var(--ink-soft); font-size: 0.85rem; }
+.swatch { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); }
+.swatch:hover { box-shadow: 0 0 0 2px var(--teal); }
+
+.schedule { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.9rem 1rem; display: grid; gap: 0.75rem; }
+.schedule .hint { margin: 0; color: var(--ink-soft); font-size: 0.85rem; }
+.entry { display: grid; grid-template-columns: auto auto 1fr; gap: 0.4rem 0.6rem; align-items: center; padding: 0.6rem 0; border-top: 1px solid var(--line); }
+.entry .days { grid-column: 1 / -1; display: flex; gap: 0.25rem; }
+.entry .days button { width: 2rem; padding: 0.25rem 0; }
+.entry .end { justify-self: end; display: flex; gap: 0.5rem; align-items: center; }
+pre { margin: 0; font: 0.78rem/1.4 var(--mono); white-space: pre-wrap; word-break: break-word; }
+details summary { cursor: pointer; color: var(--ink-soft); font-size: 0.85rem; }
+
+.talk { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+.talk-head { display: flex; justify-content: space-between; align-items: baseline; padding: 1rem 1.5rem 0.5rem; }
+.talk-head label { color: var(--ink-soft); font-size: 0.85rem; }
+.log { list-style: none; margin: 0; padding: 0.5rem 1.5rem 2rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem; }
+.msg { max-width: min(46rem, 85%); padding: 0.55rem 0.8rem; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
+.msg.from { align-self: flex-start; border-bottom-left-radius: 3px; }
+.msg.to { align-self: flex-end; background: var(--teal-wash); border-color: transparent; border-bottom-right-radius: 3px; }
+.msg.refused, .msg.error { align-self: flex-end; background: var(--amber-wash); border-color: var(--amber); }
+.msg .who { display: flex; gap: 0.6rem; align-items: baseline; font-size: 0.78rem; color: var(--ink-soft); }
+.msg .action { font-weight: 600; color: var(--ink); font-size: 0.9rem; }
+.msg .note { margin: 0.2rem 0 0; font-size: 0.85rem; }
+.msg.fresh { animation: arrive 1.2s ease-out; }
+@keyframes arrive { from { box-shadow: 0 0 0 3px var(--teal); } to { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .msg.fresh { animation: none; } }
+.empty { color: var(--ink-soft); padding: 2rem 1.5rem; }
+
+@media (max-width: 820px) {
+  .bench { grid-template-columns: 1fr; height: auto; }
+  .controls { border-right: 0; border-bottom: 1px solid var(--line); }
+  .log { max-height: 70vh; }
+  .msg { max-width: 100%; }
+}
+</style>
+</head>
+<body>
+<header class="bar">
+  <h1>Scent test bench</h1>
+  <p id="link" class="link">Connecting to the local helper…</p>
+</header>
+
+<main class="bench">
+  <section class="controls" aria-label="Diffusers and schedule">
+    <div id="devices"><p class="empty">Waiting for diffusers. They appear here once they're in tools/devices.toml or send a message.</p></div>
+
+    <section class="schedule" aria-labelledby="sched-title">
+      <h2 id="sched-title">Schedule</h2>
+      <p class="hint" id="sched-for">Pick a diffuser above to edit its schedule.</p>
+
+      <div class="row">
+        <span class="name">Always-on</span>
+        <label><input type="checkbox" id="factory-on"> runs all day</label>
+        <label>level <select id="factory-level"><option selected>1</option><option>2</option><option>3</option></select></label>
+      </div>
+      <p class="hint">This is the diffuser's fixed first entry, which doubles as its manual on/off. Leave it off so only the times below run.</p>
+
+      <div id="entries"></div>
+      <div class="row">
+        <button type="button" id="add-entry">Add a time</button>
+        <button type="button" id="add-test">Add a test time starting in 3 minutes</button>
+      </div>
+      <div class="row">
+        <label>UTC offset in hours <input type="number" step="0.25" id="tz" style="width:5.5rem"></label>
+      </div>
+      <div class="row">
+        <button type="button" class="primary" id="send-schedule">Send schedule</button>
+        <button type="button" id="send-manual" title="Sends only the always-on entry with schedule_flag 0, the way Scentiment's app switches power over WiFi">Send always-on entry as manual state</button>
+      </div>
+      <details>
+        <summary>What will be sent</summary>
+        <pre id="preview"></pre>
+      </details>
+      <details>
+        <summary>Schedule the diffuser last reported</summary>
+        <pre id="reported">Nothing reported yet.</pre>
+        <button type="button" id="load-reported">Load into the editor</button>
+      </details>
+    </section>
+  </section>
+
+  <section class="talk" aria-labelledby="talk-title">
+    <div class="talk-head">
+      <h2 id="talk-title">Conversation</h2>
+      <label><input type="checkbox" id="only-selected"> only the selected diffuser</label>
+    </div>
+    <ol id="log" class="log" aria-live="polite"></ol>
+  </section>
+</main>
+
+<script>
+"use strict";
+const DAYS = ["S", "M", "T", "W", "T", "F", "S"];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const COLORS = [
+  ["Blue", [0, 0, 255]], ["Cyan", [50, 209, 254]], ["Red", [255, 0, 0]], ["Green", [0, 255, 0]],
+  ["Warm 1", [255, 151, 60]], ["Warm 2", [255, 175, 90]], ["Warm 3", [255, 190, 110]],
+];
+const state = { devices: {}, routeId: "route-test-1", selected: null, entries: [], events: [], sent: {}, transport: {}, busy: {} };
+const $ = (id) => document.getElementById(id);
+
+function label(deviceId) {
+  return (state.devices[deviceId] && state.devices[deviceId].label) || deviceId || "Broker";
+}
+function time(ts) { return ts ? ts.slice(11, 19) : ""; }
+// Local time as "YYYY-MM-DDTHH:MM:SS", the same format the helper uses.
+function localIso() { return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19); }
+
+// "auto" works like Scentiment's app: Bluetooth when it can reach the diffuser, WiFi otherwise.
+function transportOf(id) { return state.transport[id] || "auto"; }
+
+async function post(path, body) {
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return [response, await response.json().catch(() => ({}))];
+}
+
+// Bluetooth calls take several seconds (connect, send, listen), so the card is locked meanwhile.
+async function withBusy(deviceId, label, work) {
+  state.busy[deviceId] = label;
+  if (cards[deviceId]) updateDevice(deviceId);
+  try { return await work(); } finally {
+    delete state.busy[deviceId];
+    if (cards[deviceId]) updateDevice(deviceId);
+  }
+}
+
+async function readOverBluetooth(deviceId) {
+  const [response, body] = await withBusy(deviceId, "Reading over Bluetooth…", () => post("/api/ble-read", { deviceId }));
+  if (!response.ok) return addNote("error", deviceId, "Bluetooth read", body.error || `HTTP ${response.status}`);
+  if (!Object.keys(body.status || {}).length) {
+    addNote("error", deviceId, "Bluetooth read", "The diffuser's last Bluetooth message wasn't a status. It reports one after an on/off or intensity change.");
+  }
+}
+
+async function publish(deviceId, action, payload) {
+  const transport = transportOf(deviceId);
+  if (transport !== "wifi" && state.busy[deviceId]) return;
+  let [response, body] = transport === "wifi" ? await post("/api/publish", { deviceId, action, payload })
+    : await withBusy(deviceId, "Sending over Bluetooth…", () => post("/api/ble-send", { deviceId, action, payload }));
+  if (transport === "auto" && response.status === 502) {
+    const onBroker = state.devices[deviceId] && state.devices[deviceId].lastSeen;
+    addNote("error", deviceId, action, onBroker ? "Bluetooth couldn't reach the diffuser, so this went over WiFi." : `Bluetooth couldn't reach the diffuser, and it isn't on the test broker: ${body.error}`);
+    if (!onBroker) return;
+    [response, body] = await post("/api/publish", { deviceId, action, payload });
+  }
+  if (!response.ok) {
+    return addNote(body.refused ? "refused" : "error", deviceId, action, body.refused || body.error || `HTTP ${response.status}`);
+  }
+  // Show what was sent until the diffuser reports otherwise; over WiFi it often says nothing.
+  const sent = state.sent[deviceId] || (state.sent[deviceId] = {});
+  if (action === "TURN_ON") sent.power = payload.on;
+  if (action === "SET_LEVEL") sent.intensity = payload.intensity;
+  sent.at = localIso();
+  if (cards[deviceId]) updateDevice(deviceId);
+}
+
+function heard(d) { return [d.lastSeen, d.bleSeen].filter(Boolean).sort().pop(); }
+
+const STALE_MIN = 5;
+function minutesSince(ts) { return ts ? Math.max(0, Math.round((Date.parse(localIso()) - Date.parse(ts)) / 60000)) : null; }
+function ago(ts) {
+  const m = minutesSince(ts);
+  return m == null ? "" : m < 1 ? "just now" : m < 60 ? `${m} min ago` : `at ${time(ts).slice(0, 5)}`;
+}
+
+// A reading shows its source and age, and greys out once it's old.
+// A command sent since the last report shows as unconfirmed.
+function reading(r, sentValue, sentAt, format) {
+  if (sentValue != null && (!r || r.at < sentAt)) {
+    return `${format(sentValue)} <small class="pending">sent, waiting for the diffuser</small>`;
+  }
+  if (!r) return `? <small>not reported yet</small>`;
+  const old = minutesSince(r.at) >= STALE_MIN;
+  return `<span class="${old ? "stale" : ""}">${format(r.value)}</span> <small class="${old ? "stale" : ""}">reported ${ago(r.at)} over ${r.via === "bluetooth" ? "Bluetooth" : "WiFi"}</small>`;
+}
+
+const ONLINE = {
+  online: ["up", "Answering"], waiting: ["", "Pinged, waiting for an answer"],
+  offline: ["down", "Not answering pings"], unknown: ["", "Not pinged yet"],
+};
+
+function expectedText(e) {
+  if (!e) return "";
+  if (!e.power) return "Its schedule says it should be off now.";
+  return `Its schedule says it should be on at level ${e.level}${e.until ? " until " + e.until : ""} (${e.source}).`;
+}
+
+// ---- devices ----
+function powerSource(status) {
+  if (status.charging === 2 || status.battery === 200) return "plugged in";
+  if (status.charging === 1) return "charging";
+  if (status.charging === 0) return status.battery != null ? `battery ${status.battery}%` : "battery";
+  return "not reported yet";
+}
+
+const cards = {};
+
+// Cards are built once; updates only change the readings, so a click is never lost to a redraw.
+function renderDevices() {
+  const ids = Object.keys(state.devices);
+  const box = $("devices");
+  if (!ids.length) return;
+  for (const id of ids) {
+    if (!cards[id]) cards[id] = renderDevice(id);
+    updateDevice(id);
+  }
+  if (box.children.length !== ids.length || [...box.children].some((c, i) => c !== cards[ids[i]])) {
+    box.replaceChildren(...ids.map((id) => cards[id]));
+  }
+}
+
+function updateDevice(id) {
+  const d = state.devices[id];
+  const s = d.status || {};
+  const info = d.info || {};
+  const el = cards[id];
+  const sent = state.sent[id] || {};
+  el.className = "device" + (state.selected === id ? " selected" : "");
+  const last = heard(d);
+  el.querySelector(".offline").hidden = !!d.lastSeen;
+  el.querySelector(".meta").innerHTML = `${escape(info.model || "")} ${info.fw ? "firmware " + escape(info.fw) : ""}<br>
+    ${d.lastSeen ? "WiFi " + time(d.lastSeen) : "not on the test broker"}${d.bleSeen ? ", Bluetooth " + time(d.bleSeen) : ""}`;
+  const transport = transportOf(id);
+  for (const b of el.querySelectorAll("[data-transport]")) b.setAttribute("aria-pressed", String(b.dataset.transport === transport));
+  const busy = state.busy[id];
+  el.querySelector(".busy").textContent = busy || "";
+  el.querySelector(".busy").hidden = !busy;
+  for (const b of el.querySelectorAll("button")) b.disabled = !!busy;
+  const r = d.readings || {};
+  const source = r.charging || r.battery;
+  el.querySelector(".readout").innerHTML = `
+    <div><dt>Power</dt><dd>${reading(r.power, sent.power, sent.at, (v) => (v ? "On" : "Off"))}</dd></div>
+    <div><dt>Intensity</dt><dd>${reading(r.intensity, sent.intensity, sent.at, (v) => v || "–")}</dd></div>
+    <div><dt>Power source</dt><dd>${reading(source && { ...source, value: s }, null, null, powerSource)}</dd></div>
+    <div><dt>WiFi signal</dt><dd>${reading(r.rssi, null, null, (v) => v + " dBm")}</dd></div>`;
+  const [cls, text] = ONLINE[d.online] || ONLINE.unknown;
+  const badge = el.querySelector(".online");
+  badge.className = `online link ${cls}`;
+  badge.textContent = d.lastSeen ? text : "";
+  el.querySelector(".expected").textContent = expectedText(d.expected);
+  const shown = sent.intensity != null && (!last || last < sent.at) ? sent.intensity : s.intensity;
+  for (const b of el.querySelectorAll("[data-level]")) b.setAttribute("aria-pressed", String(shown === Number(b.dataset.level)));
+}
+
+function renderDevice(id) {
+  const d = state.devices[id];
+  const el = document.createElement("article");
+  el.innerHTML = `
+    <header>
+      <h3>${escape(d.label)}</h3>
+      <div class="meta"></div>
+    </header>
+    <p class="offline">This diffuser is still set to Scentiment's server, so WiFi commands from here can't reach it. Bluetooth works while this Mac is in range. To use WiFi, move it to the test broker with one Bluetooth command (<code>session.py save-mqtt</code>).</p>
+    <p class="online link"></p>
+    <p class="busy" hidden></p>
+    <dl class="readout"></dl>
+    <p class="expected"></p>
+    <div class="row"><span class="name">Send over</span>
+      <button type="button" data-transport="auto" title="Bluetooth when the diffuser is in range, otherwise WiFi">Auto</button>
+      <button type="button" data-transport="wifi">WiFi</button>
+      <button type="button" data-transport="bluetooth">Bluetooth</button></div>
+    <div class="row"><span class="name">Power</span>
+      <button type="button" data-act="on">Turn on</button>
+      <button type="button" data-act="off">Turn off</button></div>
+    <div class="row"><span class="name">Intensity</span>
+      ${[1, 2, 3].map((n) => `<button type="button" data-level="${n}" aria-pressed="false">${["Low", "Medium", "High"][n - 1]}</button>`).join("")}</div>
+    <div class="row"><span class="name">Light</span>
+      <button type="button" data-act="light-on">On</button>
+      <button type="button" data-act="light-off">Off</button>
+      ${COLORS.map(([name, rgb], i) => `<button type="button" class="swatch" data-color="${i}" aria-label="${name}" title="${name}" style="background: rgb(${rgb.join(",")})"></button>`).join("")}</div>
+    <div class="row"><span class="name">Tools</span>
+      <button type="button" data-act="ble-read">Read over Bluetooth</button>
+      <button type="button" data-act="ping">Ping</button>
+      <button type="button" data-act="status">Ask for status</button>
+      <button type="button" data-act="sync">Sync clock</button>
+      <button type="button" data-act="restart">Restart</button>
+      <button type="button" data-act="select">Edit schedule</button></div>`;
+  el.addEventListener("click", (e) => onDeviceClick(id, e.target.closest("button")));
+  return el;
+}
+
+function onDeviceClick(id, button) {
+  if (!button) return;
+  const { act, level, color, transport } = button.dataset;
+  if (transport) { state.transport[id] = transport; return updateDevice(id); }
+  if (act === "ble-read") return readOverBluetooth(id);
+  if (level) return publish(id, "SET_LEVEL", { intensity: Number(level) });
+  if (color) {
+    const [r, g, b] = COLORS[Number(color)][1];
+    return publish(id, "SET_RGB_LEVEL", { red: r, green: g, blue: b });
+  }
+  const actions = {
+    on: ["TURN_ON", { on: 1 }], off: ["TURN_ON", { on: 0 }],
+    "light-on": ["SET_RGB_LED", { on: 1 }], "light-off": ["SET_RGB_LED", { on: 0 }],
+    ping: ["PING", { userid: state.routeId }], status: ["GET_STATUS", {}],
+    sync: ["SYNC_TIME", { serverTime: Math.floor(Date.now() / 1000) }],
+    restart: ["RESET", { mode: "soft" }],
+  };
+  if (act === "select") return selectDevice(id);
+  if (act === "restart" && !confirm(`Restart ${label(id)}? It reconnects in about half a minute.`)) return;
+  if (actions[act]) publish(id, ...actions[act]);
+}
+
+function selectDevice(id) {
+  state.selected = id;
+  $("sched-for").textContent = `Editing the schedule for ${label(id)}. Sending replaces its whole stored schedule.`;
+  renderDevices();
+  renderReported();
+  renderLog();
+}
+
+// ---- schedule editor ----
+function hhmm(date) { return date.toTimeString().slice(0, 5); }
+
+function addEntry(entry) {
+  state.entries.push(entry || { startTime: "07:00", endTime: "09:00", weekdays: [1, 2, 3, 4, 5], level: 1, enable: true });
+  renderEntries();
+}
+
+function renderEntries() {
+  const box = $("entries");
+  box.replaceChildren(...state.entries.map((e, i) => {
+    const row = document.createElement("div");
+    row.className = "entry";
+    row.innerHTML = `
+      <label>from <input type="time" data-f="startTime" value="${e.startTime}"></label>
+      <label>to <input type="time" data-f="endTime" value="${e.endTime}"></label>
+      <div class="end">
+        <label>level <select data-f="level">${[1, 2, 3].map((n) => `<option ${n === e.level ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+        <label><input type="checkbox" data-f="enable" ${e.enable ? "checked" : ""}> runs</label>
+        <button type="button" data-remove>Remove</button>
+      </div>
+      <div class="days">${DAYS.map((d, n) => `<button type="button" data-day="${n}" aria-label="${DAY_NAMES[n]}" aria-pressed="${e.weekdays.includes(n)}">${d}</button>`).join("")}</div>`;
+    row.addEventListener("input", (ev) => {
+      const f = ev.target.dataset.f;
+      if (!f) return;
+      e[f] = f === "enable" ? ev.target.checked : f === "level" ? Number(ev.target.value) : ev.target.value;
+      renderPreview();
+    });
+    row.addEventListener("click", (ev) => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      if (b.hasAttribute("data-remove")) { state.entries.splice(i, 1); return renderEntries(); }
+      const day = Number(b.dataset.day);
+      e.weekdays = e.weekdays.includes(day) ? e.weekdays.filter((x) => x !== day) : [...e.weekdays, day].sort();
+      renderEntries();
+    });
+    return row;
+  }));
+  renderPreview();
+}
+
+function factoryEntry() {
+  return {
+    index: 1, startTime: "00:00", endTime: "23:59", weekdays: [0, 1, 2, 3, 4, 5, 6],
+    workingState: { level: Number($("factory-level").value), fan: 0, led: 0, timer: 0 },
+    enable: $("factory-on").checked, isFactory: true,
+  };
+}
+
+function profilePayload(flag) {
+  const schedule = [factoryEntry()];
+  if (flag === 1) {
+    for (const e of state.entries) {
+      schedule.push({ startTime: e.startTime, endTime: e.endTime, weekdays: e.weekdays,
+        workingState: { level: e.level, fan: 0, led: 0, timer: 0 }, enable: e.enable });
+    }
+  }
+  return { profile: { schedule }, timezone: Number($("tz").value), schedule_flag: flag };
+}
+
+function renderPreview() {
+  $("preview").textContent = JSON.stringify({ action: "UPDATE_PROFILE", payload: profilePayload(1) }, null, 2);
+}
+
+function renderReported() {
+  const d = state.devices[state.selected];
+  $("reported").textContent = d && d.profile ? JSON.stringify(d.profile, null, 2) : "Nothing reported yet.";
+}
+
+function loadReported() {
+  const d = state.devices[state.selected];
+  const schedule = (d && d.profile && d.profile.schedule) || [];
+  const factory = schedule.find((e) => e.isFactory || e.index === 1);
+  if (factory) {
+    $("factory-on").checked = !!factory.enable;
+    $("factory-level").value = String((factory.workingState || {}).level || 1);
+  }
+  state.entries = schedule.filter((e) => e !== factory).map((e) => ({
+    startTime: e.startTime, endTime: e.endTime, weekdays: e.weekdays || [],
+    level: (e.workingState || {}).level || 1, enable: !!e.enable,
+  }));
+  renderEntries();
+}
+
+// ---- conversation ----
+function addNote(kind, deviceId, action, text) {
+  state.events.push({ kind, deviceId, action, note: text, ts: localIso(), local: true });
+  renderLog(true);
+}
+
+function renderLog(fresh) {
+  const only = $("only-selected").checked && state.selected;
+  const list = state.events.filter((e) => !only || e.deviceId === state.selected).slice(-300);
+  const log = $("log");
+  if (!list.length) {
+    log.innerHTML = `<li class="empty">Nothing yet. Commands you send and everything the diffusers say appear here.</li>`;
+    return;
+  }
+  log.replaceChildren(...list.map((e, i) => {
+    const li = document.createElement("li");
+    const kind = e.kind || (e.direction === "to_device" ? "to" : "from");
+    li.className = `msg ${kind}` + (fresh && i === list.length - 1 ? " fresh" : "");
+    const who = (kind === "from" ? label(e.deviceId) : `You to ${label(e.deviceId)}`) + (e.via === "bluetooth" ? " over Bluetooth" : "");
+    const body = e.note ? `<p class="note">${escape(e.note)}</p>`
+      : `<pre>${escape(e.payload ? JSON.stringify(e.payload) : e.raw)}</pre>${e.valid_json === false ? `<p class="note">The diffuser sent invalid JSON; shown as repaired.</p>` : ""}`;
+    li.innerHTML = `<div class="who"><span class="action">${escape(e.action || "message")}</span><span>${escape(who)}</span><span>${time(e.ts)}</span>${e.topic ? `<span>${escape(e.topic.replace("scentiment-mqtt-prod/", ""))}</span>` : ""}</div>${body}`;
+    return li;
+  }));
+  log.scrollTop = log.scrollHeight;
+}
+
+function escape(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---- wiring ----
+let stateTimer = null;
+async function refreshState() {
+  const response = await fetch("/api/state");
+  const body = await response.json();
+  state.devices = body.devices;
+  state.routeId = body.routeId;
+  if (!state.selected && Object.keys(state.devices).length) state.selected = Object.keys(state.devices)[0];
+  renderDevices();
+  renderReported();
+}
+
+function connectEvents() {
+  const source = new EventSource("/api/events");
+  source.onopen = () => { $("link").textContent = "Connected to the test broker"; $("link").className = "link up"; };
+  source.onerror = () => { $("link").textContent = "Lost the local helper. Is control_server.py still running?"; $("link").className = "link down"; };
+  source.onmessage = (m) => {
+    state.events.push(JSON.parse(m.data));
+    renderLog(true);
+    clearTimeout(stateTimer);
+    stateTimer = setTimeout(refreshState, 300);
+  };
+}
+
+$("tz").value = String(-new Date().getTimezoneOffset() / 60);
+$("add-entry").onclick = () => addEntry();
+$("add-test").onclick = () => {
+  const start = new Date(Date.now() + 3 * 60000), end = new Date(start.getTime() + 4 * 60000);
+  if (end.getDate() !== new Date().getDate()) return alert("A test time would cross midnight. Add one by hand instead.");
+  addEntry({ startTime: hhmm(start), endTime: hhmm(end), weekdays: [start.getDay()], level: 1, enable: true });
+};
+$("send-schedule").onclick = () => {
+  if (!state.selected) return alert("Pick a diffuser first.");
+  if (confirm(`Replace ${label(state.selected)}'s stored schedule with this one?`)) publish(state.selected, "UPDATE_PROFILE", profilePayload(1));
+};
+$("send-manual").onclick = () => state.selected && publish(state.selected, "UPDATE_PROFILE", profilePayload(0));
+$("load-reported").onclick = loadReported;
+$("factory-on").onchange = renderPreview;
+$("factory-level").onchange = renderPreview;
+$("tz").oninput = renderPreview;
+$("only-selected").onchange = () => renderLog();
+
+renderEntries();
+renderLog();
+refreshState().then(() => { if (state.selected) selectDevice(state.selected); });
+connectEvents();
+setInterval(refreshState, 15000); // keeps ages, online status and the schedule line current
+</script>
+</body>
+</html>

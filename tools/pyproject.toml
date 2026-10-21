@@ -1,0 +1,24 @@
+[project]
+name = "scent-tools"
+version = "0.0.1"
+description = "Phase 0 command-line tools for verifying Scentiment diffusers"
+requires-python = ">=3.11"
+dependencies = [
+    "bleak>=1.0,<2",
+    "paho-mqtt>=2.1,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The scripts run from this directory; installing only pulls in dependencies.
+py-modules = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

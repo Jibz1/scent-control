@@ -1,0 +1,8 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "ble-notify",
+  "note": "after TURN_ON on",
+  "text": "enable:1"
+}

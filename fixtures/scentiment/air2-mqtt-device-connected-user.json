@@ -1,0 +1,9 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "mqtt",
+  "topic": "scentiment-mqtt-prod/user/route-test-1",
+  "note": "reconnect after a soft restart, user ID already stored",
+  "text": "{\"action\":\"device_connected\",\"payload\":{\"deviceId\":\"TESTDEVICE01\",\"fw\":\"2.30\",\"model\":\"Diffuser\",\"variant\":\"Black\",\"manufacturer\":\"01\"}}"
+}

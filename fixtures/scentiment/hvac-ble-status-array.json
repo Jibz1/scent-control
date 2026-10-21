@@ -1,0 +1,8 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "hvac",
+  "firmware": "2.30",
+  "channel": "ble-notify",
+  "note": "after SAVE_MQTT",
+  "text": "{\"data\":[85,170,11,255,1,0,200,100,3,1,0,1,1,0,141,106]}"
+}

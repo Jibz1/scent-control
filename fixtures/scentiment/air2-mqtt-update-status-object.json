@@ -1,0 +1,9 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "mqtt",
+  "topic": "scentiment-mqtt-prod/user/route-test-1",
+  "note": "after TURN_ON over MQTT; data is an object here, not a string",
+  "text": "{\"action\":\"update_status\",\"payload\":{\"deviceId\":\"TESTDEVICE01\",\"data\":{\"data\":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},\"rssi\":-66}}"
+}

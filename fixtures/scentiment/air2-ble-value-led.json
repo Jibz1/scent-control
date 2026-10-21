@@ -1,0 +1,8 @@
+{
+  "source": "observed 2026-10-20",
+  "device": "air2",
+  "firmware": "2.30",
+  "channel": "ble-notify",
+  "note": "read from 0xFEF3; the last value the device sent, not a live status",
+  "text": "led:50"
+}
