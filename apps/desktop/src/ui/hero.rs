@@ -1,19 +1,19 @@
 //! The diffusion hero: the card at the top of the open diffuser that answers the one
 //! question the owner glances for (is it diffusing, and how strongly?) and changes it.
 //!
-//! The diffuser's glyph with one to three mist arcs for its level (accent while it
-//! diffuses, grey when it's off), the state in words at 26 pt, the intensity under it,
+//! The diffuser's glyph with one to three wisps of mist rising for its level (accent while
+//! it diffuses, grey when it's off), the state in words at 26 pt, the intensity under it,
 //! where that came from, the power switch at the trailing edge, and the intensity across
 //! the card's width. What a command on its way set is shown, with "Sending…" in orange,
-//! so nothing is shown twice. Only the arcs move, easing when the level changes.
+//! so nothing is shown twice. Only the wisps move, easing when the level changes.
 //!
 //! To accessibility the card is one element ("Bedroom, diffusing at Medium intensity"),
 //! with the switch and the segments as controls of their own; the glyph has no node.
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{
-    Color32, Frame, Id, Margin, Rect, RichText, Sense, Stroke, Ui, UiBuilder, WidgetInfo,
-    WidgetType, pos2, vec2,
+    Color32, FontSelection, Frame, Id, Margin, Rect, RichText, Sense, Stroke, TextWrapMode, Ui,
+    UiBuilder, WidgetInfo, WidgetText, WidgetType, pos2, vec2,
 };
 
 use super::format::{Model, intensity};
@@ -26,9 +26,10 @@ use super::widgets::{hairline, one_line, segmented_wide, switch};
 /// The three intensities and what the segments call them.
 const LEVELS: [(Option<u8>, &str); 3] = [(Some(1), "Low"), (Some(2), "Medium"), (Some(3), "High")];
 
-/// The glyph's square, the space after it, and the card's padding.
+/// The glyph's square, and the space between its ink and the words.
 const GLYPH: f32 = 72.0;
-const GLYPH_GAP: f32 = GRID;
+const GLYPH_GAP: f32 = 2.0 * GRID;
+/// The card's padding.
 const PADDING: i8 = 20;
 
 /// The intensity control: a large control, taller than the others.
@@ -51,8 +52,10 @@ pub struct HeroState {
     pub pending: bool,
     /// The power it reported is more than 5 minutes old.
     pub stale: bool,
-    /// Where the state comes from: "Reported just now over WiFi", "Sent, waiting for the
-    /// diffuser".
+    /// The note says what last failed.
+    pub failed: bool,
+    /// Where the state comes from ("Reported just now over WiFi", "Sent, waiting for the
+    /// diffuser"), how a command on its way is going, or what last failed.
     pub note: String,
 }
 
@@ -95,9 +98,12 @@ impl HeroState {
         }
     }
 
-    /// The note in orange when what was sent is waited for.
+    /// The note in red when it says what failed, in orange when what was sent is waited
+    /// for.
     pub fn note_color(&self, palette: &Palette) -> Color32 {
-        if self.pending {
+        if self.failed {
+            palette.red
+        } else if self.pending {
             palette.orange
         } else {
             palette.secondary_label
@@ -122,9 +128,9 @@ impl HeroState {
         }
     }
 
-    /// How many mist arcs: the level, whether it diffuses or not (they are grey when it
-    /// doesn't).
-    fn arcs(&self) -> f32 {
+    /// How many wisps of mist: the level, whether it diffuses or not (they are grey when
+    /// it doesn't).
+    fn wisps(&self) -> f32 {
         self.level
             .filter(|level| (1..=3).contains(level))
             .map_or(0.0, f32::from)
@@ -140,7 +146,7 @@ pub struct Changed {
 }
 
 /// The hero card for `hero`, the full width of the column. `id` tells one diffuser's
-/// card from another's, so that the arcs don't ease when another diffuser is opened.
+/// card from another's, so that the wisps don't ease when another diffuser is opened.
 pub fn show(ui: &mut Ui, hero: &HeroState, id: Id) -> Changed {
     let palette = Palette::of(ui);
     let edge = if ui.visuals().dark_mode {
@@ -157,40 +163,13 @@ pub fn show(ui: &mut Ui, hero: &HeroState, id: Id) -> Changed {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let width = ui.available_width();
-            let (top, card) = ui.allocate_exact_size(vec2(width, GLYPH), Sense::hover());
-            // One element: a group named by the sentence, with where it comes from as
-            // its description.
-            card.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, hero.sentence()));
-            ui.ctx().accesskit_node_builder(card.id, |node| {
-                node.set_role(Role::Group);
-                node.set_description(hero.note.clone());
-            });
-
-            // The glyph, its arcs easing to the level.
-            let arcs = ui
-                .ctx()
-                .animate_value_with_time(id.with("arcs"), hero.arcs(), MOTION_SECS);
-            let (body, arcs_color) = if hero.diffusing() {
-                (palette.label, palette.accent)
-            } else {
-                (palette.gray, palette.gray)
-            };
-            let ink = Ink {
-                body,
-                arcs: arcs_color,
-                ground: palette.grouped,
-                track: Some(Palette::tint(palette.label, 12)),
-            };
-            let glyph = Rect::from_min_size(top.min, vec2(GLYPH, GLYPH));
-            match hero.model {
-                Some(Model::Hvac2) => glyphs::hvac2(ui.painter(), glyph, &ink, arcs),
-                _ => glyphs::air2(ui.painter(), glyph, &ink, arcs),
-            }
-
-            // The switch at the trailing edge, centered on the state's line.
+            // The words first, to know how tall the top of the card is: the note wraps,
+            // so that what failed and how to fix it is never cut short.
+            let scale = GLYPH / glyphs::UNIT;
+            let [ink_left, ink_right] = glyphs::INK_X;
             let switch_size = vec2(38.0, 22.0);
-            let text_left = glyph.right() + GLYPH_GAP;
-            let text_width = (top.right() - switch_size.x - GRID - text_left).max(0.0);
+            let text_offset = (ink_right - ink_left) * scale + GLYPH_GAP;
+            let text_width = (width - text_offset - switch_size.x - GRID).max(0.0);
             let state = one_line(
                 ui,
                 RichText::new(hero.state_words()).color(hero.state_color(&palette)),
@@ -203,13 +182,58 @@ pub fn show(ui: &mut Ui, hero: &HeroState, id: Id) -> Changed {
                 title3(),
                 text_width,
             );
-            let note = one_line(
-                ui,
-                RichText::new(&hero.note).color(hero.note_color(&palette)),
-                subheadline(),
-                text_width,
-            );
+            let note = WidgetText::from(RichText::new(&hero.note).color(hero.note_color(&palette)))
+                .into_galley(
+                    ui,
+                    Some(TextWrapMode::Wrap),
+                    (width - text_offset).max(0.0),
+                    FontSelection::Style(subheadline()),
+                );
             let lines = state.size().y + level.size().y + GRID / 2.0 + note.size().y;
+            let (top, card) = ui.allocate_exact_size(vec2(width, GLYPH.max(lines)), Sense::hover());
+            // One element: a group named by the sentence, with where it comes from as
+            // its description.
+            card.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, hero.sentence()));
+            ui.ctx().accesskit_node_builder(card.id, |node| {
+                node.set_role(Role::Group);
+                node.set_description(hero.note.clone());
+            });
+
+            // The glyph, its wisps easing to the level. While it diffuses the unlit
+            // wisps are faint tracks, a scale of three; off, they are left out, as faint
+            // tracks would read as muted.
+            let wisps =
+                ui.ctx()
+                    .animate_value_with_time(id.with("wisps"), hero.wisps(), MOTION_SECS);
+            let ink = if hero.diffusing() {
+                Ink {
+                    body: palette.label,
+                    mist: palette.accent,
+                    ground: palette.grouped,
+                    track: Some(Palette::tint(palette.label, 12)),
+                }
+            } else {
+                Ink {
+                    body: palette.gray,
+                    mist: palette.gray,
+                    ground: palette.grouped,
+                    track: None,
+                }
+            };
+            // Placed by its ink, not its square: the ink lines up with the card's other
+            // content, and the words follow it.
+            let glyph = Rect::from_center_size(
+                pos2(top.left() - ink_left * scale + GLYPH / 2.0, top.center().y),
+                vec2(GLYPH, GLYPH),
+            );
+            match hero.model {
+                Some(Model::Hvac2) => glyphs::hvac2(ui.painter(), glyph, &ink, wisps),
+                _ => glyphs::air2(ui.painter(), glyph, &ink, wisps),
+            }
+
+            // The words, centered on the glyph, and the switch at the trailing edge,
+            // centered on the state's line.
+            let text_left = top.left() + text_offset;
             let mut y = top.center().y - lines / 2.0;
             let state_middle = y + state.size().y / 2.0;
             for (galley, after) in [(state, 0.0), (level, GRID / 2.0), (note, 0.0)] {
@@ -299,10 +323,10 @@ mod tests {
     }
 
     #[test]
-    fn the_arcs_are_the_level() {
-        assert_eq!(hero(Some(true), Some(3)).arcs(), 3.0);
-        assert_eq!(hero(Some(false), Some(1)).arcs(), 1.0);
-        assert_eq!(hero(Some(true), None).arcs(), 0.0);
-        assert_eq!(hero(Some(true), Some(9)).arcs(), 0.0);
+    fn the_wisps_are_the_level() {
+        assert_eq!(hero(Some(true), Some(3)).wisps(), 3.0);
+        assert_eq!(hero(Some(false), Some(1)).wisps(), 1.0);
+        assert_eq!(hero(Some(true), None).wisps(), 0.0);
+        assert_eq!(hero(Some(true), Some(9)).wisps(), 0.0);
     }
 }

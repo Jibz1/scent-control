@@ -2,8 +2,9 @@
 //! bottom of the detail pane that the toolbar shows and hides. Hidden until it is
 //! asked for, for this session.
 //!
-//! Each entry is a row that reads as a sentence (see `log_summary`), with a chevron for
-//! what was sent or heard and the time in tabular figures. A row opens, on a click, to
+//! Each entry is a row that reads as a sentence (see `log_summary`), with a disclosure
+//! triangle, a mark for what was sent (↗), heard (↙) or failed (!), and the time in
+//! tabular figures. A row opens, on a click, to
 //! the message itself, masked, in SF Mono. Only the rows in view are laid out.
 
 use eframe::egui::style::ScrollAnimation;
@@ -16,7 +17,7 @@ use scent_core::{Direction, Via};
 
 use super::clock::{clock_hms, local_utc_offset_secs};
 use super::format::{display_name, unknown_name};
-use super::glyphs::{Pointing, chevron, solid};
+use super::glyphs::{Mark, disclosure, mark, solid};
 use super::log_summary::{detail, sentence};
 use super::theme::{CONTROL_RADIUS, GRID, Palette, headline, subheadline};
 use super::widgets::{BOX_PADDING_X, checkbox, one_line, secondary};
@@ -35,10 +36,14 @@ pub(super) const OPEN_HEIGHT: f32 = 200.0;
 /// The height of a row of the log, closed.
 const ROW_HEIGHT: f32 = 26.0;
 
-/// The space at either end of a row, the chevron's square, and the space after it.
+/// The space at either end of a row; the disclosure triangle's square, the mark's, and the
+/// space after each.
 const ROW_INSET: f32 = 8.0;
-const CHEVRON: f32 = 14.0;
-const CHEVRON_GAP: f32 = 6.0;
+const DISCLOSURE: f32 = 10.0;
+const MARK: f32 = 14.0;
+const MARK_GAP: f32 = 6.0;
+/// Where a row's sentence starts, past the triangle and the mark.
+const TEXT_LEFT: f32 = ROW_INSET + DISCLOSURE + MARK_GAP + MARK + MARK_GAP;
 
 /// The space inside an opened row's message box.
 const MESSAGE_PADDING: f32 = 8.0;
@@ -190,6 +195,12 @@ impl LogView {
         self.open = !self.open;
     }
 
+    /// Whether an opened row is still to be brought into view.
+    #[cfg(test)]
+    pub fn is_revealing(&self) -> bool {
+        self.reveal
+    }
+
     /// The log open, with the row of the first entry that `pick` likes open to its
     /// message, for the snapshots.
     #[cfg(test)]
@@ -271,7 +282,7 @@ fn rows(
         return;
     }
     let entries = &entries[entries.len().saturating_sub(SHOWN)..];
-    let offset = local_utc_offset_secs(now);
+    let clock = Clock::of(ui, now);
     let open_at = expanded.as_ref().and_then(|key| key.find(entries));
     // The open row's message, laid out once for its height.
     let width = ui.available_width();
@@ -292,26 +303,28 @@ fn rows(
                 let open = open_at == Some(i);
                 let height = ROW_HEIGHT + if open { extra } else { 0.0 };
                 let rect = Rect::from_x_y_ranges(x_range, (origin + top)..=(origin + top + height));
-                // Scrolled to, at once, until it is in view: all of it, or its top when it
-                // is taller than the pane. The pane may still be opening.
-                if open && *reveal {
+                // Scrolled to, at once and once: all of it, or its top when it is taller
+                // than the pane.
+                if open && std::mem::take(reveal) {
                     let fits = height <= viewport.height();
                     let align = (!fits).then_some(Align::Min);
                     ui.scroll_to_rect_animation(rect, align, ScrollAnimation::none());
-                    let top_shown = viewport.min.y <= top && top <= viewport.max.y;
-                    let end_shown = top + height <= viewport.max.y;
-                    *reveal = !(top_shown && (end_shown || !fits));
                 }
                 if top + height >= viewport.min.y && top <= viewport.max.y {
                     let message = message.as_ref().filter(|_| open);
                     let subject = subject(entry, state);
-                    if row(ui, rect, i, entry, &subject, offset, message) {
+                    if row(ui, rect, i, entry, &subject, &clock, message) {
                         toggled = Some(i);
                     }
                 }
                 top += height;
             }
         });
+    // An opened row that isn't listed (filtered out, or gone from the log) is not
+    // brought into view later.
+    if open_at.is_none() {
+        *reveal = false;
+    }
     if let Some(i) = toggled {
         *expanded = (open_at != Some(i)).then(|| RowKey::of(entries, i));
         *reveal = expanded.is_some();
@@ -327,7 +340,7 @@ struct Message {
 impl Message {
     fn lay_out(ui: &Ui, entry: &LogEntry, width: f32) -> Message {
         // The box runs from under the sentence to the row's end.
-        let inner = width - 2.0 * ROW_INSET - CHEVRON - CHEVRON_GAP - 2.0 * MESSAGE_PADDING;
+        let inner = width - TEXT_LEFT - ROW_INSET - 2.0 * MESSAGE_PADDING;
         let inner = inner.max(40.0);
         let palette = Palette::of(ui);
         let detail = one_line(
@@ -381,17 +394,17 @@ fn row(
     index: usize,
     entry: &LogEntry,
     subject: &str,
-    offset: i64,
+    clock: &Clock,
     message: Option<&Message>,
 ) -> bool {
     let palette = Palette::of(ui);
     let said = sentence(entry, subject);
-    let clock = clock_hms(entry.at, offset);
+    let time = clock_hms(entry.at, clock.offset);
     // Clicks and the context menu, but no stop for the Tab key on every row.
     let response = ui.interact(rect, Id::new("log_row").with(index), Sense::CLICK);
     response.widget_info(|| {
         let mut info = WidgetInfo::labeled(WidgetType::Button, true, &said);
-        info.current_text_value = Some(clock.clone());
+        info.current_text_value = Some(time.clone());
         info
     });
     ui.ctx().accesskit_node_builder(response.id, |node| {
@@ -420,26 +433,33 @@ fn row(
     painter.rect_filled(rect, CONTROL_RADIUS, fill);
 
     let line = Rect::from_min_size(rect.min, vec2(rect.width(), ROW_HEIGHT));
-    let mark = Rect::from_center_size(
-        pos2(line.left() + ROW_INSET + CHEVRON / 2.0, line.center().y),
-        vec2(CHEVRON, CHEVRON),
-    );
-    let (pointing, ink) = match kind {
-        Kind::Sent => (Pointing::Out, palette.gray),
-        Kind::Heard => (Pointing::In, palette.gray),
-        Kind::Problem => (Pointing::Out, palette.orange),
-    };
     let ground = solid(fill, palette.grouped);
-    chevron(painter, mark, solid(ink, ground), pointing);
+    // One disclosure triangle, ▸ or ▾; then what happened: ↗ sent, ↙ heard, ! failed.
+    let triangle = Rect::from_center_size(
+        pos2(line.left() + ROW_INSET + DISCLOSURE / 2.0, line.center().y),
+        vec2(DISCLOSURE, DISCLOSURE),
+    );
+    let secondary = solid(palette.secondary_label, ground);
+    disclosure(painter, triangle, secondary, message.is_some());
+    let (what, ink) = match kind {
+        Kind::Sent => (Mark::Sent, palette.gray),
+        Kind::Heard => (Mark::Heard, palette.gray),
+        Kind::Problem => (Mark::Failed, palette.orange),
+    };
+    let at = Rect::from_center_size(
+        pos2(triangle.right() + MARK_GAP + MARK / 2.0, line.center().y),
+        vec2(MARK, MARK),
+    );
+    mark(painter, at, solid(ink, ground), what);
 
-    let time_width = tabular(
+    let time_width = clock.paint(
         ui,
-        &clock,
+        &time,
         palette.secondary_label,
         line.right() - ROW_INSET,
         line.center().y,
     );
-    let text_left = mark.right() + CHEVRON_GAP;
+    let text_left = line.left() + TEXT_LEFT;
     let text_width = (line.right() - ROW_INSET - time_width - 2.0 * GRID - text_left).max(0.0);
     let galley = one_line(ui, &said, TextStyle::Body, text_width);
     let elided = galley.elided;
@@ -468,6 +488,9 @@ fn row(
             message.text.clone(),
             palette.label,
         );
+        // Read out too: the message is text, and what an open row is for.
+        let shown = ui.interact(boxed, Id::new("log_message").with(index), Sense::hover());
+        shown.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &entry.text));
     }
     if elided && message.is_none() {
         response.on_hover_text(&said);
@@ -475,16 +498,39 @@ fn row(
     clicked
 }
 
-/// `text` in Subheadline with its digits in columns of one width, as tabular figures
-/// are, so that the times line up row under row; right-aligned at `right` and centered
-/// on `middle`. Returns how wide it is.
-fn tabular(ui: &Ui, text: &str, color: Color32, right: f32, middle: f32) -> f32 {
-    let font = subheadline().resolve(ui.style());
-    let digit = ui.ctx().fonts_mut(|fonts| {
-        ('0'..='9')
-            .map(|c| fonts.glyph_width(&font, c))
-            .fold(0.0, f32::max)
-    });
+/// How the rows tell the time: the Mac's offset from UTC, and the width of a digit in
+/// Subheadline, measured once a frame.
+struct Clock {
+    offset: i64,
+    /// The widest digit: every digit is given this much, as tabular figures are.
+    digit: f32,
+}
+
+impl Clock {
+    fn of(ui: &Ui, now: i64) -> Clock {
+        let font = subheadline().resolve(ui.style());
+        let digit = ui.ctx().fonts_mut(|fonts| {
+            ('0'..='9')
+                .map(|c| fonts.glyph_width(&font, c))
+                .fold(0.0, f32::max)
+        });
+        Clock {
+            offset: local_utc_offset_secs(now),
+            digit,
+        }
+    }
+
+    /// `text` in Subheadline with its digits in columns of one width, so that the times
+    /// line up row under row; right-aligned at `right` and centered on `middle`. Returns
+    /// how wide it is.
+    fn paint(&self, ui: &Ui, text: &str, color: Color32, right: f32, middle: f32) -> f32 {
+        tabular(ui, text, self.digit, color, (right, middle))
+    }
+}
+
+/// `text` with each digit `digit` wide, right-aligned at `right` and centered on
+/// `middle`.
+fn tabular(ui: &Ui, text: &str, digit: f32, color: Color32, (right, middle): (f32, f32)) -> f32 {
     let glyphs: Vec<(std::sync::Arc<egui::Galley>, f32)> = text
         .chars()
         .map(|c| {

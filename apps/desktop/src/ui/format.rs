@@ -39,37 +39,46 @@ pub fn via_name(via: Via) -> &'static str {
     }
 }
 
-/// A reading as one line: the value, when it was reported and over what, such as
-/// "On · reported 3 min ago over WiFi". The flag is whether it is stale (see
-/// `scent_core::is_stale`), for the screen to grey it out. `format` turns the number
-/// into words. Nothing reported yet, or nothing that `format` can word, says "not
-/// reported yet" with no age, and is not stale.
-pub fn reading_text(
-    reading: Option<&Reading>,
-    now: i64,
-    format: impl Fn(i64) -> String,
-) -> (String, bool) {
+/// A reading in words: the value, when it was reported and over what, and whether it is
+/// stale (see `scent_core::is_stale`), for the screen to grey it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Said {
+    pub value: String,
+    /// "reported 3 min ago over WiFi"; none when nothing was reported.
+    pub note: Option<String>,
+    pub stale: bool,
+}
+
+/// `reading` in words, `format` turning the number into them. Nothing reported yet, or
+/// nothing that `format` can word, says "not reported yet" with no note, and is not
+/// stale.
+pub fn reading_text(reading: Option<&Reading>, now: i64, format: impl Fn(i64) -> String) -> Said {
+    let nothing = || Said {
+        value: NOT_REPORTED.to_owned(),
+        note: None,
+        stale: false,
+    };
     let Some(reading) = reading else {
-        return (NOT_REPORTED.to_owned(), false);
+        return nothing();
     };
     let value = format(reading.value);
     if value == NOT_REPORTED {
         // A value we can't put in words has no age worth giving, and nothing to grey.
-        return (value, false);
+        return nothing();
     }
-    let text = format!(
-        "{value} · reported {} over {}",
-        ago(reading.at, now),
-        via_name(reading.via)
-    );
-    (text, is_stale(reading.at, now))
+    Said {
+        value,
+        note: Some(format!(
+            "reported {} over {}",
+            ago(reading.at, now),
+            via_name(reading.via)
+        )),
+        stale: is_stale(reading.at, now),
+    }
 }
 
-/// A value we sent that the diffuser hasn't reported on yet.
-pub fn pending_text(value: &str) -> String {
-    format!("{value} · sent, waiting for the diffuser")
-}
-
+/// On or off in words, as the bench says them.
+#[cfg(test)]
 pub fn on_off(power: i64) -> String {
     let text = if power == 0 { "Off" } else { "On" };
     text.to_owned()
@@ -240,15 +249,26 @@ impl Quality {
     }
 }
 
-/// A signal in dBm, WiFi or Bluetooth, in words. The steps follow common WiFi guidance:
-/// from -55 dBm up is excellent; down to -67, the usual floor for a steady link, good;
-/// down to -75 fair; below that weak. Bluetooth links hold to about -80, so the same
-/// steps are, if anything, cautious for it.
+/// A WiFi signal in dBm, in words. The steps follow common WiFi guidance: from -55 dBm up
+/// is excellent; down to -67, the usual floor for a steady link, good; down to -75 fair;
+/// below that weak. Bluetooth has its own ([`ble_signal_quality`]).
 pub fn signal_quality(dbm: i64) -> Quality {
     match dbm {
         -55.. => Quality::Excellent,
         -67..=-56 => Quality::Good,
         -75..=-68 => Quality::Fair,
+        _ => Quality::Weak,
+    }
+}
+
+/// A Bluetooth signal in dBm, in words: Bluetooth holds a link down to about -85 dBm, so
+/// its steps sit lower than WiFi's. From -60 up is excellent; down to -75 good; down to
+/// -85 fair; below that weak.
+pub fn ble_signal_quality(dbm: i64) -> Quality {
+    match dbm {
+        -60.. => Quality::Excellent,
+        -75..=-61 => Quality::Good,
+        -85..=-76 => Quality::Fair,
         _ => Quality::Weak,
     }
 }
@@ -373,41 +393,38 @@ mod tests {
 
     #[test]
     fn reading_is_stale_after_300_s() {
-        let (_, stale) = reading_text(Some(&reading(1, 300, Via::Wifi)), NOW, on_off);
-        assert!(!stale);
-        let (text, stale) = reading_text(Some(&reading(1, 301, Via::Wifi)), NOW, on_off);
-        assert!(stale);
-        assert_eq!(text, "On · reported 5 min ago over WiFi");
+        assert!(!reading_text(Some(&reading(1, 300, Via::Wifi)), NOW, on_off).stale);
+        let said = reading_text(Some(&reading(1, 301, Via::Wifi)), NOW, on_off);
+        assert!(said.stale);
+        assert_eq!(said.value, "On");
+        assert_eq!(said.note.as_deref(), Some("reported 5 min ago over WiFi"));
     }
 
     #[test]
     fn reading_text_names_the_value_the_age_and_the_source() {
-        let (text, stale) = reading_text(Some(&reading(0, 0, Via::Bluetooth)), NOW, on_off);
-        assert_eq!(text, "Off · reported just now over Bluetooth");
-        assert!(!stale);
-        let (text, stale) = reading_text(Some(&reading(-66, 120, Via::Wifi)), NOW, signal);
-        assert_eq!(text, "-66 dBm · reported 2 min ago over WiFi");
-        assert!(!stale);
-        // Nothing yet is not stale: there is nothing to grey out.
+        let said = reading_text(Some(&reading(0, 0, Via::Bluetooth)), NOW, on_off);
         assert_eq!(
-            reading_text(None, NOW, on_off),
-            ("not reported yet".to_owned(), false)
+            (said.value.as_str(), said.note.as_deref(), said.stale),
+            ("Off", Some("reported just now over Bluetooth"), false)
         );
-    }
-
-    #[test]
-    fn nothing_to_say_is_not_given_an_age() {
-        // A reading we can't put in words is "not reported yet", with no "reported ..."
-        // after it, and nothing to grey out.
+        let said = reading_text(Some(&reading(-66, 120, Via::Wifi)), NOW, signal);
+        assert_eq!(
+            (said.value.as_str(), said.note.as_deref(), said.stale),
+            ("-66 dBm", Some("reported 2 min ago over WiFi"), false)
+        );
+        // Nothing yet is not stale: there is nothing to grey out.
+        let nothing = Said {
+            value: "not reported yet".to_owned(),
+            note: None,
+            stale: false,
+        };
+        assert_eq!(reading_text(None, NOW, on_off), nothing);
+        // A reading we can't put in words is "not reported yet", with no note either.
         let odd = reading(7, 600, Via::Wifi);
-        let (text, stale) = reading_text(Some(&odd), NOW, |_| power_source(Some(7), None));
-        assert_eq!(text, "not reported yet");
-        assert!(!stale);
-    }
-
-    #[test]
-    fn a_sent_value_waits_for_the_diffuser() {
-        assert_eq!(pending_text("On"), "On · sent, waiting for the diffuser");
+        assert_eq!(
+            reading_text(Some(&odd), NOW, |_| power_source(Some(7), None)),
+            nothing
+        );
     }
 
     #[test]
@@ -566,6 +583,18 @@ mod tests {
         // As bars, out of four.
         assert_eq!(signal_quality(-50).bars(), 4);
         assert_eq!(signal_quality(-80).bars(), 1);
+    }
+
+    #[test]
+    fn bluetooth_signal_in_words() {
+        // Bluetooth holds a link to about -85 dBm, so its steps are lower than WiFi's.
+        assert_eq!(ble_signal_quality(-50), Quality::Excellent);
+        assert_eq!(ble_signal_quality(-60), Quality::Excellent);
+        assert_eq!(ble_signal_quality(-61), Quality::Good);
+        assert_eq!(ble_signal_quality(-75), Quality::Good);
+        assert_eq!(ble_signal_quality(-76), Quality::Fair);
+        assert_eq!(ble_signal_quality(-85), Quality::Fair);
+        assert_eq!(ble_signal_quality(-86), Quality::Weak);
     }
 
     #[test]

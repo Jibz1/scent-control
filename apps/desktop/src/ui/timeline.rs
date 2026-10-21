@@ -176,8 +176,8 @@ pub fn week_summary(profile: &Profile) -> String {
 struct Inks {
     /// The empty day.
     track: Color32,
-    /// The always-on entry, under the times: a faint tint of the accent, well apart from
-    /// a time switched off.
+    /// The always-on entry, under the times: a light tint of the accent, plainly not the
+    /// grey of a day with nothing, and lighter than a time switched off.
     always: Color32,
     /// A time that runs.
     runs: Color32,
@@ -192,7 +192,7 @@ impl Inks {
         let palette = Palette::of(ui);
         Inks {
             track: Palette::tint(palette.label, 7),
-            always: Palette::tint(palette.accent, 10),
+            always: Palette::tint(palette.accent, 24),
             runs: palette.accent,
             off: Palette::tint(palette.accent, 40),
             edge: ground,

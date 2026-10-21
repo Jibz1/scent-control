@@ -278,14 +278,13 @@ impl Screens {
             let draw = move |painter: &egui::Painter, rect, color, ground| {
                 let ink = glyphs::Ink {
                     body: color,
-                    arcs: color,
+                    mist: color,
                     ground,
                     track: None,
                 };
-                let at = glyphs::still(rect, 0.0);
                 match model {
-                    Model::Hvac2 => glyphs::hvac2(painter, at, &ink, 0.0),
-                    _ => glyphs::air2(painter, at, &ink, 0.0),
+                    Model::Hvac2 => glyphs::hvac2(painter, rect, &ink, 0.0),
+                    _ => glyphs::air2(painter, rect, &ink, 0.0),
                 }
             };
             let add = empty_state(

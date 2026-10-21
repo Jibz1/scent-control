@@ -103,7 +103,7 @@ pub const MOTION_SECS: f32 = 0.2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     /// systemIndigo: the selection, default buttons, switches that are on, and the mist
-    /// arcs of a diffuser that is diffusing. Used sparingly.
+    /// wisps of a diffuser that is diffusing. Used sparingly.
     pub accent: Color32,
     /// systemGreen: answering.
     pub green: Color32,

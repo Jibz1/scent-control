@@ -161,8 +161,18 @@ fn a_log_row_reads_as_a_sentence_and_opens_to_its_message() {
         .next()
         .unwrap();
     assert_eq!(row.accesskit_node().data().is_expanded(), Some(true));
-    // The masked message itself is drawn under it, scrolled into view; a click closes
-    // it again.
+    // The masked message itself is drawn under it, in view in the log pane, and read
+    // out as the row's message.
+    let message = harness.get_by_value(r#"{"action":"TURN_ON","payload":{"on":1}}"#);
+    let pane = egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new("log"))
+        .expect("the log pane")
+        .outer_rect;
+    let shown = message.rect();
+    assert!(
+        pane.top() <= shown.top() && shown.bottom() <= pane.bottom(),
+        "{shown:?} not in {pane:?}"
+    );
+    // A click closes it again.
     row.click();
     harness.run_steps(2);
     let row = harness
@@ -201,7 +211,7 @@ fn add_on_a_diffuser_found_nearby_opens_the_sheet_and_hands_over_the_add() {
     harness.run_steps(2);
     // Only the hit we don't know yet is listed; selecting it shows the way to add it.
     assert!(harness.query_by_label_contains("Known").is_none());
-    harness.get_by_label("Diffuser, Signal unknown").click();
+    harness.get_by_label("Diffuser, signal unknown").click();
     harness.run_steps(2);
     let _ = harness.get_by_label("Diffuser is nearby");
     harness.get_by_label("Add Diffuser…").click();
@@ -348,7 +358,8 @@ fn the_hero_says_diffusing_or_off_with_the_intensity() {
         .at = NOW - 20;
     let mut diffusing = harness(on.clone());
     diffusing.run_steps(2);
-    let _ = diffusing.get_by_label("Bedroom, diffusing at Medium intensity");
+    use egui::accesskit::Role;
+    let _ = diffusing.get_by_role_and_label(Role::Group, "Bedroom, diffusing at Medium intensity");
     let _ = diffusing.get_by_label("Medium");
 
     let mut off = on;
@@ -359,7 +370,7 @@ fn the_hero_says_diffusing_or_off_with_the_intensity() {
         .value = 0;
     let mut stopped = harness(off);
     stopped.run_steps(2);
-    let _ = stopped.get_by_label("Bedroom, off");
+    let _ = stopped.get_by_role_and_label(Role::Group, "Bedroom, off");
 }
 
 #[test]
@@ -422,8 +433,9 @@ fn the_sidebar_says_what_each_diffuser_is_doing() {
     calm.devices.get_mut(ONE).unwrap().heard_wifi = Some(NOW - 5);
     let mut harness = harness(calm);
     harness.run_steps(2);
-    let _ = harness.get_by_label("Bedroom, Diffusing at Medium");
-    let _ = harness.get_by_label("Diffuser CE02, Not pinged yet");
+    // Read as one sentence: the words after the name in lower case.
+    let _ = harness.get_by_label("Bedroom, diffusing at Medium");
+    let _ = harness.get_by_label("Diffuser CE02, not pinged yet");
     assert!(harness.query_by_label_contains("TESTDEVICE02").is_none());
 }
 
@@ -475,4 +487,63 @@ fn the_schedule_is_read_out_today_and_for_the_week() {
              always on at Low the rest of the time"
         )
     );
+}
+
+#[test]
+fn an_opened_row_is_brought_into_view_once_and_let_go_when_filtered_out() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = state();
+    state.log.push_back(crate::state::LogEntry {
+        at: NOW,
+        device_id: Some(super::tests::TWO.to_owned()),
+        via: None,
+        direction: scent_core::Direction::ToDevice,
+        action: "Bluetooth TURN_ON".to_owned(),
+        text: "No answer.".to_owned(),
+        sent: false,
+    });
+    let mut harness = harness(state);
+    show_log(&mut harness);
+    // Opened by a click: brought into view on the next frame, and only then.
+    harness
+        .get_all_by_label("Turned Bedroom on, over WiFi")
+        .next()
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+    assert!(!harness.state().screens.log.is_revealing());
+    // Opened while it is filtered out: there is nothing to bring into view.
+    let rig = harness.state_mut();
+    rig.screens.log.as_open(&rig.state, |entry| {
+        entry.device_id.as_deref() == Some(super::tests::TWO)
+    });
+    harness.get_by_label("Only the selected diffuser").click();
+    harness.run_steps(2);
+    assert!(!harness.state().screens.log.is_revealing());
+}
+
+#[test]
+fn the_schedule_editor_calls_an_unnamed_diffuser_by_its_display_name() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut harness = harness(state());
+    harness.run_steps(2);
+    harness
+        .get_by_label("Diffuser CE02, not pinged yet")
+        .click();
+    harness.run_steps(2);
+    harness.get_by_label("Edit Schedule…").click();
+    harness.run_steps(6);
+    let _ = harness.get_by(|node| {
+        node.value()
+            .is_some_and(|text| text.starts_with("Diffuser CE02's timetable."))
+    });
+    harness.get_by_label("Send Schedule").click();
+    harness.run_steps(2);
+    let _ = harness.get_by_label("Replace Diffuser CE02's stored schedule?");
+    // The raw ID shows only as the Device ID in Details, behind the sheet.
+    let raw = |text: &str| text.contains("TESTDEVICE02") && text != "TESTDEVICE02";
+    let named_by_id = harness.query_by(|node| {
+        node.label().is_some_and(|text| raw(&text)) || node.value().is_some_and(|text| raw(&text))
+    });
+    assert!(named_by_id.is_none());
 }

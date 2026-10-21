@@ -1,24 +1,25 @@
 //! The app's drawn glyphs, since egui can't use SF Symbols: the Air 2 (a capsule) and
-//! the HVAC 2 (a box with vent slits), each with up to three mist arcs on its trailing
-//! side for its level, as SF Symbols' speaker draws its volume;
-//! signal bars; the log's sent and heard chevrons; the large diffuser of an empty state;
-//! and the rounded tile they sit on in the sidebar.
+//! the HVAC 2 (a low box with vent slits), each with up to three wisps of mist rising from
+//! its top for its level; signal bars; the log's disclosure triangle and its marks for
+//! sent (↗), heard (↙) and failed (!); the large diffuser of an empty state; and the
+//! rounded tile they sit on in the sidebar.
 //!
 //! Each is drawn on a grid of 28 units, the size of a sidebar tile, scaled to the square
 //! it is given: strokes are 1.5 units (1.5 pt on a tile, scaled with the glyph, never
 //! thinner than 1.25 pt), with round ends and joins, and corners rounded as the tiles'
-//! are. They are painted, not laid out: they have no accessibility node of their own,
-//! since the words beside them say what they show.
+//! are. A diffuser is centered, its body in the lower half and its mist above. They are
+//! painted, not laid out: they have no accessibility node of their own, since the words
+//! beside them say what they show.
 
-use std::f32::consts::PI;
+use std::f32::consts::TAU;
 
 use eframe::egui::{
-    Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, lerp, pos2, vec2,
+    Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2,
 };
 use eframe::epaint::PathShape;
 
 /// The grid the glyphs are drawn on, and the stroke on it.
-const UNIT: f32 = 28.0;
+pub const UNIT: f32 = 28.0;
 const STROKE: f32 = 1.5;
 /// The thinnest a stroke gets, at small sizes, so that it stays crisp.
 const MIN_STROKE: f32 = 1.25;
@@ -27,29 +28,34 @@ const MIN_STROKE: f32 = 1.25;
 /// the app's controls.
 const TILE_CORNER: f32 = 6.0 / UNIT;
 
-/// The mist arcs: how far the first one is from the body's edge, the space between
-/// them, and how far each sweeps either side of level, in radians.
-const ARC_CLEARANCE: f32 = 3.0;
-const ARC_SPACING: f32 = 2.75;
-const ARC_SWEEP: f32 = 40.0 * PI / 180.0;
+/// The wisps of mist: where the middle one starts (its foot) and how tall it is, how far
+/// each sways either side of its line (one gentle S), and the lines of the three, 3.5
+/// units apart so that they stay apart at 1x. The outer two start a unit higher and lean
+/// out, so that the plume fans.
+const WISP_FOOT: f32 = 11.5;
+const WISP_HEIGHT: f32 = 7.0;
+const WISP_SWAY: f32 = 0.7;
+const WISP_LINES: [f32; 3] = [10.5, 14.0, 17.5];
+const OUTER_LIFT: f32 = 1.0;
+const OUTER_LEAN: f32 = 0.75;
 
-/// Where a body's middle is: left of the grid's middle, so that the body and its three
-/// arcs together are centered.
-const BODY_X: f32 = 9.5;
+/// Where a diffuser glyph's ink runs across the grid, its body and mist together, for a
+/// layout that lines the ink up rather than the square.
+pub const INK_X: [f32; 2] = [8.0, 20.0];
 
 /// The colors a diffuser glyph is drawn in.
 #[derive(Debug, Clone, Copy)]
 pub struct Ink {
     /// The body.
     pub body: Color32,
-    /// The mist arcs.
-    pub arcs: Color32,
+    /// The wisps of mist.
+    pub mist: Color32,
     /// What the glyph is drawn on. The glyph's colors are made solid over it, so that
     /// where a stroke's round end overlaps it nothing shows darker.
     pub ground: Color32,
-    /// The arcs past the level, as faint tracks, as signal bars show the bars not
-    /// filled; `None` leaves them out. The hero shows them, so that its scale of three
-    /// is always there and its body never stands alone.
+    /// The wisps past the level, as faint tracks, as signal bars show the bars not
+    /// filled; `None` leaves them out. The hero shows them while it diffuses, as a scale
+    /// of three.
     pub track: Option<Color32>,
 }
 
@@ -119,98 +125,108 @@ fn round_line(painter: &Painter, points: Vec<Pos2>, width: f32, color: Color32) 
     )));
 }
 
-/// Points along the arc of `radius` around `center`, from `from` to `to` radians
-/// (0 points right, angles grow clockwise on screen).
-fn arc(center: Pos2, radius: f32, from: f32, to: f32) -> Vec<Pos2> {
-    let steps = 16;
-    (0..=steps)
-        .map(|step| {
-            let angle = lerp(from..=to, step as f32 / steps as f32);
-            center + vec2(angle.cos(), angle.sin()) * radius
-        })
-        .collect()
+/// How much of each wisp shows at `level` (0 to 3, between whole numbers while it
+/// eases): the left, middle and right one. Low is the middle wisp, Medium the outer
+/// pair, High all three.
+fn wisp_shares(level: f32) -> [f32; 3] {
+    let level = level.clamp(0.0, 3.0);
+    let outer = (level - 1.0).clamp(0.0, 1.0);
+    let middle = if level <= 1.0 {
+        level
+    } else if level <= 2.0 {
+        2.0 - level
+    } else {
+        level - 2.0
+    };
+    [outer, middle, outer]
 }
 
-/// Up to three mist arcs on the trailing side of `center`, the first `first` units out.
-/// `level` may be between whole numbers while the arcs ease: an arc part-way in is drawn
-/// part of the way from the ground's color to its own, and a little shorter.
-fn mist(painter: &Painter, grid: &Grid, ink: &Ink, level: f32, center: (f32, f32), first: f32) {
-    let center = grid.at(center.0, center.1);
-    let color = solid(ink.arcs, ink.ground);
-    for i in 0..3 {
-        let shown = (level - i as f32).clamp(0.0, 1.0);
-        // From its track, or from nothing (the ground), and then a little shorter.
-        let (from, sweep) = match ink.track {
-            Some(track) => (solid(track, ink.ground), ARC_SWEEP),
+/// The wisps of mist over a body, for `level`. A wisp part-way in is drawn part of the
+/// way from its track (or the ground) to its own color, and, with no track, a little
+/// shorter.
+fn wisps(painter: &Painter, grid: &Grid, ink: &Ink, level: f32) {
+    let lit = solid(ink.mist, ink.ground);
+    let track = ink.track.map(|track| solid(track, ink.ground));
+    for (i, (line, shown)) in WISP_LINES.into_iter().zip(wisp_shares(level)).enumerate() {
+        let (from, length) = match track {
+            Some(track) => (track, 1.0),
             None if shown <= 0.0 => continue,
-            None => (ink.ground, ARC_SWEEP * (0.7 + 0.3 * shown)),
+            None => (ink.ground, 0.7 + 0.3 * shown),
         };
-        let ink = from.lerp_to_gamma(color, shown);
-        let radius = grid.len(first + ARC_SPACING * i as f32);
-        let points = arc(center, radius, -sweep, sweep);
-        round_line(painter, points, grid.stroke(), ink);
+        // The left one sways and leans the other way from the right one: the plume is
+        // symmetric.
+        let (side, foot) = match i {
+            0 => (-1.0, WISP_FOOT - OUTER_LIFT),
+            1 => (1.0, WISP_FOOT),
+            _ => (1.0, WISP_FOOT - OUTER_LIFT),
+        };
+        let lean = if i == 1 { 0.0 } else { OUTER_LEAN * side };
+        let steps = 20;
+        let points = (0..=steps)
+            .map(|step| {
+                let along = length * step as f32 / steps as f32;
+                let x = line + side * WISP_SWAY * (TAU * along).sin() + lean * along;
+                grid.at(x, foot - WISP_HEIGHT * along)
+            })
+            .collect();
+        round_line(
+            painter,
+            points,
+            grid.stroke(),
+            from.lerp_to_gamma(lit, shown),
+        );
     }
 }
 
-/// The Air 2: an upright capsule with its mist outlet near the top, and `level` mist
-/// arcs (0 to 3) after it.
+/// The Air 2: an upright capsule in the lower half with its mist outlet, a short slit,
+/// near the top, and `level` wisps (0 to 3) rising over it.
 pub fn air2(painter: &Painter, rect: Rect, ink: &Ink, level: f32) {
     let grid = Grid::of(rect);
     let body = solid(ink.body, ink.ground);
-    // 6 by 13 units: a capsule, so its radius is half its width.
-    let capsule = grid.rect(BODY_X - 3.0, 7.5, BODY_X + 3.0, 20.5);
+    // 6 by 10 units: a capsule, so its radius is half its width.
+    let capsule = grid.rect(11.0, 14.0, 17.0, 24.0);
     painter.rect_stroke(
         capsule,
         CornerRadius::from(grid.len(3.0)),
         Stroke::new(grid.stroke(), body),
         StrokeKind::Middle,
     );
-    painter.circle_filled(grid.at(BODY_X, 10.75), grid.len(0.9), body);
-    let first = 3.0 + ARC_CLEARANCE;
-    mist(painter, &grid, ink, level, (BODY_X, 14.0), first);
+    // The mist outlet: a short slit across the top, under the wisps.
+    let outlet = vec![grid.at(13.0, 16.75), grid.at(15.0, 16.75)];
+    round_line(painter, outlet, grid.stroke(), body);
+    wisps(painter, &grid, ink, level);
 }
 
-/// The HVAC 2: a low box with two vent slits, and `level` mist arcs (0 to 3) after it.
+/// The HVAC 2: a low box in the lower half with two vent slits, and `level` wisps (0 to 3)
+/// rising over it.
 pub fn hvac2(painter: &Painter, rect: Rect, ink: &Ink, level: f32) {
     let grid = Grid::of(rect);
     let body = solid(ink.body, ink.ground);
-    // 9 by 10 units, with the tiles' corner language.
-    let case = grid.rect(BODY_X - 4.5, 9.0, BODY_X + 4.5, 19.0);
+    // 12 by 8 units, with the tiles' corner language.
+    let case = grid.rect(8.0, 15.5, 20.0, 23.5);
     painter.rect_stroke(
         case,
         CornerRadius::from(grid.len(2.0)),
         Stroke::new(grid.stroke(), body),
         StrokeKind::Middle,
     );
-    for y in [12.25, 15.75] {
-        let slit = vec![grid.at(BODY_X - 2.0, y), grid.at(BODY_X + 2.0, y)];
+    for y in [18.0, 21.0] {
+        let slit = vec![grid.at(11.0, y), grid.at(17.0, y)];
         round_line(painter, slit, grid.stroke(), body);
     }
-    let first = 4.5 + ARC_CLEARANCE;
-    mist(painter, &grid, ink, level, (BODY_X, 14.0), first);
+    wisps(painter, &grid, ink, level);
 }
 
-/// The large diffuser of an empty state: the Air 2 with its three arcs faint, waiting.
+/// The large diffuser of an empty state: the Air 2 with its three wisps faint, waiting.
 pub fn empty_diffuser(painter: &Painter, rect: Rect, color: Color32, ground: Color32) {
     let faint = solid(color, ground).lerp_to_gamma(ground, 0.6);
     let ink = Ink {
         body: color,
-        arcs: faint,
+        mist: faint,
         ground,
         track: None,
     };
     air2(painter, rect, &ink, 3.0);
-}
-
-/// Where to draw a diffuser glyph that stays still (a tile, an empty state) so that it
-/// looks centered in `rect`: with no arcs, its body alone is moved to the middle. The
-/// hero doesn't use it, so that its body stays put as the arcs ease in and out.
-pub fn still(rect: Rect, level: f32) -> Rect {
-    if level > 0.0 {
-        return rect;
-    }
-    let scale = rect.width().min(rect.height()) / UNIT;
-    rect.translate(vec2((UNIT / 2.0 - BODY_X) * scale, 0.0))
 }
 
 /// A rounded tile, filled, for a glyph to sit on.
@@ -239,32 +255,52 @@ pub fn signal_bars(painter: &Painter, rect: Rect, on: Color32, off: Color32, fil
     }
 }
 
-/// Which way a log row's chevron points: what this app sent goes out to the diffuser,
-/// what it heard comes back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pointing {
-    /// Sent: ›
-    Out,
-    /// Heard: ‹
-    In,
+/// A disclosure triangle, ▸ when closed and ▾ when open, filled, its corners softened.
+pub fn disclosure(painter: &Painter, rect: Rect, color: Color32, open: bool) {
+    let grid = Grid::of(rect);
+    let points = if open {
+        [(8.0, 11.0), (20.0, 11.0), (14.0, 19.0)]
+    } else {
+        [(11.0, 8.0), (19.0, 14.0), (11.0, 20.0)]
+    };
+    let points: Vec<Pos2> = points.into_iter().map(|(x, y)| grid.at(x, y)).collect();
+    let soft = Stroke::new(grid.len(1.5), color);
+    painter.add(Shape::Path(PathShape::convex_polygon(points, color, soft)));
 }
 
-/// A chevron in `rect`, centered by eye: its point carries more weight than its open
-/// side, so it sits a little toward the open side.
-pub fn chevron(painter: &Painter, rect: Rect, color: Color32, pointing: Pointing) {
+/// What a log row's mark says happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// Sent to the diffuser: ↗
+    Sent,
+    /// Heard from it, or from the broker: ↙
+    Heard,
+    /// Failed: !
+    Failed,
+}
+
+/// A log row's mark: an arrow out (↗) or in (↙) with its head, or "!".
+pub fn mark(painter: &Painter, rect: Rect, color: Color32, mark: Mark) {
     let grid = Grid::of(rect);
-    // 7 units wide and 14 tall, the point 1 unit off center toward the open side.
-    let (tip, open) = match pointing {
-        Pointing::Out => (17.5, 10.5),
-        Pointing::In => (10.5, 17.5),
+    let width = grid.stroke();
+    let line = |points: &[(f32, f32)]| {
+        let points = points.iter().map(|&(x, y)| grid.at(x, y)).collect();
+        round_line(painter, points, width, color);
     };
-    let shift = if pointing == Pointing::Out { -0.5 } else { 0.5 };
-    let points = vec![
-        grid.at(open + shift, 7.0),
-        grid.at(tip + shift, 14.0),
-        grid.at(open + shift, 21.0),
-    ];
-    round_line(painter, points, grid.stroke(), color);
+    match mark {
+        Mark::Sent => {
+            line(&[(8.5, 19.5), (19.0, 9.0)]);
+            line(&[(11.5, 9.0), (19.0, 9.0), (19.0, 16.5)]);
+        }
+        Mark::Heard => {
+            line(&[(19.5, 8.5), (9.0, 19.0)]);
+            line(&[(9.0, 11.5), (9.0, 19.0), (16.5, 19.0)]);
+        }
+        Mark::Failed => {
+            line(&[(14.0, 7.0), (14.0, 16.0)]);
+            painter.circle_filled(grid.at(14.0, 20.5), grid.len(1.25), color);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,6 +317,17 @@ mod tests {
         // Black at 50% over white is mid grey.
         let half = Color32::from_black_alpha(128);
         assert_eq!(solid(half, ground), Color32::from_rgb(127, 127, 127));
+    }
+
+    #[test]
+    fn low_is_the_middle_wisp_medium_the_outer_pair_high_all_three() {
+        assert_eq!(wisp_shares(0.0), [0.0, 0.0, 0.0]);
+        assert_eq!(wisp_shares(1.0), [0.0, 1.0, 0.0]);
+        assert_eq!(wisp_shares(2.0), [1.0, 0.0, 1.0]);
+        assert_eq!(wisp_shares(3.0), [1.0, 1.0, 1.0]);
+        // Easing from Low to Medium, the middle one fades as the outer pair comes in.
+        assert_eq!(wisp_shares(1.5), [0.5, 0.5, 0.5]);
+        assert_eq!(wisp_shares(2.5), [1.0, 0.5, 1.0]);
     }
 
     #[test]

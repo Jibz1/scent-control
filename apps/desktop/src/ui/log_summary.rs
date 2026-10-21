@@ -251,6 +251,41 @@ fn acknowledged(text: &str, label: &str) -> String {
     format!("{label} sent an acknowledgement")
 }
 
+/// A failed job's name without the route it names, and " over Bluetooth" (or nothing)
+/// for that route: "Bluetooth TURN_ON" is TURN_ON over Bluetooth.
+fn job_and_route(what: &str) -> (&str, String) {
+    let (via, name) = [(Via::Bluetooth, "Bluetooth "), (Via::Wifi, "WiFi ")]
+        .into_iter()
+        .find_map(|(via, prefix)| Some((Some(via), what.strip_prefix(prefix)?)))
+        .unwrap_or((None, what));
+    let over = via.map_or_else(String::new, |via| format!(" over {}", via_name(via)));
+    (name, over)
+}
+
+/// What failed for the open diffuser, for its hero to say in red until the next send or
+/// report: "Couldn't send the power command over Bluetooth: No answer." The diffuser
+/// isn't named, as the hero is about it. `None` for the routine ping, which the person
+/// didn't ask for.
+pub fn failure_note(what: &str, error: &str) -> Option<String> {
+    let (name, over) = job_and_route(what);
+    let error = error.trim();
+    let attempt = match name {
+        "PING" => return None,
+        "TURN_ON" => "send the power command",
+        "SET_LEVEL" => "set the intensity",
+        "GET_STATUS" | "read status" => "read its status",
+        "SYNC_TIME" => "tell it the time",
+        "SAVE_MQTT" => "point it at your broker",
+        "WIFI_CONNECT" => "give it the WiFi network",
+        "SECRET_COMMAND" | "RESET" => "restart it",
+        "UPDATE_PROFILE" => "send its schedule",
+        "Schedule" => "finish sending its schedule",
+        "Add" => "add it",
+        _ => return Some(error.to_owned()),
+    };
+    Some(format!("Couldn't {attempt}{over}: {error}"))
+}
+
 /// What a failure was trying to do, as the end of "Couldn't …".
 fn attempt(name: &str, label: &str) -> Option<String> {
     Some(match name {
@@ -276,11 +311,14 @@ fn failure(entry: &LogEntry, label: &str) -> String {
     if entry.action == SCAN_FAILED {
         return format!("Couldn't scan for diffusers: {error}");
     }
-    let (via, name) = [(Via::Bluetooth, "Bluetooth "), (Via::Wifi, "WiFi ")]
-        .into_iter()
-        .find_map(|(via, prefix)| Some((Some(via), entry.action.strip_prefix(prefix)?)))
-        .unwrap_or((None, entry.action.as_str()));
-    let over = via.map_or_else(String::new, |via| format!(" over {}", via_name(via)));
+    let (name, over) = job_and_route(&entry.action);
+    // With no diffuser (an add before its info was read, or one turned down), the
+    // label is the app's own: say "the diffuser" instead.
+    let label = if entry.device_id.is_some() {
+        label
+    } else {
+        "the diffuser"
+    };
     match (attempt(name, label), &entry.device_id) {
         (Some(attempt), _) => format!("Couldn't {attempt}{over}: {error}"),
         (None, Some(_)) => format!("{label}: {error}"),
@@ -617,11 +655,43 @@ mod tests {
             sentence(&scan, "App"),
             "Couldn't scan for diffusers: Bluetooth is off."
         );
+        // An add that has no diffuser yet, or that the hub turned down.
+        let add = LogEntry {
+            device_id: None,
+            ..failed("Add", "Another add of this diffuser is under way.")
+        };
+        assert_eq!(
+            sentence(&add, "App"),
+            "Couldn't add the diffuser: Another add of this diffuser is under way."
+        );
         let hub = LogEntry {
             device_id: None,
             ..failed("Command", "The hub stopped.")
         };
         assert_eq!(sentence(&hub, "App"), "The hub stopped.");
+    }
+
+    #[test]
+    fn the_hero_says_what_failed_without_naming_the_diffuser() {
+        assert_eq!(
+            failure_note("Bluetooth TURN_ON", "No answer."),
+            Some("Couldn't send the power command over Bluetooth: No answer.".to_owned())
+        );
+        assert_eq!(
+            failure_note("SET_LEVEL", "Neither route worked."),
+            Some("Couldn't set the intensity: Neither route worked.".to_owned())
+        );
+        assert_eq!(
+            failure_note("WiFi read status", "Down."),
+            Some("Couldn't read its status over WiFi: Down.".to_owned())
+        );
+        assert_eq!(
+            failure_note("Add", "No."),
+            Some("Couldn't add it: No.".to_owned())
+        );
+        assert_eq!(failure_note("Hub", "Dropped."), Some("Dropped.".to_owned()));
+        // The routine ping is not something the person did.
+        assert_eq!(failure_note("WiFi PING", "Down."), None);
     }
 
     #[test]

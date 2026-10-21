@@ -20,7 +20,7 @@ use scent_core::{
 
 use super::Screens;
 use super::add_sheet::Target;
-use super::glyphs::{self, Ink, Pointing};
+use super::glyphs::{self, Ink, Mark};
 use super::schedule_editor::{DraftEntry, test_time};
 use super::settings::{self, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
@@ -544,54 +544,51 @@ fn settings_window(name: &str, dark: bool) {
 }
 
 /// The glyphs on their own, at `scale` pixels to the point: the sidebar's tiles (grey,
-/// tinted at each level, and on a selected row), the hero's glyphs on and off, the
-/// log's chevrons, the signal bars at each strength, and the empty state's diffuser.
+/// tinted at each level, and on a selected row), the hero's glyphs at each level and off,
+/// the empty state's diffuser, the log's disclosure triangles and marks, and the signal
+/// bars at each strength.
 fn glyph_sheet(name: &str, dark: bool, scale: f32) {
-    let _ = render_at(name, vec2(560.0, 330.0), dark, scale, |ui| {
+    let _ = render_at(name, vec2(600.0, 360.0), dark, scale, |ui| {
         let palette = Palette::of(ui);
         let painter = ui.painter();
-        let window = palette.window;
-        let card = Rect::from_min_size(pos2(16.0, 16.0), vec2(528.0, 298.0));
+        let card = Rect::from_min_size(pos2(16.0, 16.0), vec2(568.0, 328.0));
         painter.rect_filled(card, 10, palette.grouped);
         let ground = palette.grouped;
-        // Tiles: grey then lit at levels 0 to 3, the Air 2 and then the HVAC 2.
-        let tile_ink = |lit: bool| {
-            if lit {
-                (Palette::tint(palette.accent, 16), palette.accent)
+        let draw = |rect: Rect, ink: &Ink, hvac: bool, level: f32| {
+            if hvac {
+                glyphs::hvac2(painter, rect, ink, level);
             } else {
-                (Palette::tint(palette.gray, 18), palette.gray)
+                glyphs::air2(painter, rect, ink, level);
             }
         };
+        // Tiles: grey, then tinted at levels 0 to 3, then on a selected row; the Air 2
+        // and then the HVAC 2.
         for (row, hvac) in [(0, false), (1, true)] {
-            for (i, (lit, level)) in [
+            let levels = [
                 (false, 0.0),
                 (true, 0.0),
                 (true, 1.0),
                 (true, 2.0),
                 (true, 3.0),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            ];
+            for (i, (lit, level)) in levels.into_iter().enumerate() {
                 let at = pos2(32.0 + 40.0 * i as f32, 32.0 + 40.0 * row as f32);
                 let tile = Rect::from_min_size(at, vec2(28.0, 28.0));
-                let (fill, glyph) = tile_ink(lit);
+                let (fill, glyph) = if lit {
+                    (Palette::tint(palette.accent, 16), palette.accent)
+                } else {
+                    (Palette::tint(palette.gray, 18), palette.gray)
+                };
                 let fill = glyphs::solid(fill, ground);
                 glyphs::tile(painter, tile, fill);
                 let ink = Ink {
                     body: glyph,
-                    arcs: glyph,
+                    mist: glyph,
                     ground: fill,
                     track: None,
                 };
-                let at = glyphs::still(tile, level);
-                if hvac {
-                    glyphs::hvac2(painter, at, &ink, level);
-                } else {
-                    glyphs::air2(painter, at, &ink, level);
-                }
+                draw(tile, &ink, hvac, level);
             }
-            // On a selected row.
             let row_rect =
                 Rect::from_min_size(pos2(232.0, 26.0 + 40.0 * row as f32), vec2(80.0, 40.0));
             painter.rect_filled(row_rect, 6, palette.accent);
@@ -600,69 +597,109 @@ fn glyph_sheet(name: &str, dark: bool, scale: f32) {
             glyphs::tile(painter, tile, fill);
             let ink = Ink {
                 body: Color32::WHITE,
-                arcs: Color32::WHITE,
+                mist: Color32::WHITE,
                 ground: fill,
                 track: None,
             };
-            if hvac {
-                glyphs::hvac2(painter, tile, &ink, 2.0);
-            } else {
-                glyphs::air2(painter, tile, &ink, 3.0);
-            }
+            draw(tile, &ink, hvac, if hvac { 2.0 } else { 3.0 });
         }
-        // The hero's glyphs: diffusing, then off.
-        for (i, (hvac, on, level)) in [
-            (false, true, 2.0),
-            (false, false, 0.0),
-            (true, true, 3.0),
-            (true, false, 1.0),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let rect = Rect::from_min_size(pos2(32.0 + 84.0 * i as f32, 120.0), vec2(72.0, 72.0));
-            let (body, arcs) = if on {
-                (palette.label, palette.accent)
-            } else {
-                (palette.gray, palette.gray)
+        // The hero's glyphs at 64 pt: diffusing at Low, Medium and High, with the unlit
+        // wisps as tracks, then off; the Air 2, then the HVAC 2 at Medium and off.
+        let heroes = [
+            (false, Some(1.0)),
+            (false, Some(2.0)),
+            (false, Some(3.0)),
+            (false, None),
+            (true, Some(2.0)),
+            (true, None),
+        ];
+        for (i, (hvac, level)) in heroes.into_iter().enumerate() {
+            let rect = Rect::from_min_size(pos2(28.0 + 70.0 * i as f32, 116.0), vec2(64.0, 64.0));
+            let ink = match level {
+                Some(_) => Ink {
+                    body: palette.label,
+                    mist: palette.accent,
+                    ground,
+                    track: Some(Palette::tint(palette.label, 12)),
+                },
+                None => Ink {
+                    body: palette.gray,
+                    mist: palette.gray,
+                    ground,
+                    track: None,
+                },
             };
-            let ink = Ink {
-                body,
-                arcs,
-                ground,
-                track: Some(Palette::tint(palette.label, 12)),
-            };
-            if hvac {
-                glyphs::hvac2(painter, rect, &ink, level);
-            } else {
-                glyphs::air2(painter, rect, &ink, level);
-            }
+            draw(rect, &ink, hvac, level.unwrap_or(0.0));
         }
-        // The empty state's diffuser.
-        let empty = Rect::from_min_size(pos2(392.0, 110.0), vec2(96.0, 96.0));
+        // The empty state's diffuser, at 96 pt.
+        let empty = Rect::from_min_size(pos2(456.0, 100.0), vec2(96.0, 96.0));
         glyphs::empty_diffuser(painter, empty, palette.gray, ground);
-        // Chevrons: sent, heard, failed.
-        for (i, (pointing, color)) in [
-            (Pointing::Out, palette.gray),
-            (Pointing::In, palette.gray),
-            (Pointing::Out, palette.orange),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let rect = Rect::from_min_size(pos2(32.0 + 24.0 * i as f32, 230.0), vec2(14.0, 14.0));
-            glyphs::chevron(painter, rect, glyphs::solid(color, ground), pointing);
+        // The log's disclosure triangles, closed and open, and its marks: sent, heard,
+        // failed.
+        let secondary = glyphs::solid(palette.secondary_label, ground);
+        for (i, open) in [false, true].into_iter().enumerate() {
+            let rect = Rect::from_min_size(pos2(32.0 + 20.0 * i as f32, 232.0), vec2(12.0, 12.0));
+            glyphs::disclosure(painter, rect, secondary, open);
+        }
+        let gray = glyphs::solid(palette.gray, ground);
+        let orange = glyphs::solid(palette.orange, ground);
+        let marks = [
+            (Mark::Sent, gray),
+            (Mark::Heard, gray),
+            (Mark::Failed, orange),
+        ];
+        for (i, (mark, color)) in marks.into_iter().enumerate() {
+            let rect = Rect::from_min_size(pos2(92.0 + 24.0 * i as f32, 231.0), vec2(14.0, 14.0));
+            glyphs::mark(painter, rect, color, mark);
         }
         // Signal bars, weak to excellent.
         for filled in 1..=4 {
             let rect = Rect::from_min_size(
-                pos2(120.0 + 28.0 * f32::from(filled), 232.0),
+                pos2(170.0 + 28.0 * f32::from(filled), 233.0),
                 vec2(16.0, 11.0),
             );
             let on = glyphs::solid(palette.label, ground);
             glyphs::signal_bars(painter, rect, on, Palette::tint(palette.label, 15), filled);
         }
-        let _ = window;
+    });
+}
+
+/// The same times with and without the always-on entry, as the week grid and as the
+/// Today strip, side by side: the always-on tint must read apart from the empty track and
+/// from a time switched off.
+fn always_on_compare(name: &str, dark: bool) {
+    let _ = render_at(name, vec2(900.0, 300.0), dark, 2.0, |ui| {
+        let palette = Palette::of(ui);
+        let profile = |always: bool| Profile {
+            always_on: AlwaysOn {
+                enable: always,
+                level: Level::new(1).unwrap(),
+            },
+            entries: vec![
+                entry("07:00", "09:00", &[1, 2, 3, 4, 5], 2, true),
+                entry("08:30", "10:00", &[1], 3, true),
+                entry("13:00", "14:00", &[2, 4], 3, false),
+                entry("21:30", "23:00", &[0, 6], 1, true),
+            ],
+            timezone_hours: -5.0,
+            flag: ScheduleFlag::Replace,
+        };
+        for (i, always) in [false, true].into_iter().enumerate() {
+            let column =
+                Rect::from_min_size(pos2(16.0 + 440.0 * i as f32, 16.0), vec2(428.0, 268.0));
+            ui.painter().rect_filled(column, 10, palette.grouped);
+            let inside = column.shrink(16.0);
+            let mut at = ui.new_child(egui::UiBuilder::new().max_rect(inside));
+            let title = if always {
+                "Always on at Low"
+            } else {
+                "No always on"
+            };
+            at.label(egui::RichText::new(title).color(palette.secondary_label));
+            super::timeline::week_grid(&mut at, &profile(always), palette.grouped);
+            at.add_space(8.0);
+            super::timeline::today_strip(&mut at, &profile(always), NOW, palette.grouped);
+        }
     });
 }
 
@@ -685,8 +722,26 @@ fn render_screens() {
     sending("sending_light", false);
     sending("sending_dark", true);
 
-    // The HVAC 2, off and not answering.
+    // A command that failed: the hero says so in red, with the log hidden.
     let size = theme::WINDOW_SIZE.into();
+    let _ = main_window_with(
+        "failed_light",
+        false,
+        size,
+        snapshot_state(),
+        None,
+        |screens, _| {
+            screens.on_event(&Event::Failed {
+                device_id: Some(ONE.to_owned()),
+                what: "Bluetooth SET_LEVEL".to_owned(),
+                error: "The diffuser didn't answer. Check that it is in range and switched on."
+                    .to_owned(),
+                at: NOW,
+            });
+        },
+    );
+
+    // The HVAC 2, off and not answering.
     let _ = main_window_with(
         "off_light",
         false,
@@ -803,6 +858,10 @@ fn render_screens() {
             time("22:00", "06:00", &[0, 6], 1),
         ],
     );
+
+    // The always-on tint beside the empty track.
+    always_on_compare("always_on_compare_light", false);
+    always_on_compare("always_on_compare_dark", true);
 
     // The glyphs on their own, as a screen without Retina shows them and as one with.
     glyph_sheet("glyphs_1x", false, 1.0);

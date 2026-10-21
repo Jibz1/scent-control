@@ -13,20 +13,21 @@ use scent_core::{Command, Level, Online, Via, expected_state, is_stale};
 use super::OpenSheet;
 use super::add_sheet::Target;
 use super::format::{
-    Model, ago, capitalized, display_name, expected_text, intensity, name_from_model, on_off,
-    pending_text, power_source, reading_text, signal, signal_quality, via_name,
+    Model, Said, ago, capitalized, display_name, expected_text, name_from_model, power_source,
+    reading_text, signal, signal_quality, via_name,
 };
-use super::glyphs::signal_bars;
+use super::glyphs::{signal_bars, solid};
 use super::hero::{self, HeroState};
+use super::log_summary::failure_note;
 use super::theme::{GRID, Palette, SECTION_GAP, title1};
 use super::timeline::today_strip;
 use super::widgets::{
-    NoticeKind, footnote, free_row, grouped, grouped_with, notice, notice_with, plain_button, row,
-    segmented, value_with_note,
+    NoticeKind, footnote, free_row, grouped, grouped_with, notice, notice_with, one_line,
+    plain_button, row, segmented, value_with_note,
 };
 use crate::hub::{UiCommand, on_our_broker};
 use crate::route::TransportPref;
-use crate::state::{AppState, DeviceView, Event, Field, Reading};
+use crate::state::{AppState, DeviceView, Event, Field};
 
 /// How long "Sending…" stays up if no answer ever comes. A Bluetooth attempt is over in
 /// well under this, and the hub gives up on one itself after 30 s.
@@ -39,86 +40,55 @@ const ROUTES: [(TransportPref, &str); 3] = [
     (TransportPref::Bluetooth, "Bluetooth"),
 ];
 
+/// The signal bars beside the WiFi signal's word, and the space between them.
+const BARS: egui::Vec2 = vec2(16.0, 11.0);
+const BARS_GAP: f32 = 6.0;
+
 /// What the hero says under the state while what was sent is waited for.
 const WAITING: &str = "Sent, waiting for the diffuser";
 
-/// How a line of the readings looks.
+/// How a reading looks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Fresh,
     /// Reported more than 300 s ago: in the secondary label color.
     Stale,
-    /// Sent, and the diffuser hasn't reported on it: orange.
-    Pending,
 }
 
+/// A reading for a Details row: what it says, and when and over what it was reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadingRow {
     pub name: &'static str,
-    pub text: String,
+    pub value: String,
+    pub note: Option<String>,
     pub tone: Tone,
 }
 
-impl ReadingRow {
-    /// The value, and what follows it: when and over what it was reported, or that it
-    /// was sent and is waited for. "not reported yet" has nothing after it.
-    pub fn parts(&self) -> (&str, Option<&str>) {
-        match self.text.split_once(" · ") {
-            Some((value, note)) => (value, Some(note)),
-            None => (&self.text, None),
-        }
+fn row_of(name: &'static str, said: Said) -> ReadingRow {
+    ReadingRow {
+        name,
+        value: said.value,
+        note: said.note,
+        tone: if said.stale { Tone::Stale } else { Tone::Fresh },
     }
 }
 
-fn reported(reading: Option<&Reading>, now: i64, format: impl Fn(i64) -> String) -> (String, Tone) {
-    let (text, stale) = reading_text(reading, now, format);
-    (text, if stale { Tone::Stale } else { Tone::Fresh })
-}
-
-/// The four readings: what the diffuser reported with its age and source, or, for the
-/// power and intensity we sent that it hasn't reported on, what we sent.
-pub fn reading_rows(device: &DeviceView, now: i64) -> [ReadingRow; 4] {
-    let (power, power_tone) = match device.pending_power() {
-        Some(on) => (pending_text(&on_off(i64::from(on))), Tone::Pending),
-        None => reported(device.readings.get(&Field::Power), now, on_off),
-    };
-    let (level, level_tone) = match device.pending_intensity() {
-        Some(level) => (pending_text(&intensity(i64::from(level))), Tone::Pending),
-        None => reported(device.readings.get(&Field::Intensity), now, intensity),
-    };
-    // The power source comes from two readings; the newer one tells the age.
+/// The readings in Details: the power source, from two readings, the newer of which tells
+/// its age; and the WiFi signal, in words.
+pub fn detail_rows(device: &DeviceView, now: i64) -> [ReadingRow; 2] {
     let charging = device.readings.get(&Field::Charging);
     let battery = device.readings.get(&Field::Battery);
     let newest = [charging, battery]
         .into_iter()
         .flatten()
         .max_by_key(|r| r.at);
-    let (source, source_tone) = reported(newest, now, |_| {
+    let source = reading_text(newest, now, |_| {
         power_source(charging.map(|r| r.value), battery.map(|r| r.value))
     });
-    let (wifi, wifi_tone) = reported(device.readings.get(&Field::Rssi), now, signal);
-    [
-        ReadingRow {
-            name: "Power",
-            text: power,
-            tone: power_tone,
-        },
-        ReadingRow {
-            name: "Intensity",
-            text: level,
-            tone: level_tone,
-        },
-        ReadingRow {
-            name: "Power source",
-            text: source,
-            tone: source_tone,
-        },
-        ReadingRow {
-            name: "WiFi signal",
-            text: wifi,
-            tone: wifi_tone,
-        },
-    ]
+    let wifi = reading_text(device.readings.get(&Field::Rssi), now, |dbm| {
+        signal_quality(dbm).words().to_owned()
+    });
+    [row_of("Power source", source), row_of("WiFi signal", wifi)]
 }
 
 /// What the schedule this app last sent says the diffuser should be doing now. `None`
@@ -204,6 +174,7 @@ fn hero_state(device: &DeviceView, asked: Option<Asked>, sending: bool, now: i64
         pending,
         stale: device.pending_power().is_none()
             && power_reading.is_some_and(|reading| is_stale(reading.at, now)),
+        failed: false,
         note,
     }
 }
@@ -265,6 +236,25 @@ pub struct DevicePanel {
     /// `Sent` or `Failed` for a diffuser ends it, even if more commands are queued.
     sending: HashMap<String, Instant>,
     asked: HashMap<String, Asked>,
+    /// What last failed for each diffuser, for its hero to say until the next send to it
+    /// or report from it: with the log hidden, a failure is never silent.
+    failures: HashMap<String, Failure>,
+}
+
+/// A failure as the hero says it, and when it happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Failure {
+    note: String,
+    at: i64,
+}
+
+/// What the hero says while a command is on its way, by the route it was given.
+fn sending_note(pref: TransportPref) -> &'static str {
+    match pref {
+        TransportPref::Bluetooth => "Sending over Bluetooth…",
+        TransportPref::Wifi => "Sending over WiFi…",
+        TransportPref::Auto => "Sending over Bluetooth or WiFi…",
+    }
 }
 
 impl DevicePanel {
@@ -277,6 +267,7 @@ impl DevicePanel {
                 ..
             } => {
                 self.sending.remove(device_id);
+                self.failures.remove(device_id);
                 // Only the command for what the person set last ends it: an earlier one
                 // (on, then off before it went) leaves the newer choice showing.
                 self.forget_asked(device_id, |asked| {
@@ -291,9 +282,14 @@ impl DevicePanel {
             Event::Failed {
                 device_id: Some(device_id),
                 what,
-                ..
+                error,
+                at,
             } => {
                 self.sending.remove(device_id);
+                if let Some(note) = failure_note(what, error) {
+                    let failure = Failure { note, at: *at };
+                    self.failures.insert(device_id.clone(), failure);
+                }
                 // A failure ends what its command was for. One for another job (a read,
                 // a schedule, a ping) leaves the controls alone; one that names no job
                 // the panel knows, such as the hub losing the diffuser's queue, ends both.
@@ -342,6 +338,30 @@ impl DevicePanel {
             .get(id)
             .filter(|asked| asked.at.elapsed() < SENDING_GIVE_UP)
             .copied()
+    }
+
+    /// What last failed for `device`, unless it has reported since.
+    fn failure(&self, device: &DeviceView) -> Option<&str> {
+        let failure = self.failures.get(&device.id)?;
+        let reported = device
+            .readings
+            .values()
+            .any(|reading| reading.at >= failure.at);
+        (!reported).then_some(failure.note.as_str())
+    }
+
+    /// What the hero shows for `device`, with what is on its way to it (sent over
+    /// `pref`) and what last failed.
+    fn hero(&self, device: &DeviceView, pref: TransportPref, now: i64) -> HeroState {
+        let sending = self.is_sending(&device.id);
+        let mut hero = hero_state(device, self.asked(&device.id), sending, now);
+        if sending {
+            sending_note(pref).clone_into(&mut hero.note);
+        } else if let Some(note) = self.failure(device) {
+            note.clone_into(&mut hero.note);
+            hero.failed = true;
+        }
+        hero
     }
 
     /// What the person set on `device_id` and is on its way, for the snapshots.
@@ -396,7 +416,7 @@ impl DevicePanel {
             pref,
         };
         let asked = self.asked(&device.id);
-        let shown = hero_state(device, asked, self.is_sending(&device.id), now);
+        let shown = self.hero(device, pref, now);
         let changed = hero::show(ui, &shown, Id::new("hero").with(&device.id));
         let mut now_asked = asked.unwrap_or(Asked {
             power: None,
@@ -414,6 +434,8 @@ impl DevicePanel {
             now_asked.intensity = Some(number);
         }
         if !commands.is_empty() {
+            // A new try: what failed before is no longer the news.
+            self.failures.remove(&device.id);
             self.sending.insert(device.id.clone(), Instant::now());
             now_asked.at = Instant::now();
             self.asked.insert(device.id.clone(), now_asked);
@@ -531,13 +553,11 @@ fn schedule_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) -> bool {
     edit
 }
 
-/// A reading's color: the label's, the secondary color once it is old, orange while what
-/// was sent is waited for.
+/// A reading's color: the label's, or the secondary color once it is old.
 fn tone_color(palette: &Palette, tone: Tone) -> egui::Color32 {
     match tone {
         Tone::Fresh => palette.label,
         Tone::Stale => palette.secondary_label,
-        Tone::Pending => palette.orange,
     }
 }
 
@@ -545,14 +565,20 @@ fn tone_color(palette: &Palette, tone: Tone) -> egui::Color32 {
 /// tooltip), when it last said anything, its firmware and its ID.
 fn details_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
     let palette = Palette::of(ui);
-    let [_, _, source, _] = reading_rows(device, now);
+    let [source, wifi] = detail_rows(device, now);
+    let value = |reading: &ReadingRow| {
+        RichText::new(capitalized(&reading.value)).color(tone_color(&palette, reading.tone))
+    };
     grouped(ui, "Details", |ui| {
         row(ui, "Power source", |ui| {
-            let (value, note) = source.parts();
-            let value = RichText::new(capitalized(value)).color(tone_color(&palette, source.tone));
-            value_with_note(ui, value, note);
+            value_with_note(ui, value(&source), source.note.as_deref());
         });
-        row(ui, "WiFi signal", |ui| wifi_signal(ui, device, now));
+        row(ui, "WiFi signal", |ui| {
+            let shown = value_with_note(ui, value(&wifi), wifi.note.as_deref());
+            if let Some(reading) = device.readings.get(&Field::Rssi) {
+                signal_beside(ui, &shown, &wifi, reading.value);
+            }
+        });
         row(ui, "Last report", |ui| {
             let heard = [
                 device.heard_wifi.map(|at| (at, Via::Wifi)),
@@ -591,43 +617,41 @@ fn details_box(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
     });
 }
 
-/// The WiFi signal's row value: the words and when they were reported, then four bars
-/// before them. The dBm are in the tooltip.
-fn wifi_signal(ui: &mut egui::Ui, device: &DeviceView, now: i64) {
+/// The signal bars for `dbm`, on the first line of the WiFi signal's value (`shown`),
+/// just before its word, taking no room of their own; the dBm in the whole value's
+/// tooltip.
+fn signal_beside(ui: &egui::Ui, shown: &egui::Response, wifi: &ReadingRow, dbm: i64) {
     let palette = Palette::of(ui);
-    let Some(reading) = device.readings.get(&Field::Rssi) else {
-        let value = RichText::new("Not reported yet").color(palette.secondary_label);
-        value_with_note(ui, value, None);
-        return;
-    };
-    let quality = signal_quality(reading.value);
-    let (text, stale) = reading_text(Some(reading), now, |dbm| {
-        signal_quality(dbm).words().to_owned()
-    });
-    let note = text.split_once(" · ").map(|(_, note)| note);
-    let color = if stale {
-        palette.secondary_label
-    } else {
-        palette.label
-    };
-    let words = value_with_note(ui, RichText::new(quality.words()).color(color), note);
-    let (rect, bars) = ui.allocate_exact_size(vec2(18.0, words.rect.height()), Sense::hover());
-    let first_line = ui.text_style_height(&egui::TextStyle::Body);
-    let bars_rect = egui::Rect::from_min_size(
-        rect.min + vec2(0.0, (first_line - 11.0) / 2.0 + 0.5),
-        vec2(16.0, 11.0),
+    let word = one_line(
+        ui,
+        capitalized(&wifi.value),
+        egui::TextStyle::Body,
+        f32::INFINITY,
     );
-    let on = if stale { palette.gray } else { palette.label };
+    let line = word.size().y;
+    let right = shown.rect.right() - word.size().x - BARS_GAP;
+    let bars = egui::Rect::from_min_size(
+        egui::pos2(
+            right - BARS.x,
+            shown.rect.top() + (line - BARS.y) / 2.0 + 0.5,
+        ),
+        BARS,
+    );
+    let on = match wifi.tone {
+        Tone::Stale => palette.gray,
+        Tone::Fresh => palette.label,
+    };
     signal_bars(
         ui.painter(),
-        bars_rect,
-        super::glyphs::solid(on, palette.grouped),
+        bars,
+        solid(on, palette.grouped),
         Palette::tint(palette.label, 15),
-        quality.bars(),
+        signal_quality(dbm).bars(),
     );
-    let dbm = signal(reading.value);
-    words.on_hover_text(&dbm);
-    bars.on_hover_text(dbm);
+    shown
+        .clone()
+        .union(ui.interact(bars, shown.id.with("bars"), Sense::hover()))
+        .on_hover_text(signal(dbm));
 }
 
 #[cfg(test)]
@@ -635,7 +659,7 @@ mod tests {
     use scent_core::{AlwaysOn, Profile, ScheduleFlag, Via};
 
     use super::*;
-    use crate::state::Sent;
+    use crate::state::{Reading, Sent};
 
     const ID: &str = "TESTDEVICE01";
     const NOW: i64 = 1_792_510_200;
@@ -649,17 +673,22 @@ mod tests {
         device.readings.insert(field, Reading { value, at, via });
     }
 
-    fn row<'a>(rows: &'a [ReadingRow; 4], name: &str) -> &'a ReadingRow {
+    fn row<'a>(rows: &'a [ReadingRow; 2], name: &str) -> &'a ReadingRow {
         rows.iter().find(|row| row.name == name).unwrap()
+    }
+
+    /// A row's value and note, as one line for the tests to compare.
+    fn said(row: &ReadingRow) -> (&str, Option<&str>) {
+        (&row.value, row.note.as_deref())
     }
 
     #[test]
     fn nothing_reported_says_so() {
-        let rows = reading_rows(&device(), NOW);
+        let rows = detail_rows(&device(), NOW);
         let names: Vec<&str> = rows.iter().map(|row| row.name).collect();
-        assert_eq!(names, ["Power", "Intensity", "Power source", "WiFi signal"]);
+        assert_eq!(names, ["Power source", "WiFi signal"]);
         for row in &rows {
-            assert_eq!(row.text, "not reported yet");
+            assert_eq!(said(row), ("not reported yet", None));
             assert_eq!(row.tone, Tone::Fresh);
         }
     }
@@ -667,52 +696,18 @@ mod tests {
     #[test]
     fn readings_show_their_age_and_source_and_grey_out_when_stale() {
         let mut d = device();
-        read(&mut d, Field::Power, 1, 10, Via::Bluetooth);
+        read(&mut d, Field::Charging, 2, 10, Via::Bluetooth);
         read(&mut d, Field::Rssi, -66, 301, Via::Wifi);
-        let rows = reading_rows(&d, NOW);
+        let rows = detail_rows(&d, NOW);
+        let source = row(&rows, "Power source");
         assert_eq!(
-            row(&rows, "Power").text,
-            "On · reported just now over Bluetooth"
+            said(source),
+            ("plugged in", Some("reported just now over Bluetooth"))
         );
-        assert_eq!(row(&rows, "Power").tone, Tone::Fresh);
-        assert_eq!(
-            row(&rows, "WiFi signal").text,
-            "-66 dBm · reported 5 min ago over WiFi"
-        );
-        assert_eq!(row(&rows, "WiFi signal").tone, Tone::Stale);
-    }
-
-    #[test]
-    fn what_we_sent_shows_orange_until_the_diffuser_reports() {
-        let mut d = device();
-        read(&mut d, Field::Power, 0, 60, Via::Wifi);
-        read(&mut d, Field::Intensity, 1, 60, Via::Wifi);
-        d.sent = Some(Sent {
-            power: Some(true),
-            intensity: Some(3),
-            at: NOW - 5,
-        });
-        let rows = reading_rows(&d, NOW);
-        assert_eq!(
-            row(&rows, "Power").text,
-            "On · sent, waiting for the diffuser"
-        );
-        assert_eq!(row(&rows, "Power").tone, Tone::Pending);
-        assert_eq!(
-            row(&rows, "Intensity").text,
-            "High · sent, waiting for the diffuser"
-        );
-        assert_eq!(shown_intensity(&d), Some(3));
-
-        // The diffuser reports after that: its word stands.
-        read(&mut d, Field::Power, 1, 1, Via::Bluetooth);
-        let rows = reading_rows(&d, NOW);
-        assert_eq!(
-            row(&rows, "Power").text,
-            "On · reported just now over Bluetooth"
-        );
-        assert_eq!(row(&rows, "Power").tone, Tone::Fresh);
-        assert_eq!(row(&rows, "Intensity").tone, Tone::Pending);
+        assert_eq!(source.tone, Tone::Fresh);
+        let wifi = row(&rows, "WiFi signal");
+        assert_eq!(said(wifi), ("Good", Some("reported 5 min ago over WiFi")));
+        assert_eq!(wifi.tone, Tone::Stale);
     }
 
     #[test]
@@ -720,35 +715,34 @@ mod tests {
         let mut d = device();
         read(&mut d, Field::Charging, 2, 400, Via::Wifi);
         read(&mut d, Field::Battery, 200, 90, Via::Bluetooth);
-        let rows = reading_rows(&d, NOW);
+        let rows = detail_rows(&d, NOW);
+        let source = row(&rows, "Power source");
         assert_eq!(
-            row(&rows, "Power source").text,
-            "plugged in · reported 2 min ago over Bluetooth"
+            said(source),
+            ("plugged in", Some("reported 2 min ago over Bluetooth"))
         );
-        assert_eq!(row(&rows, "Power source").tone, Tone::Fresh);
+        assert_eq!(source.tone, Tone::Fresh);
 
         read(&mut d, Field::Battery, 200, 400, Via::Bluetooth);
-        assert_eq!(
-            row(&reading_rows(&d, NOW), "Power source").tone,
-            Tone::Stale
-        );
+        assert_eq!(row(&detail_rows(&d, NOW), "Power source").tone, Tone::Stale);
     }
 
     #[test]
     fn a_battery_level_alone_and_a_charging_value_we_cannot_read() {
         let mut d = device();
         read(&mut d, Field::Battery, 80, 90, Via::Wifi);
-        let rows = reading_rows(&d, NOW);
+        let rows = detail_rows(&d, NOW);
         assert_eq!(
-            row(&rows, "Power source").text,
-            "battery 80% · reported 2 min ago over WiFi"
+            said(row(&rows, "Power source")),
+            ("battery 80%", Some("reported 2 min ago over WiFi"))
         );
 
         let mut d = device();
         read(&mut d, Field::Charging, 7, 600, Via::Wifi);
-        let rows = reading_rows(&d, NOW);
-        assert_eq!(row(&rows, "Power source").text, "not reported yet");
-        assert_eq!(row(&rows, "Power source").tone, Tone::Fresh);
+        let rows = detail_rows(&d, NOW);
+        let source = row(&rows, "Power source");
+        assert_eq!(said(source), ("not reported yet", None));
+        assert_eq!(source.tone, Tone::Fresh);
     }
 
     #[test]
@@ -797,27 +791,6 @@ mod tests {
         );
         d.label = "Hallway".to_owned();
         assert_eq!(add_target(&d).unwrap().name, "Hallway");
-    }
-
-    #[test]
-    fn a_reading_splits_into_its_value_and_its_note() {
-        let reading = |text: &str| ReadingRow {
-            name: "Power",
-            text: text.to_owned(),
-            tone: Tone::Fresh,
-        };
-        assert_eq!(
-            reading("On · reported just now over WiFi").parts(),
-            ("On", Some("reported just now over WiFi"))
-        );
-        assert_eq!(
-            reading("High · sent, waiting for the diffuser").parts(),
-            ("High", Some("sent, waiting for the diffuser"))
-        );
-        assert_eq!(
-            reading("not reported yet").parts(),
-            ("not reported yet", None)
-        );
     }
 
     #[test]
@@ -986,6 +959,66 @@ mod tests {
             at: NOW - 5,
         });
         assert_eq!(shown_power(&d), Some(false));
+    }
+
+    fn failed(what: &str, device: &str) -> Event {
+        Event::Failed {
+            device_id: Some(device.to_owned()),
+            what: what.to_owned(),
+            error: "No answer.".to_owned(),
+            at: NOW,
+        }
+    }
+
+    #[test]
+    fn a_failure_shows_in_the_hero_until_the_next_send_or_report() {
+        let mut d = device();
+        read(&mut d, Field::Power, 1, 60, Via::Wifi);
+        let mut panel = DevicePanel::default();
+        panel.on_event(&failed("Bluetooth TURN_ON", ID));
+        let hero = panel.hero(&d, TransportPref::Auto, NOW);
+        assert_eq!(
+            hero.note,
+            "Couldn't send the power command over Bluetooth: No answer."
+        );
+        assert!(hero.failed);
+        let palette = Palette::for_dark(false);
+        assert_eq!(hero.note_color(&palette), palette.red);
+        // The next send to it clears it.
+        panel.on_event(&Event::Sent {
+            device_id: ID.to_owned(),
+            summary: String::new(),
+            via: Via::Wifi,
+            at: NOW + 1,
+            power: Some(true),
+            intensity: None,
+            profile: None,
+        });
+        assert!(!panel.hero(&d, TransportPref::Auto, NOW + 1).failed);
+        // So does the next report from it.
+        panel.on_event(&failed("SET_LEVEL", ID));
+        assert!(panel.hero(&d, TransportPref::Auto, NOW).failed);
+        read(&mut d, Field::Intensity, 2, -1, Via::Bluetooth);
+        let hero = panel.hero(&d, TransportPref::Auto, NOW + 1);
+        assert!(!hero.failed);
+        assert_eq!(hero.note, "Reported just now over Bluetooth");
+        // A routine ping isn't the person's, and another diffuser's failure isn't this one's.
+        let mut panel = DevicePanel::default();
+        panel.on_event(&failed("WiFi PING", ID));
+        panel.on_event(&failed("TURN_ON", "TESTDEVICE02"));
+        assert!(!panel.hero(&device(), TransportPref::Auto, NOW).failed);
+    }
+
+    #[test]
+    fn while_a_command_is_on_its_way_the_note_says_how() {
+        let mut d = device();
+        read(&mut d, Field::Power, 1, 20, Via::Wifi);
+        let mut panel = DevicePanel::default();
+        panel.as_sending(ID, Some(false), None);
+        let note = |pref| panel.hero(&d, pref, NOW).note;
+        assert_eq!(note(TransportPref::Bluetooth), "Sending over Bluetooth…");
+        assert_eq!(note(TransportPref::Wifi), "Sending over WiFi…");
+        assert_eq!(note(TransportPref::Auto), "Sending over Bluetooth or WiFi…");
     }
 
     #[test]

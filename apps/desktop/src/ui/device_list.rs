@@ -11,8 +11,8 @@ use eframe::egui::{
 use scent_core::Online;
 
 use super::format::{
-    Model, broker_summary, broker_text, display_name, intensity, name_from_scan, online_text,
-    signal, signal_quality,
+    Model, ble_signal_quality, broker_summary, broker_text, display_name, intensity,
+    name_from_scan, online_text, signal,
 };
 use super::glyphs::{self, Ink, solid};
 use super::theme::{CONTROL_RADIUS, GRID, Palette, broker_color, status_color, subheadline};
@@ -103,8 +103,17 @@ pub fn second_line(device: &DeviceView, online: Online) -> String {
     }
 }
 
-/// How many mist arcs a diffuser's tile shows: its level while it diffuses.
-fn tile_arcs(device: &DeviceView) -> f32 {
+/// `text` with its first letter in lower case, for words that follow a name in one
+/// sentence: "Bedroom, diffusing at Medium".
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
+}
+
+/// How many wisps of mist a diffuser's tile shows: its level while it diffuses.
+fn tile_wisps(device: &DeviceView) -> f32 {
     match power_and_level(device) {
         (Some(true), Some(level)) => f32::from(level),
         _ => 0.0,
@@ -253,8 +262,12 @@ fn broker_status(ui: &mut egui::Ui, broker: &BrokerState) {
     let text = broker_text(broker);
     // Static text, read out in full: its value is the whole sentence.
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-    // The dot under the tiles' column, the words lined up with the rows' text.
-    let dot = pos2(rect.left() + TILE_INSET + TILE / 2.0, rect.center().y);
+    // The dot under the tiles' column, the words lined up with the rows' text. The
+    // footer is inset a grid step further than the rows are.
+    let dot = pos2(
+        rect.left() + TILE_INSET + TILE / 2.0 - GRID,
+        rect.center().y,
+    );
     ui.painter()
         .circle_filled(dot, DOT_RADIUS, broker_color(&palette, broker));
     let at = pos2(
@@ -311,7 +324,7 @@ fn row_tile(ui: &egui::Ui, row: Rect, inks: &RowInks, lit: bool, selected: bool)
     glyphs::tile(ui.painter(), tile, fill);
     let ink = Ink {
         body: glyph,
-        arcs: glyph,
+        mist: glyph,
         ground: fill,
         track: None,
     };
@@ -319,8 +332,14 @@ fn row_tile(ui: &egui::Ui, row: Rect, inks: &RowInks, lit: bool, selected: bool)
 }
 
 /// A row's name, and the words under it, past the tile.
+/// How wide a row's text may be in a row `row_width` wide whose last `end` points are
+/// taken (by signal bars): past the tile, with a margin on the right.
+fn row_text_width(row_width: f32, end: f32) -> f32 {
+    (row_width - end - TEXT_INSET - GRID).max(0.0)
+}
+
 fn row_text(ui: &egui::Ui, row: Rect, inks: &RowInks, name: &str, detail: &str, end: f32) {
-    let width = (row.right() - end - row.left() - TEXT_INSET - GRID).max(0.0);
+    let width = row_text_width(row.width(), end);
     let name = one_line(ui, name, TextStyle::Body, width);
     let detail = one_line(ui, detail, subheadline(), width);
     let top = row.center().y - (name.size().y + detail.size().y) / 2.0;
@@ -331,7 +350,7 @@ fn row_text(ui: &egui::Ui, row: Rect, inks: &RowInks, name: &str, detail: &str, 
     painter.galley(detail_at, detail, inks.detail);
 }
 
-/// A diffuser's row: its tile (the glyph for its model, with arcs for its level while it
+/// A diffuser's row: its tile (the glyph for its model, with wisps for its level while it
 /// diffuses, tinted when it answers) with the status dot on the tile's corner, its name,
 /// and under it what it is doing ([`second_line`]). The selected row is an inset rounded
 /// rectangle in the accent color with white text. The tooltip says whether it answers
@@ -352,7 +371,7 @@ fn device_row(
             WidgetType::SelectableLabel,
             true,
             selected,
-            format!("{name}, {detail}"),
+            format!("{name}, {}", lower_first(&detail)),
         )
     });
     if ui.is_rect_visible(rect) {
@@ -361,11 +380,10 @@ fn device_row(
             ui.painter().rect_filled(rect, CONTROL_RADIUS, fill);
         }
         let (tile, ink) = row_tile(ui, rect, &inks, online == Online::Online, selected);
-        let arcs = tile_arcs(device);
-        let at = glyphs::still(tile, arcs);
+        let wisps = tile_wisps(device);
         match Model::of(device) {
-            Model::Hvac2 => glyphs::hvac2(ui.painter(), at, &ink, arcs),
-            _ => glyphs::air2(ui.painter(), at, &ink, arcs),
+            Model::Hvac2 => glyphs::hvac2(ui.painter(), tile, &ink, wisps),
+            _ => glyphs::air2(ui.painter(), tile, &ink, wisps),
         }
         // The dot on the tile's lower trailing corner, ringed in the row's color.
         let dot = tile.right_bottom() - vec2(DOT_RADIUS - 1.0, DOT_RADIUS - 1.0);
@@ -385,7 +403,7 @@ fn hit_row(ui: &mut egui::Ui, hit: &ScanHit, selected: bool) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::click());
     let name = name_from_scan(&hit.name);
-    let quality = hit.rssi.map(|dbm| signal_quality(dbm.into()));
+    let quality = hit.rssi.map(|dbm| ble_signal_quality(dbm.into()));
     let detail = quality.map_or_else(
         || "Signal unknown".to_owned(),
         |quality| format!("{} signal", quality.words()),
@@ -398,7 +416,7 @@ fn hit_row(ui: &mut egui::Ui, hit: &ScanHit, selected: bool) -> egui::Response {
             WidgetType::SelectableLabel,
             true,
             selected,
-            format!("{name}, {detail}"),
+            format!("{name}, {}", lower_first(&detail)),
         );
         info.current_text_value = Some(dbm.clone());
         info
@@ -409,10 +427,9 @@ fn hit_row(ui: &mut egui::Ui, hit: &ScanHit, selected: bool) -> egui::Response {
             ui.painter().rect_filled(rect, CONTROL_RADIUS, fill);
         }
         let (tile, ink) = row_tile(ui, rect, &inks, false, selected);
-        let at = glyphs::still(tile, 0.0);
         match Model::from_scan(&hit.name) {
-            Model::Hvac2 => glyphs::hvac2(ui.painter(), at, &ink, 0.0),
-            _ => glyphs::air2(ui.painter(), at, &ink, 0.0),
+            Model::Hvac2 => glyphs::hvac2(ui.painter(), tile, &ink, 0.0),
+            _ => glyphs::air2(ui.painter(), tile, &ink, 0.0),
         }
         let mut end = 0.0;
         if let Some(quality) = quality {
@@ -481,10 +498,10 @@ mod tests {
         assert_eq!(second_line(&d, Online::Online), "Diffusing");
         read(&mut d, Field::Intensity, 3);
         assert_eq!(second_line(&d, Online::Online), "Diffusing at High");
-        assert_eq!(tile_arcs(&d), 3.0);
+        assert_eq!(tile_wisps(&d), 3.0);
         read(&mut d, Field::Power, 0);
         assert_eq!(second_line(&d, Online::Online), "Off");
-        assert_eq!(tile_arcs(&d), 0.0);
+        assert_eq!(tile_wisps(&d), 0.0);
         // What was sent and not yet reported on counts.
         d.sent = Some(crate::state::Sent {
             power: Some(true),
@@ -507,8 +524,9 @@ mod tests {
 
     #[test]
     fn at_the_narrowest_sidebar_the_words_are_not_cut() {
-        // The width a row's text has when the sidebar is as narrow as it goes.
-        let width = SIDEBAR_MIN_WIDTH - 2.0 * GRID - TEXT_INSET - GRID;
+        // The width a row's text has when the sidebar is as narrow as it goes, as the
+        // rows work it out.
+        let width = row_text_width(SIDEBAR_MIN_WIDTH - 2.0 * GRID, 0.0);
         let mut frames = 0;
         let mut harness = Harness::new_ui_state(
             |ui, lines: &mut Vec<(String, bool)>| {
@@ -551,7 +569,7 @@ mod tests {
             DeviceList::default(),
         );
         // Its signal in words; the dBm are its value, and in the tooltip.
-        let hit = harness.get_by_label("Diffuser, Good signal");
+        let hit = harness.get_by_label("Diffuser, excellent signal");
         assert_eq!(hit.accesskit_node().value().as_deref(), Some("-60 dBm"));
     }
 

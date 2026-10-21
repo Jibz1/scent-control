@@ -13,6 +13,7 @@ use scent_core::{
 };
 
 use super::clock::local_utc_offset_secs;
+use super::format::display_name;
 use super::theme::{GRID, Palette, TOOLBAR_HEIGHT, headline};
 use super::timeline::week_grid;
 use super::widgets::{
@@ -457,7 +458,7 @@ impl ScheduleEditor {
             self.confirming = true;
         }
         if self.confirming {
-            let answer = self.confirmation(ctx, &device.label);
+            let answer = self.confirmation(ctx, &display_name(device));
             if was_confirming {
                 action = answer.or(if escape {
                     Some(Action::Back)
@@ -539,7 +540,7 @@ impl ScheduleEditor {
             ui,
             &format!(
                 "{}'s timetable. The diffuser keeps it and runs it on its own; it goes over WiFi.",
-                device.label
+                display_name(device)
             ),
         );
         ui.add_space(2.0 * GRID);
