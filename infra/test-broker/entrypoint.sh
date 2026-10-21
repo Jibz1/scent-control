@@ -10,5 +10,5 @@ chmod 0700 /mosquitto/config/passwd
 # The persistence directory (see mosquitto.conf). A volume mounted over it starts out
 # owned by root, and Mosquitto drops to the mosquitto user before it writes there.
 mkdir -p /mosquitto/data
-chown mosquitto:mosquitto /mosquitto/data
+chown -R mosquitto:mosquitto /mosquitto/data
 exec mosquitto -c /mosquitto/config/mosquitto.conf

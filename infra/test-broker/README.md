@@ -17,6 +17,11 @@ server.
   and on shutdown). It keeps the retained messages, which is where the desktop app
   stores each diffuser's last schedule for its other copies
   (`scent-control/v1/schedule/<deviceId>`, interim until the Phase 2 server).
+  Persistence also keeps the sessions and queues of `clean_session=false` clients
+  (bounded in `mosquitto.conf`). It also keeps any retained message under
+  `scentiment-mqtt-prod/`, so a stray retained publish to a device topic would be
+  replayed to the diffuser across restarts; the cure is an empty retained publish to
+  that topic.
 
 > **A Railway volume must be mounted at `/mosquitto/data`.** Without one, the
 > container's disk is thrown away on every restart or redeploy, and every stored
