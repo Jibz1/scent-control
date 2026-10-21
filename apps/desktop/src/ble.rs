@@ -162,6 +162,49 @@ fn unavailable(error: &btleplug::Error) -> String {
     }
 }
 
+/// How long to give Bluetooth to say what state it is in. Right after the manager is
+/// made, CoreBluetooth hasn't said yet (its first `centralManagerDidUpdateState` comes a
+/// moment later), and btleplug reports that as `Unknown`.
+const SETTLE_LIMIT: Duration = Duration::from_secs(3);
+
+/// How often to ask again meanwhile.
+const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+/// The adapter's state once it has settled: `read` is asked again every [`SETTLE_POLL`]
+/// while it says `Unknown`, for up to [`SETTLE_LIMIT`], and then `Unknown` stands.
+/// btleplug 0.13 says `Unknown` for not allowed and resetting as well as for not known
+/// yet, so the first can't be told apart from the last until the wait is over. Any other
+/// state is taken at once, and a failure to ask ends the wait.
+async fn settled_state<E, F, Fut>(mut read: F) -> Result<CentralState, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<CentralState, E>>,
+{
+    let deadline = tokio::time::Instant::now() + SETTLE_LIMIT;
+    loop {
+        let state = read().await?;
+        let now = tokio::time::Instant::now();
+        if state != CentralState::Unknown || now >= deadline {
+            return Ok(state);
+        }
+        tokio::time::sleep_until((now + SETTLE_POLL).min(deadline)).await;
+    }
+}
+
+/// Whether Bluetooth in this state can be used, and if not, what the person can do.
+fn ready(state: CentralState) -> Result<(), String> {
+    match state {
+        CentralState::PoweredOn => Ok(()),
+        CentralState::PoweredOff => Err("Bluetooth is turned off on this Mac. Turn it on in \
+             System Settings, then try again."
+            .to_owned()),
+        CentralState::Unknown => Err("Bluetooth isn't ready on this Mac. If macOS asked, \
+             allow Scent Control to use Bluetooth (System Settings, Privacy & Security, \
+             Bluetooth)."
+            .to_owned()),
+    }
+}
+
 /// The characteristics of a diffuser that we use.
 #[derive(Debug)]
 struct Chars {
@@ -513,7 +556,8 @@ impl Shared {
 
     /// The Bluetooth adapter, set up on first use. An error says what the user can do
     /// about it: Bluetooth is off, macOS has not allowed this app to use it, or there
-    /// is no adapter.
+    /// is no adapter. Bluetooth that hasn't said its state yet, as on the first request,
+    /// is given up to [`SETTLE_LIMIT`] to say it.
     async fn adapter(&self) -> Result<Adapter, String> {
         let adapter = self
             .adapter_cell
@@ -527,15 +571,8 @@ impl Shared {
             })
             .await?
             .clone();
-        match adapter.adapter_state().await {
-            Ok(CentralState::PoweredOn) => Ok(adapter),
-            Ok(CentralState::PoweredOff) => Err("Bluetooth is turned off on this Mac. Turn it \
-                on in System Settings, then try again."
-                .to_owned()),
-            Ok(CentralState::Unknown) => Err("Bluetooth isn't ready on this Mac. If macOS \
-                asked, allow Scent Control to use Bluetooth (System Settings, Privacy & \
-                Security, Bluetooth)."
-                .to_owned()),
+        match settled_state(|| adapter.adapter_state()).await {
+            Ok(state) => ready(state).map(|()| adapter),
             Err(error) => Err(format!("Couldn't check whether Bluetooth is on: {error}")),
         }
     }
@@ -1424,6 +1461,100 @@ mod tests {
     #[test]
     fn a_disconnect_is_waited_for_3_s_at_most() {
         assert_eq!(DISCONNECT_LIMIT, Duration::from_secs(3));
+    }
+
+    /// A Bluetooth state that says `Unknown` until `settles_after` has gone by, then
+    /// `then`, as CoreBluetooth does until its first state update. Counts the asks.
+    fn settling(
+        settles_after: Duration,
+        then: CentralState,
+    ) -> (
+        impl FnMut() -> std::future::Ready<Result<CentralState, String>>,
+        Arc<AtomicUsize>,
+    ) {
+        let started = tokio::time::Instant::now();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let read = move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let state = if started.elapsed() < settles_after {
+                CentralState::Unknown
+            } else {
+                then.clone()
+            };
+            std::future::ready(Ok(state))
+        };
+        (read, asked)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bluetooth_that_is_not_ready_yet_is_waited_for() {
+        for then in [CentralState::PoweredOn, CentralState::PoweredOff] {
+            let started = tokio::time::Instant::now();
+            let (read, asked) = settling(Duration::from_millis(250), then.clone());
+            assert_eq!(settled_state(read).await, Ok(then.clone()));
+            // Seen at the first look after it settled: every 100 ms.
+            assert_eq!(started.elapsed(), Duration::from_millis(300), "{then:?}");
+            assert_eq!(asked.load(Ordering::SeqCst), 4, "{then:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bluetooth_still_not_ready_after_3_s_is_given_up_on() {
+        let started = tokio::time::Instant::now();
+        let (read, asked) = settling(Duration::MAX, CentralState::PoweredOn);
+        assert_eq!(settled_state(read).await, Ok(CentralState::Unknown));
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+        // At once, then every 100 ms up to and at the limit.
+        assert_eq!(asked.load(Ordering::SeqCst), 31);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_settled_state_is_not_waited_for() {
+        for state in [CentralState::PoweredOn, CentralState::PoweredOff] {
+            let started = tokio::time::Instant::now();
+            let (read, asked) = settling(Duration::ZERO, state.clone());
+            assert_eq!(settled_state(read).await, Ok(state.clone()));
+            assert_eq!(started.elapsed(), Duration::ZERO, "{state:?}");
+            assert_eq!(asked.load(Ordering::SeqCst), 1, "{state:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_to_ask_ends_the_wait_at_once() {
+        let started = tokio::time::Instant::now();
+        let read = || std::future::ready(Err::<CentralState, _>("no answer".to_owned()));
+        assert_eq!(settled_state(read).await, Err("no answer".to_owned()));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_wait_for_bluetooth_is_3_s_looking_every_100_ms() {
+        assert_eq!(SETTLE_LIMIT, Duration::from_secs(3));
+        assert_eq!(SETTLE_POLL, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn what_each_settled_state_means() {
+        assert_eq!(ready(CentralState::PoweredOn), Ok(()));
+        assert_eq!(
+            ready(CentralState::PoweredOff),
+            Err(
+                "Bluetooth is turned off on this Mac. Turn it on in System Settings, then \
+                 try again."
+                    .to_owned()
+            )
+        );
+        // Unknown after the wait: not allowed (btleplug calls that Unknown too),
+        // resetting, or still starting.
+        assert_eq!(
+            ready(CentralState::Unknown),
+            Err(
+                "Bluetooth isn't ready on this Mac. If macOS asked, allow Scent Control to \
+                 use Bluetooth (System Settings, Privacy & Security, Bluetooth)."
+                    .to_owned()
+            )
+        );
     }
 
     #[test]
