@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -19,6 +20,62 @@ from safety import RefusedCommand, check_allowed
 from scentiment_ble import build_profile, parse_notification
 
 ENV_LOCAL = Path(__file__).parent / ".env.local"
+
+# Where the broker settings are looked for after the environment, in order: the repo-root
+# .env (see .env.example) and tools/.env.local. Both stay out of git.
+SETTING_FILES = (Path(__file__).resolve().parent.parent / ".env", ENV_LOCAL)
+
+
+def env_file_value(path: Path, name: str) -> str | None:
+    """The value of `name` in a KEY=value file, or None, read as scripts/broker-env.sh
+    reads it: blank lines and comments skipped, `export KEY=value` taken, Unix or Windows
+    line ends. A value in quotes is what is between them; one without ends at a # after
+    a space (an inline comment)."""
+    if not path.is_file():
+        return None
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        key, sep, value = line.partition("=")
+        if not sep or key.strip() != name:
+            continue
+        value = value.strip()
+        if value[:1] in ("'", '"'):
+            value = value[1:].partition(value[0])[0]
+        else:
+            value = re.split(r"\s#", value, maxsplit=1)[0].strip()
+        return value or None
+    return None
+
+
+def broker_setting(name: str) -> str | None:
+    """A broker setting, such as SCENT_BROKER_URL: from the environment, then the repo-root
+    .env, then tools/.env.local. None when it is in none of them. Never a password: that
+    is only ever read by password_from_env, from the environment or tools/.env.local."""
+    if "PASSWORD" in name.upper():
+        raise ValueError(f"{name} is a password, not a broker setting")
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    for path in SETTING_FILES:
+        value = env_file_value(path, name)
+        if value:
+            return value
+    return None
+
+
+def add_broker_arguments(parser: argparse.ArgumentParser) -> None:
+    """--url and --username, defaulting to SCENT_BROKER_URL and SCENT_BROKER_USERNAME (see
+    broker_setting), and required when neither is set anywhere."""
+    url = broker_setting("SCENT_BROKER_URL")
+    username = broker_setting("SCENT_BROKER_USERNAME")
+    parser.add_argument("--url", default=url, required=url is None,
+                        help="broker URL, e.g. wss://<your-broker-host>/mqtt (default: SCENT_BROKER_URL)")
+    parser.add_argument("--username", default=username, required=username is None,
+                        help="broker username (default: SCENT_BROKER_USERNAME)")
 
 
 @dataclass(frozen=True)
@@ -47,8 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def command(name: str, help: str) -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help)
-        p.add_argument("--url", required=True, help="e.g. wss://<domain>/mqtt")
-        p.add_argument("--username", required=True)
+        add_broker_arguments(p)
         return p
 
     command("watch", "print every message on the broker").add_argument("--seconds", type=float, help="stop after N seconds")
@@ -115,6 +171,8 @@ def _envelope(args: argparse.Namespace) -> dict | None:
 
 
 def password_from_env() -> str:
+    """The broker password: from SCENT_BROKER_PASSWORD in the environment, then
+    tools/.env.local, then a prompt. Never from the repo-root .env."""
     if os.environ.get("SCENT_BROKER_PASSWORD"):
         return os.environ["SCENT_BROKER_PASSWORD"]
     if ENV_LOCAL.exists():

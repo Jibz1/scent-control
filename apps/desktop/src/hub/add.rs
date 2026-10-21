@@ -33,6 +33,9 @@ const NO_INFO: &str = "The diffuser answered, but its info didn't come through, 
 
 const LOGIN_REFUSED: &str = "The broker refused this app's login, so the diffuser would be refused too. Fix it in Settings first.";
 
+/// Why an add stops before it starts when there is no broker to put the diffuser on.
+const NO_BROKER_TO_GIVE: &str = "Add the broker in Settings first.";
+
 const ALREADY_ADDING: &str =
     "This diffuser is already being added. Wait for that to finish, then try again.";
 
@@ -152,9 +155,15 @@ impl<T: Transport> Shared<T> {
             return None;
         };
         let refused = matches!(lock(&self.state).broker, BrokerState::LoginRefused(_));
-        let stop = if refused {
+        let (broker_set, has_password) = {
+            let login = lock(&self.login);
+            (login.settings.is_set(), login.password.is_some())
+        };
+        let stop = if !broker_set {
+            Some(NO_BROKER_TO_GIVE)
+        } else if refused {
             Some(LOGIN_REFUSED)
-        } else if lock(&self.login).password.is_none() {
+        } else if !has_password {
             Some(NO_PASSWORD_TO_GIVE)
         } else {
             None
@@ -455,7 +464,7 @@ mod tests {
         else {
             panic!("{ble:?}");
         };
-        let settings = BrokerSettings::default();
+        let settings = BrokerSettings::example();
         assert_eq!((broker, username), (&settings.url, &settings.username));
         assert_eq!(password.expose(), "broker-secret");
         assert_eq!(ble[1].1, Command::SoftRestart);
@@ -683,6 +692,8 @@ mod tests {
     async fn add_without_a_broker_password_fails_at_once() {
         let rig = Rig::new().info_for("ble-1", info(ONE, true));
         rig.broker_up();
+        // A broker, and no password for it.
+        lock(&rig.shared.login).settings = BrokerSettings::example();
         let before = Instant::now();
 
         add(&rig, request("ble-1", None)).await;
@@ -696,11 +707,35 @@ mod tests {
         assert_eq!(rig.events(), std::slice::from_ref(&failed));
 
         // Started with no password (none saved, or the Keychain unreadable): the same.
-        rig.shared.reconnect(BrokerSettings::default(), None);
+        rig.shared.reconnect(BrokerSettings::example(), None);
         rig.events();
         add(&rig, request("ble-1", None)).await;
         assert_eq!(rig.events(), [failed]);
         assert!(rig.fake().labels().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn add_with_no_broker_set_fails_at_once_and_says_to_set_one() {
+        let rig = Rig::new().info_for("ble-1", info(ONE, true));
+        // A build given no broker, and nothing saved yet: whatever the Keychain held.
+        let none = BrokerSettings {
+            url: String::new(),
+            ..BrokerSettings::example()
+        };
+        rig.shared
+            .reconnect(none, Some(Secret::new("broker-secret".to_owned())));
+        rig.events();
+        let before = Instant::now();
+
+        add(&rig, request("ble-1", None)).await;
+
+        assert_eq!(before.elapsed(), Duration::ZERO);
+        assert!(rig.fake().labels().is_empty(), "Bluetooth was not touched");
+        let failed = Event::Adding {
+            ble_id: "ble-1".to_owned(),
+            step: AddStep::Failed("Add the broker in Settings first.".to_owned()),
+        };
+        assert_eq!(rig.events(), [failed]);
     }
 
     #[tokio::test(start_paused = true)]

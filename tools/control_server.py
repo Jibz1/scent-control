@@ -4,7 +4,10 @@ Serves control.html on 127.0.0.1 only. This process holds the broker login and
 checks every command against the same allow-list as the other tools, so the page
 never sees the password and can't send a blocked command.
 
-    .venv/bin/python control_server.py --url wss://<domain>/mqtt --username scent-test
+    .venv/bin/python control_server.py --url wss://<your-broker-host>/mqtt --username <username>
+
+--url, --username and --route-id default to SCENT_BROKER_URL, SCENT_BROKER_USERNAME and
+SCENT_ROUTE_ID, from the environment, the repo-root .env or tools/.env.local.
 """
 
 import argparse
@@ -19,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from broker import connect, parse_broker_url, password_from_env
+from broker import add_broker_arguments, broker_setting, connect, parse_broker_url, password_from_env
 from capture import CaptureLog, captures_dir, stamp
 from devices import DEFAULT_CONFIG, load_devices
 from safety import RefusedCommand, check_allowed
@@ -466,13 +469,18 @@ def known_devices(config: Path) -> dict:
     return devices
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--url", required=True, help="broker URL, e.g. wss://<domain>/mqtt")
-    parser.add_argument("--username", required=True)
-    parser.add_argument("--route-id", default="route-test-1", help="userid sent in PING (default route-test-1)")
+    add_broker_arguments(parser)
+    route_id = broker_setting("SCENT_ROUTE_ID") or "route-test-1"
+    parser.add_argument("--route-id", default=route_id,
+                        help="userid sent in PING (default: SCENT_ROUTE_ID, else route-test-1)")
     parser.add_argument("--port", type=int, default=8765)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     try:
         target = parse_broker_url(args.url)

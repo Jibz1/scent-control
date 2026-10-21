@@ -38,8 +38,9 @@ server.
 
 - Railway project `scent-control`, service `test-broker`, in the owner's personal
   workspace (to be transferred to a dedicated workspace later).
-- Address: `wss://test-broker-production.up.railway.app/mqtt` (port 443, Railway
-  certificate), routed to container port 8080.
+- Address: `wss://<your-broker-host>/mqtt`, the Railway domain generated for the
+  service (port 443, Railway certificate), routed to container port 8080. Put it in
+  the repo-root `.env` as `SCENT_BROKER_URL` (see `.env.example`); it is not in the repo.
 - Deployed and checked with a wss round trip on 2026-10-20.
 
 ## Deploy
@@ -56,8 +57,9 @@ Persistence above).
 
 ```bash
 cd tools
-.venv/bin/python broker.py watch --url wss://<domain>/mqtt --username scent-test
+.venv/bin/python broker.py watch --url wss://<your-broker-host>/mqtt --username <username>
 ```
 
-The password comes from `SCENT_BROKER_PASSWORD`, from `tools/.env.local`
-(gitignored), or from a prompt.
+`--url` and `--username` can be left out once `SCENT_BROKER_URL` and
+`SCENT_BROKER_USERNAME` are in the repo-root `.env`. The password comes from
+`SCENT_BROKER_PASSWORD`, from `tools/.env.local` (gitignored), or from a prompt.

@@ -1,6 +1,27 @@
 import pytest
-from control_server import build_publish, device_id_from_name, parse_device_message
+import broker
+from control_server import build_parser, build_publish, device_id_from_name, parse_device_message
 from safety import RefusedCommand
+
+
+def test_the_bench_takes_its_broker_from_the_broker_settings(tmp_path, monkeypatch):
+    for key in ("SCENT_BROKER_URL", "SCENT_BROKER_USERNAME", "SCENT_ROUTE_ID"):
+        monkeypatch.delenv(key, raising=False)
+    root_env = tmp_path / "root.env"
+    root_env.write_text(
+        "SCENT_BROKER_URL=wss://root.example.test/mqtt\n"
+        "SCENT_BROKER_USERNAME=root-user\n"
+        "SCENT_ROUTE_ID=route-test-2\n"
+    )
+    monkeypatch.setattr(broker, "SETTING_FILES", (root_env, tmp_path / ".env.local"))
+    args = build_parser().parse_args([])
+    assert (args.url, args.username, args.route_id) == ("wss://root.example.test/mqtt", "root-user", "route-test-2")
+    # With none, the URL and username must be given; the route ID stays the test one.
+    monkeypatch.setattr(broker, "SETTING_FILES", (tmp_path / "missing.env",))
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([])
+    args = build_parser().parse_args(["--url", "wss://b.example.test/mqtt", "--username", "u"])
+    assert args.route_id == "route-test-1"
 
 def test_device_id_from_name():
     assert device_id_from_name("Scentiment-D B n A1B2C3D4E5F6") == "A1B2C3D4E5F6"

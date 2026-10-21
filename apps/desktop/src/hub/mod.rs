@@ -61,6 +61,10 @@ const RECHECK_BROKER: Duration = Duration::from_secs(1);
 /// notice, with a way to Settings.
 pub const NO_BROKER_PASSWORD: &str = "No broker password saved. Add it in Settings (if you already did, the Keychain couldn't be read).";
 
+/// Why the broker isn't connected when there is none: a build given none, and nothing
+/// saved yet. The screens show it as a notice, with a way to Settings.
+pub const NO_BROKER: &str = "No broker set. Add it in Settings.";
+
 const BLUETOOTH_STOPPED: &str = "Bluetooth stopped before it answered.";
 
 /// What a Bluetooth request that hit [`BLUETOOTH_BACKSTOP`] failed with. Whether it
@@ -533,15 +537,25 @@ impl<T: Transport> Shared<T> {
         true
     }
 
+    /// Stops the broker worker there is and starts one with these settings. With no
+    /// broker set there is nothing to log in to, so none is started, whatever the
+    /// password; with no password neither. Either way the screens are told why.
     fn reconnect(&self, settings: BrokerSettings, password: Option<Secret>) {
-        let has_password = password.is_some();
+        let password = password.filter(|_| settings.is_set());
+        let why_not = if !settings.is_set() {
+            Some(NO_BROKER)
+        } else if password.is_none() {
+            Some(NO_BROKER_PASSWORD)
+        } else {
+            None
+        };
         *lock(&self.login) = Login {
             settings: settings.clone(),
             password: password.clone(),
         };
         self.transport.reconnect(settings, password);
-        if !has_password {
-            self.emit(Event::BrokerDisconnected(NO_BROKER_PASSWORD.to_owned()));
+        if let Some(why) = why_not {
+            self.emit(Event::BrokerDisconnected(why.to_owned()));
         }
     }
 }
@@ -1330,7 +1344,7 @@ mod tests {
         pub(super) fn logged_in(self, password: &str) -> Rig {
             let password = Secret::new(password.to_owned());
             self.shared
-                .reconnect(BrokerSettings::default(), Some(password));
+                .reconnect(BrokerSettings::example(), Some(password));
             self
         }
 
@@ -2413,7 +2427,7 @@ mod tests {
     async fn reconnecting_without_a_password_says_so_and_starts_nothing() {
         let rig = Rig::new();
         let hub = rig.serve();
-        let settings = BrokerSettings::default();
+        let settings = BrokerSettings::example();
 
         hub.send(UiCommand::Reconnect {
             settings: settings.clone(),
@@ -2442,6 +2456,54 @@ mod tests {
         assert!(rig.events().is_empty(), "the worker reports for itself");
         assert_eq!(lock(&rig.fake().reconnects).len(), 2);
         assert_eq!(lock(&rig.fake().reconnects)[1], (settings.url, true));
+    }
+
+    /// Settings with no broker in them: a build given none, and nothing saved.
+    fn no_broker() -> BrokerSettings {
+        BrokerSettings {
+            url: String::new(),
+            ..BrokerSettings::example()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_no_broker_set_no_worker_starts_and_the_hub_says_so() {
+        let rig = Rig::new();
+        let hub = rig.serve();
+
+        // Even with a password: there is nothing to log in to.
+        hub.send(UiCommand::Reconnect {
+            settings: no_broker(),
+            password: Some(Secret::new("x".to_owned())),
+        })
+        .unwrap();
+        settle().await;
+        assert_eq!(
+            rig.events(),
+            [Event::BrokerDisconnected(
+                "No broker set. Add it in Settings.".to_owned()
+            )]
+        );
+        // Any worker there was is stopped, and none is started.
+        assert_eq!(*lock(&rig.fake().reconnects), [(String::new(), false)]);
+        assert!(lock(&rig.shared.login).password.is_none());
+
+        // A blank address is none either.
+        let blank = BrokerSettings {
+            url: "   ".to_owned(),
+            ..BrokerSettings::example()
+        };
+        hub.send(UiCommand::Reconnect {
+            settings: blank,
+            password: None,
+        })
+        .unwrap();
+        settle().await;
+        assert_eq!(
+            rig.events(),
+            [Event::BrokerDisconnected(NO_BROKER.to_owned())]
+        );
+        assert_eq!(lock(&rig.fake().reconnects)[1], ("   ".to_owned(), false));
     }
 
     #[tokio::test(start_paused = true)]
@@ -2500,7 +2562,7 @@ mod tests {
     #[test]
     fn starting_without_a_password_reports_it_and_runs_the_hub() {
         let (hub, received) = Hub::start(
-            BrokerSettings::default(),
+            BrokerSettings::example(),
             None,
             Arc::new(Mutex::new(AppState::default())),
             || {},
@@ -2512,6 +2574,31 @@ mod tests {
         );
 
         // A command it can answer without Bluetooth or the broker: no route.
+        hub.submit(turn_on(ONE, true, TransportPref::Auto));
+        let event = received.recv_timeout(secs(5)).expect("the hub answers");
+        assert!(
+            matches!(&event, Event::Failed { device_id: Some(id), .. } if id == ONE),
+            "{event:?}"
+        );
+    }
+
+    // As above: no network, and no `btleplug::Manager`. A worker started for an empty
+    // address would say that the address is bad; none is started, so the hub's own word
+    // is the only one.
+    #[test]
+    fn starting_with_no_broker_set_says_so_and_runs_the_hub() {
+        let (hub, received) = Hub::start(
+            no_broker(),
+            Some(Secret::new("x".to_owned())),
+            Arc::new(Mutex::new(AppState::default())),
+            || {},
+        );
+        let event = received.recv_timeout(secs(5)).expect("the hub reports");
+        assert_eq!(
+            event,
+            Event::BrokerDisconnected("No broker set. Add it in Settings.".to_owned())
+        );
+
         hub.submit(turn_on(ONE, true, TransportPref::Auto));
         let event = received.recv_timeout(secs(5)).expect("the hub answers");
         assert!(

@@ -1880,7 +1880,7 @@ mod tests {
         };
         let save = Command::SaveMqtt {
             broker: "wss://broker.example.test/mqtt".into(),
-            username: "scent-test".into(),
+            username: "example-user".into(),
             password: secret(),
         };
         let mut s = known_air2();
@@ -2454,7 +2454,7 @@ mod tests {
             },
             Command::SaveMqtt {
                 broker: "wss://broker.example.test/mqtt".into(),
-                username: "scent-test".into(),
+                username: "example-user".into(),
                 password: Secret::new("hunter2".into()),
             },
         ];
@@ -2498,7 +2498,11 @@ mod tests {
         assert_eq!(masked, 8, "{:?}", s.log);
         // The rest of what was echoed is kept.
         assert!(s.log.iter().any(|entry| entry.text.contains("ExampleWiFi")));
-        assert!(s.log.iter().any(|entry| entry.text.contains("scent-test")));
+        assert!(
+            s.log
+                .iter()
+                .any(|entry| entry.text.contains("example-user"))
+        );
     }
 
     // Local store

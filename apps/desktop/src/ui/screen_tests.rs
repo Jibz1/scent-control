@@ -9,7 +9,7 @@ use super::Screens;
 use super::tests::{NOW, ONE, state};
 use super::theme::Appearance;
 use super::{log_view, theme};
-use crate::hub::{NO_BROKER_PASSWORD, UiCommand};
+use crate::hub::{NO_BROKER, NO_BROKER_PASSWORD, UiCommand};
 use crate::mqtt::BrokerSettings;
 use crate::state::{AppState, BrokerState, Edit};
 
@@ -172,6 +172,65 @@ fn no_password_saved_is_a_notice_with_a_way_to_settings() {
     harness.get_by_label("Open Settings").click();
     harness.run_steps(2);
     assert!(harness.state().screens.settings.is_open());
+}
+
+#[test]
+fn no_broker_set_is_a_notice_with_a_way_to_settings() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut state = state();
+    state.broker = BrokerState::Disconnected(NO_BROKER.to_owned());
+    let mut harness = harness(state);
+    harness.run_steps(2);
+    let _ = harness.get_by_label("No broker set. Add it in Settings.");
+    assert!(!harness.state().screens.settings.is_open());
+    harness.get_by_label("Open Settings").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.settings.is_open());
+}
+
+#[test]
+fn on_the_first_run_with_no_broker_settings_opens_on_its_own() {
+    use egui_kittest::kittest::Queryable as _;
+    // As the app first starts with no broker: the hub says so, and the screens are told.
+    let state = AppState {
+        broker: BrokerState::Disconnected(NO_BROKER.to_owned()),
+        ..AppState::default()
+    };
+    let mut harness = harness(state);
+    let none = BrokerSettings::from_values(None, None, None);
+    harness.state_mut().screens.ask_for_broker(&none, true);
+    harness.run_steps(2);
+    assert!(harness.state().screens.settings.is_open());
+    // The window is up, drawn here as egui can't open one in a test, with the notice
+    // behind it.
+    let _ = harness.get_by_label("Broker address");
+    let _ = harness.get_by_label("No broker set. Add it in Settings.");
+
+    // Closed, it stays closed: the notice is the way back.
+    harness.get_by_label("Cancel").click();
+    harness.run_steps(2);
+    assert!(!harness.state().screens.settings.is_open());
+    harness.run_steps(2);
+    assert!(!harness.state().screens.settings.is_open());
+    harness.get_by_label("Open Settings").click();
+    harness.run_steps(2);
+    assert!(harness.state().screens.settings.is_open());
+}
+
+#[test]
+fn settings_opens_on_its_own_only_on_the_first_run_with_no_broker() {
+    let none = BrokerSettings::from_values(None, None, None);
+    for (broker, first_run, opens) in [
+        (&none, true, true),
+        // A later run with no broker: the notice is the way to Settings.
+        (&none, false, false),
+        (&BrokerSettings::example(), true, false),
+        (&BrokerSettings::example(), false, false),
+    ] {
+        let mut screens = Screens::new(None);
+        screens.ask_for_broker(broker, first_run);
+        assert_eq!(screens.settings.is_open(), opens, "{broker:?} {first_run}");
+    }
 }
 
 #[test]
