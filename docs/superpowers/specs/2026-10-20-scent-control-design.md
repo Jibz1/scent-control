@@ -594,7 +594,8 @@ the state and changes it.
 ```
 
 **The hero card.**
-- A drawn diffuser glyph, with one to three mist arcs for the level. Arcs are accent-filled
+- A drawn diffuser glyph with one to three wisps of mist rising from its top for the level (centred,
+  body in the lower half; never arcs to one side, which reads as a speaker). Arcs are accent-filled
   while it's diffusing and grey when it's off.
 - The state in words at 26 pt ("Diffusing", "Off", "Sending…") with "Low/Medium/High
   intensity" under it.
@@ -613,6 +614,8 @@ app's accent. HIG lets an app set its own accent.
 - Each row gets a 28 pt rounded tile with a drawn glyph: Air 2 is a capsule with mist arcs,
   HVAC 2 is a box with vent slits. The tile is indigo-tinted when answering and grey
   otherwise, and the status dot sits on the tile's corner.
+- A failed command is never silent, even with the log hidden: the hero shows the last failure for
+  that diffuser in red until the next send or report.
 - The second line is what it's doing, in words: "Diffusing at Medium", "Off", "Not
   answering", "Waiting".
 - A diffuser with no name shows its model ("HVAC 2"), never its raw ID.
@@ -631,7 +634,8 @@ app's accent. HIG lets an app set its own accent.
 **Log, hidden by default.**
 - Rows read as sentences: "Turned on, over WiFi", "Set intensity to High, over
   Bluetooth", "Bedroom reported on, Medium, plugged in", "No answer over Bluetooth".
-- Each row has a sent or heard chevron and the time in tabular figures.
+- Each row has one disclosure triangle (▸, turning to ▾ when open), a direction mark that is not a chevron
+  (↗ sent, ↙ heard, an orange "!" for a failure) and the time in tabular figures.
 - The raw (masked) JSON shows in SF Mono only when a row is expanded.
 
 **Schedules.**
