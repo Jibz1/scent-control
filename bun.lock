@@ -14,6 +14,12 @@
         "@scent-control/scent-core": "workspace:*",
       },
     },
+    "apps/home-assistant": {
+      "name": "@scent-control/home-assistant",
+      "dependencies": {
+        "@scent-control/scent-core": "workspace:*",
+      },
+    },
     "packages/scent-core": {
       "name": "@scent-control/scent-core",
     },
@@ -23,6 +29,8 @@
   },
   "packages": {
     "@scent-control/desktop": ["@scent-control/desktop@workspace:apps/desktop"],
+
+    "@scent-control/home-assistant": ["@scent-control/home-assistant@workspace:apps/home-assistant"],
 
     "@scent-control/scent-core": ["@scent-control/scent-core@workspace:packages/scent-core"],
 

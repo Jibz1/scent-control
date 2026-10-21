@@ -7,6 +7,7 @@ dependencies. Releasing one component does not bump or tag the others.
 | Component | Tag example | Version source |
 |---|---|---|
 | Desktop app | `desktop/v0.1.0` | `apps/desktop/Cargo.toml` → `package.version` |
+| Home Assistant adapter | `home-assistant/v0.1.0` | `apps/home-assistant/Cargo.toml` → `package.version` |
 | Server (planned) | `server/v0.1.0` | `apps/server/package.json` → `version` |
 | Mobile app (planned) | `mobile/v0.1.0` | `apps/mobile/package.json` → `version` |
 | Shared Rust core | `scent-core/v0.1.0` | `packages/scent-core/Cargo.toml` → `package.version` |

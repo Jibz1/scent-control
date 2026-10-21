@@ -55,7 +55,7 @@ Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconci
   `AGENTS.md`). Don't copy its domain code (GraphQL/Relay, Strapi, CCB, Firebase).
 - **Phase 0 tools:** Python ≥ 3.11 with `bleak` (Bluetooth) and `paho-mqtt`, under
   `tools/`, tested with `pytest`.
-- **Rust crates:** `packages/scent-core` and `apps/desktop` are members of the Cargo
+- **Rust crates:** `packages/scent-core`, `apps/desktop`, and `apps/home-assistant` are members of the Cargo
   workspace at the repo root. Each has a `package.json` whose `build`, `test`, `lint`
   and `fmt:check` scripts wrap `cargo`, so Turborepo runs them with everything else:
   `bunx turbo run build test lint fmt:check`. Turbo caching is off for these tasks
@@ -68,6 +68,7 @@ package.json         Bun workspace root (apps/*, packages/*, tools)
 turbo.json           Turborepo tasks: build, test, lint, fmt:check
 Cargo.toml           Cargo workspace root (the Rust crates)
 apps/desktop         Rust desktop app for macOS (Phase 1)
+apps/home-assistant  headless Rust adapter for Home Assistant MQTT Discovery
 apps/mobile          Expo app (Phase 1+)
 apps/server          API, MQTT client, reconciler (Phase 1+)
 packages/scent-core  pure Rust crate: codec, parsing, schedules; fixture-tested

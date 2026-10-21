@@ -1,0 +1,38 @@
+name: Check Home Assistant adapter
+
+on:
+  pull_request:
+    paths:
+      - apps/home-assistant/**
+      - packages/scent-core/**
+      - fixtures/scentiment/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/home-assistant.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/home-assistant/**
+      - packages/scent-core/**
+      - fixtures/scentiment/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/home-assistant.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+      - run: cargo +1.95.0 fmt -p scent-home-assistant --check
+      - run: cargo +1.95.0 test --locked -p scent-core -p scent-home-assistant
+      - run: cargo +1.95.0 clippy --locked -p scent-home-assistant --all-targets -- -D warnings
+      - run: cargo +1.95.0 run --locked -p scent-home-assistant -- --check apps/home-assistant/config.example.json
