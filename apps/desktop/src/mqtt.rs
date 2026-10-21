@@ -67,8 +67,9 @@ impl BrokerSettings {
         }
     }
 
-    /// Whether there is a broker at all. An empty address means none: a build that was
-    /// given none, with nothing saved, or a saved file that holds none.
+    /// Whether there is a broker at all: an empty address means none, as in a build given
+    /// none. In a saved file an empty address means none was saved, and the store takes
+    /// the build's whole default in its place (see `store`).
     pub fn is_set(&self) -> bool {
         !self.url.trim().is_empty()
     }

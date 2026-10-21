@@ -189,16 +189,16 @@ fn no_broker_set_is_a_notice_with_a_way_to_settings() {
 }
 
 #[test]
-fn with_no_broker_settings_opens_on_its_own_at_the_start() {
+fn on_the_first_run_with_no_broker_settings_opens_on_its_own() {
     use egui_kittest::kittest::Queryable as _;
-    // As the app starts with no broker: the hub says so, and the screens are told.
+    // As the app first starts with no broker: the hub says so, and the screens are told.
     let state = AppState {
         broker: BrokerState::Disconnected(NO_BROKER.to_owned()),
         ..AppState::default()
     };
     let mut harness = harness(state);
     let none = BrokerSettings::from_values(None, None, None);
-    harness.state_mut().screens.ask_for_broker(&none);
+    harness.state_mut().screens.ask_for_broker(&none, true);
     harness.run_steps(2);
     assert!(harness.state().screens.settings.is_open());
     // The window is up, drawn here as egui can't open one in a test, with the notice
@@ -218,13 +218,19 @@ fn with_no_broker_settings_opens_on_its_own_at_the_start() {
 }
 
 #[test]
-fn with_a_broker_settings_stays_shut_at_the_start() {
-    let mut screens = Screens::new(None);
-    screens.ask_for_broker(&BrokerSettings::example());
-    assert!(!screens.settings.is_open());
-    let mut screens = Screens::new(None);
-    screens.ask_for_broker(&BrokerSettings::from_values(None, None, None));
-    assert!(screens.settings.is_open());
+fn settings_opens_on_its_own_only_on_the_first_run_with_no_broker() {
+    let none = BrokerSettings::from_values(None, None, None);
+    for (broker, first_run, opens) in [
+        (&none, true, true),
+        // A later run with no broker: the notice is the way to Settings.
+        (&none, false, false),
+        (&BrokerSettings::example(), true, false),
+        (&BrokerSettings::example(), false, false),
+    ] {
+        let mut screens = Screens::new(None);
+        screens.ask_for_broker(broker, first_run);
+        assert_eq!(screens.settings.is_open(), opens, "{broker:?} {first_run}");
+    }
 }
 
 #[test]

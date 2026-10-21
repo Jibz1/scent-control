@@ -117,11 +117,11 @@ impl Screens {
         self.panel.end_typing()
     }
 
-    /// Opens Settings when there is no broker, for the app to call as it starts: a build
-    /// given none, with nothing saved yet. Once closed it stays closed; the notice for it
-    /// is the way back.
-    pub fn ask_for_broker(&mut self, broker: &BrokerSettings) {
-        if !broker.is_set() {
+    /// Opens Settings on the app's first run (nothing saved yet) when there is no broker,
+    /// for the app to call as it starts. Once closed it stays closed, and on later runs
+    /// it isn't opened: the notice for it is the way back.
+    pub fn ask_for_broker(&mut self, broker: &BrokerSettings, first_run: bool) {
+        if first_run && !broker.is_set() {
             self.settings.open(broker);
         }
     }

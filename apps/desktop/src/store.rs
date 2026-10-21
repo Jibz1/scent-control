@@ -28,6 +28,10 @@ const CORRUPT_NAME: &str = "desktop.json.corrupt";
 const BAD_BROKER_ADDRESS: &str =
     "The saved broker address wasn't valid, so the default is used. Check it in Settings.";
 
+/// [`BAD_BROKER_ADDRESS`] for a build given no broker, which has no default to use.
+const BAD_BROKER_ADDRESS_NO_DEFAULT: &str =
+    "The saved broker address wasn't valid, so no broker is set. Add it in Settings.";
+
 pub struct Store {
     pub dir: PathBuf,
 }
@@ -36,13 +40,15 @@ pub struct Store {
 #[derive(Debug)]
 pub struct Loaded {
     pub state: AppState,
-    /// The build's default settings when the file doesn't say (see
-    /// [`BrokerSettings::default`]). An empty address is no broker.
+    /// The broker saved, or the build's whole default (see [`BrokerSettings::default`])
+    /// when the file doesn't say or saved an empty address. That default may be no broker.
     pub broker: BrokerSettings,
     /// How the app looks, as chosen in Settings: the system's when the file doesn't say.
     pub appearance: Appearance,
     /// Set when there was a file and it could not be used, for the screens to show.
     pub notice: Option<String>,
+    /// True when there was no file at all: the app has never saved anything here.
+    pub first_run: bool,
 }
 
 impl Loaded {
@@ -52,6 +58,7 @@ impl Loaded {
             broker: BrokerSettings::default(),
             appearance: Appearance::System,
             notice,
+            first_run: false,
         }
     }
 }
@@ -78,7 +85,10 @@ impl Store {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 eprintln!("scent-control: no saved state at {} yet", path.display());
-                return Loaded::fresh(None);
+                return Loaded {
+                    first_run: true,
+                    ..Loaded::fresh(None)
+                };
             }
             Err(error) => {
                 eprintln!("scent-control: can't read {}: {error}", path.display());
@@ -381,28 +391,44 @@ impl Stored {
             }
             state.devices.insert(stored.id, device);
         }
-        let mut broker = BrokerSettings::from(self.broker);
-        let notice = if broker.is_set() {
-            // A hand-edited address that can't be used would otherwise surface later as a
-            // missing password. The build's default (which may be none) is no worse; who
-            // we are on the broker stays.
-            BrokerUrl::parse(&broker.url).err().map(|error| {
-                eprintln!("scent-control: the saved broker address is not usable: {error}");
-                broker.url = BrokerSettings::default().url;
-                BAD_BROKER_ADDRESS.to_owned()
-            })
-        } else {
-            // None was set yet: nothing wrong with the file, and the screens ask for one.
-            broker.url = String::new();
-            None
-        };
+        let (broker, notice) =
+            resolve_broker(BrokerSettings::from(self.broker), BrokerSettings::default());
         Loaded {
             state,
             broker,
             appearance: StoredUi::appearance(self.ui),
             notice,
+            first_run: false,
         }
     }
+}
+
+/// The broker to use from the one saved, given the build's `default`, and a notice if
+/// the saved one had to be replaced.
+///
+/// An empty saved address means none was saved: a build given no broker wrote the file
+/// before one was added in Settings. Then the whole of the build's default is used, which
+/// may be none, as the username and route ID saved with it belong to no broker. A saved
+/// address that can't be used (edited by hand) would otherwise surface later as a missing
+/// password: it is replaced by the default's, and who we are on the broker stays.
+fn resolve_broker(
+    mut broker: BrokerSettings,
+    default: BrokerSettings,
+) -> (BrokerSettings, Option<String>) {
+    if !broker.is_set() {
+        return (default, None);
+    }
+    let Err(error) = BrokerUrl::parse(&broker.url) else {
+        return (broker, None);
+    };
+    eprintln!("scent-control: the saved broker address is not usable: {error}");
+    let notice = if default.is_set() {
+        BAD_BROKER_ADDRESS
+    } else {
+        BAD_BROKER_ADDRESS_NO_DEFAULT
+    };
+    broker.url = default.url;
+    (broker, Some(notice.to_owned()))
 }
 
 impl From<&DeviceInfo> for StoredInfo {
@@ -615,6 +641,25 @@ mod tests {
             dir.ends_with("Library/Application Support/ScentControl"),
             "{dir:?}"
         );
+    }
+
+    #[test]
+    fn only_a_missing_file_is_the_first_run() {
+        let dir = TempDir::new("first-run");
+        assert!(store(&dir).load().first_run);
+        let nested = Store {
+            dir: dir.path().join("not/there"),
+        };
+        assert!(nested.load().first_run);
+        // Once anything is saved, it isn't.
+        store(&dir)
+            .save(&AppState::default(), &BrokerSettings::default())
+            .unwrap();
+        assert!(!store(&dir).load().first_run);
+        // Nor is a damaged file: something was saved before.
+        let damaged = TempDir::new("first-run-damaged");
+        fs::write(damaged.path().join("desktop.json"), "{").unwrap();
+        assert!(!store(&damaged).load().first_run);
     }
 
     #[test]
@@ -893,10 +938,18 @@ mod tests {
         )
         .unwrap();
         let loaded = store(&dir).load();
-        let defaults = BrokerSettings::default();
-        assert_eq!(loaded.broker.username, "someone");
-        assert_eq!(loaded.broker.url, defaults.url);
-        assert_eq!(loaded.broker.route_id, defaults.route_id);
+        // The gaps come from this build's default. Without a default address that leaves
+        // the address empty, which is no broker saved: the whole default, none, is used.
+        let filled = BrokerSettings {
+            username: "someone".to_owned(),
+            ..BrokerSettings::default()
+        };
+        let expected = if filled.is_set() {
+            filled
+        } else {
+            BrokerSettings::default()
+        };
+        assert_eq!(loaded.broker, expected);
         assert_eq!(loaded.notice, None);
     }
 
@@ -928,7 +981,7 @@ mod tests {
         let dir = TempDir::new("no-ui");
         fs::write(
             dir.path().join("desktop.json"),
-            r#"{"devices":[{"id":"TESTDEVICE01","label":"Bedroom"}],"broker":{"username":"someone"}}"#,
+            r#"{"devices":[{"id":"TESTDEVICE01","label":"Bedroom"}],"broker":{"url":"wss://broker.example.test/mqtt","username":"someone"}}"#,
         )
         .unwrap();
         let loaded = store(&dir).load();
@@ -993,35 +1046,100 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_saved_broker_address_is_no_broker_and_no_problem() {
-        // Written by a build that was given no broker, before one was added in Settings.
-        for empty in ["", "  "] {
+    fn an_empty_saved_broker_address_is_not_saved_and_gets_this_builds_default() {
+        // Written by a build that was given no broker, before one was added in Settings:
+        // the empty address alone, and an empty address with a username.
+        for broker in [
+            r#"{"url":"","username":"","route_id":""}"#,
+            r#"{"url":"  ","username":"someone","route_id":"route-9"}"#,
+        ] {
             let dir = TempDir::new("empty-broker-address");
             let file = format!(
-                r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedroom"}}],"broker":{{"url":{empty:?},"username":"someone","route_id":"route-9"}}}}"#
+                r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedroom"}}],"broker":{broker}}}"#
             );
             fs::write(dir.path().join("desktop.json"), file).unwrap();
             let loaded = store(&dir).load();
-            // No broker, whatever this build's default is: the screens ask for one.
-            assert_eq!(loaded.broker.url, "", "{empty:?}");
-            assert!(!loaded.broker.is_set(), "{empty:?}");
-            assert_eq!(loaded.broker.username, "someone", "{empty:?}");
-            assert_eq!(loaded.broker.route_id, "route-9", "{empty:?}");
+            // The whole of this build's default, whatever the rest of the object says.
+            assert_eq!(loaded.broker, BrokerSettings::default(), "{broker}");
             // Nothing wrong with the file: no notice, and it stays where it is.
-            assert_eq!(loaded.notice, None, "{empty:?}");
-            assert_eq!(loaded.state.devices[ID1].label, "Bedroom", "{empty:?}");
+            assert_eq!(loaded.notice, None, "{broker}");
+            assert_eq!(loaded.state.devices[ID1].label, "Bedroom", "{broker}");
             assert!(!dir.path().join("desktop.json.corrupt").exists());
         }
     }
 
     #[test]
-    fn a_file_saved_with_no_broker_loads_cleanly_and_still_has_none() {
+    fn a_file_saved_by_a_build_with_no_broker_loads_cleanly_with_this_builds_default() {
         let dir = TempDir::new("no-broker-round-trip");
         let none = BrokerSettings::from_values(None, None, None);
         store(&dir).save(&AppState::default(), &none).unwrap();
         let loaded = store(&dir).load();
-        assert_eq!(loaded.broker, none);
+        assert_eq!(loaded.broker, BrokerSettings::default());
         assert_eq!(loaded.notice, None);
+    }
+
+    /// No broker, as a build given none has: an empty address, and nothing else either.
+    fn none() -> BrokerSettings {
+        BrokerSettings::from_values(None, None, None)
+    }
+
+    #[test]
+    fn an_empty_saved_broker_takes_the_whole_default_it_is_given() {
+        // The empty address alone, and an empty address with a username and route ID.
+        let alone = none();
+        let with_a_name = BrokerSettings {
+            url: " ".to_owned(),
+            username: "someone".to_owned(),
+            route_id: "route-9".to_owned(),
+        };
+        for saved in [alone, with_a_name] {
+            // A build with a broker: all of it, not the address alone, so the Keychain
+            // account, the pings and Settings have its username and route ID too.
+            let example = BrokerSettings::example();
+            assert_eq!(
+                resolve_broker(saved.clone(), example.clone()),
+                (example, None),
+                "{saved:?}"
+            );
+            // A build with none: none at all.
+            assert_eq!(
+                resolve_broker(saved.clone(), none()),
+                (none(), None),
+                "{saved:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_good_saved_broker_is_kept_whatever_the_build_has() {
+        let saved = custom_broker();
+        for default in [BrokerSettings::example(), none()] {
+            assert_eq!(
+                resolve_broker(saved.clone(), default),
+                (saved.clone(), None)
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_saved_address_says_whether_the_builds_default_took_its_place() {
+        let bad = BrokerSettings {
+            url: "ws://broker.example/mqtt".to_owned(),
+            ..custom_broker()
+        };
+        // A default to use: it is used, and the notice says so.
+        let (broker, notice) = resolve_broker(bad.clone(), BrokerSettings::example());
+        assert_eq!(broker.url, BrokerSettings::example().url);
+        assert_eq!(broker.username, "someone");
+        let notice = notice.expect("a notice");
+        assert!(notice.contains("so the default is used"), "{notice}");
+        // None: there is no broker now, and the notice doesn't claim a default.
+        let (broker, notice) = resolve_broker(bad, none());
+        assert!(!broker.is_set());
+        let notice = notice.expect("a notice");
+        assert!(!notice.contains("default"), "{notice}");
+        assert!(notice.contains("broker address"), "{notice}");
+        assert!(notice.contains("Settings"), "{notice}");
     }
 
     #[test]

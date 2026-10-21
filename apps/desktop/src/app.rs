@@ -66,6 +66,7 @@ impl ScentApp {
             broker,
             appearance,
             notice,
+            first_run,
         } = store.load();
         theme::set_appearance(&cc.egui_ctx, appearance);
         // The Keychain may ask the person before it answers; nothing is drawn until it has.
@@ -83,8 +84,8 @@ impl ScentApp {
             ctx.request_repaint();
         });
         let mut screens = Screens::new(notice);
-        // The first time, with no broker: Settings, to add one.
-        screens.ask_for_broker(&broker);
+        // The first run, with no broker: Settings, to add one.
+        screens.ask_for_broker(&broker, first_run);
         ScentApp {
             state,
             view,
