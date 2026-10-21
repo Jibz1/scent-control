@@ -3,6 +3,9 @@
 Command-line tools for checking the Scentiment diffusers over Bluetooth and MQTT. See
 `docs/superpowers/plans/2026-10-20-phase-0-device-verification.md`.
 
+Everyday control has moved to the desktop app (`apps/desktop`). These tools and the web
+test bench stay for protocol experiments and for checking device behaviour.
+
 ## Setup
 
 ```bash

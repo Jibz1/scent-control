@@ -30,6 +30,9 @@ pub trait Transport: Send + Sync + 'static {
     fn ble_read_info(&self, ble_id: &str) -> Reply;
     /// Queues `cmd` for the diffuser on the broker. Refuses while it isn't connected.
     fn wifi_send(&self, device_id: &str, cmd: &Command) -> Result<(), String>;
+    /// Queues `body` as the retained copy of the diffuser's schedule on the broker, for
+    /// the app's other copies (see `shared_schedule`). Refuses while it isn't connected.
+    fn store_schedule(&self, device_id: &str, body: Vec<u8>) -> Result<(), String>;
     /// The route ID to ping with, while the broker is connected; `None` otherwise.
     fn broker_route_id(&self) -> Option<String>;
     /// Stops the broker worker, if there is one, and starts a new one with these
@@ -85,6 +88,14 @@ impl Transport for Radios {
         let broker = lock(&self.broker).clone();
         match broker {
             Some(broker) => broker.handle.send(device_id, cmd),
+            None => Err("Not connected to the broker.".to_owned()),
+        }
+    }
+
+    fn store_schedule(&self, device_id: &str, body: Vec<u8>) -> Result<(), String> {
+        let broker = lock(&self.broker).clone();
+        match broker {
+            Some(broker) => broker.handle.store_retained(device_id, body),
             None => Err("Not connected to the broker.".to_owned()),
         }
     }
@@ -178,6 +189,19 @@ mod tests {
         assert!(lock(&radios.broker).is_none());
         assert_eq!(radios.broker_route_id(), None);
         assert!(refused(&radios).contains("Not connected"));
+    }
+
+    #[test]
+    fn storing_a_schedule_needs_the_broker_and_a_device_id() {
+        let (events, _received) = channel();
+        let radios = Radios::new(events, Arc::new(|| {}));
+        let error = radios.store_schedule(ID, b"{}".to_vec()).unwrap_err();
+        assert!(error.contains("Not connected"), "{error}");
+        radios.reconnect(unparseable(), Some(Secret::new("x".to_owned())));
+        let error = radios.store_schedule(ID, b"{}".to_vec()).unwrap_err();
+        assert!(error.contains("Not connected"), "{error}");
+        let error = radios.store_schedule("#", b"{}".to_vec()).unwrap_err();
+        assert!(error.contains("device ID"), "{error}");
     }
 
     #[test]

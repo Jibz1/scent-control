@@ -29,6 +29,9 @@ mod route;
 mod secrets;
 
 #[cfg(target_os = "macos")]
+mod shared_schedule;
+
+#[cfg(target_os = "macos")]
 mod state;
 
 #[cfg(target_os = "macos")]

@@ -1,6 +1,6 @@
 //! The app's memory between runs: the diffusers it knows, their names, their last
-//! readings and the last schedule this Mac sent each, where the broker is, and how the
-//! app looks, in `desktop.json`.
+//! readings and the last schedule sent to each from Scent Control (with when it was
+//! sent), where the broker is, and how the app looks, in `desktop.json`.
 //!
 //! The file holds devices, the broker's address and the appearance and nothing else: no
 //! log, no live status, and no secrets (the broker password lives in the Keychain, and
@@ -261,17 +261,24 @@ struct StoredDevice {
     info: Option<StoredInfo>,
     #[serde(default)]
     readings: BTreeMap<String, StoredReading>,
-    /// The last schedule this Mac sent it: what the screens show for today and the
-    /// editor opens from. Left out when none was sent, and missing from files written
-    /// before it was kept.
+    /// The last schedule sent to it from Scent Control: what the screens show for today
+    /// and the editor opens from. Left out when none was sent, and missing from files
+    /// written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sent_profile: Option<StoredProfile>,
+    /// When that schedule was sent, in seconds since 1970, so that the newer of it and
+    /// the copy on the broker wins. Left out with the schedule, and missing from files
+    /// written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sent_profile_at: Option<i64>,
 }
 
 /// A schedule as the editor shows it: times as `HH:MM`, days from 0 (Sunday) to 6,
 /// levels from 1 to 3, and the zone's offset from UTC in hours. Nothing in it is secret.
+/// The copy stored on the broker for the app's other copies holds it in this form too
+/// (see `shared_schedule`).
 #[derive(Serialize, Deserialize)]
-struct StoredProfile {
+pub(crate) struct StoredProfile {
     always_on: StoredAlwaysOn,
     entries: Vec<StoredEntry>,
     timezone_hours: f64,
@@ -333,11 +340,8 @@ impl Stored {
                         .collect(),
                     // A zone that isn't a number would be written as `null`, which would
                     // make the whole file unreadable. The editor never sends one.
-                    sent_profile: device
-                        .sent_profile
-                        .as_ref()
-                        .filter(|profile| profile.timezone_hours.is_finite())
-                        .map(StoredProfile::from),
+                    sent_profile: saved_profile(device).map(StoredProfile::from),
+                    sent_profile_at: saved_profile(device).and(device.sent_profile_at),
                 })
                 .collect(),
         }
@@ -375,6 +379,8 @@ impl Stored {
                 }
                 profile
             });
+            // A time goes with the schedule it says was sent, and only with one.
+            device.sent_profile_at = device.sent_profile.as_ref().and(stored.sent_profile_at);
             for (key, reading) in stored.readings {
                 let field = Field::from_key(&key);
                 let via = via_from_key(&reading.via);
@@ -429,6 +435,14 @@ fn resolve_broker(
     };
     broker.url = default.url;
     (broker, Some(notice.to_owned()))
+}
+
+/// The schedule of `device` that the file holds: none when its zone isn't a number.
+fn saved_profile(device: &DeviceView) -> Option<&Profile> {
+    device
+        .sent_profile
+        .as_ref()
+        .filter(|profile| profile.timezone_hours.is_finite())
 }
 
 impl From<&DeviceInfo> for StoredInfo {
@@ -495,7 +509,7 @@ impl From<&Profile> for StoredProfile {
 
 impl StoredProfile {
     /// The schedule, or `None` if any part of it can't be.
-    fn into_profile(self) -> Option<Profile> {
+    pub(crate) fn into_profile(self) -> Option<Profile> {
         let entries = self
             .entries
             .into_iter()
@@ -779,6 +793,62 @@ mod tests {
     }
 
     #[test]
+    fn when_the_last_schedule_was_sent_is_saved_with_it() {
+        let dir = TempDir::new("schedule-time");
+        let mut s = AppState::default();
+        let mut one = DeviceView::new(ID1);
+        one.sent_profile = Some(sent_schedule());
+        one.sent_profile_at = Some(1_790_000_000);
+        s.devices.insert(ID1.to_owned(), one);
+        store(&dir).save(&s, &BrokerSettings::default()).unwrap();
+        let loaded = store(&dir).load();
+        assert_eq!(loaded.notice, None);
+        assert_eq!(loaded.state.devices, s.devices);
+        let text = fs::read_to_string(dir.path().join("desktop.json")).unwrap();
+        assert_eq!(
+            text.matches("\"sent_profile_at\": 1790000000").count(),
+            1,
+            "{text}"
+        );
+
+        // The time alone changing is a change to save.
+        let mut later = s.clone();
+        later.devices.get_mut(ID1).unwrap().sent_profile_at = Some(1_790_000_001);
+        let broker = BrokerSettings::default();
+        assert_ne!(
+            Store::contents(&later, &broker, Appearance::System).unwrap(),
+            Store::contents(&s, &broker, Appearance::System).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_schedule_saved_before_its_time_was_kept_loads_with_none() {
+        let schedule = r#"{"always_on":{"enable":false,"level":1},"entries":[],
+                           "timezone_hours":-5.0,"flag":"replace"}"#;
+        let bad_schedule = r#"{"always_on":{"enable":false,"level":9},"entries":[],
+                               "timezone_hours":-5.0,"flag":"replace"}"#;
+        for (fields, has_schedule) in [
+            (format!(r#""sent_profile":{schedule}"#), true),
+            // A time with no schedule it can go with is not kept either.
+            (
+                format!(r#""sent_profile":{bad_schedule},"sent_profile_at":7"#),
+                false,
+            ),
+            (r#""sent_profile_at":7"#.to_owned(), false),
+        ] {
+            let dir = TempDir::new("schedule-no-time");
+            let file =
+                format!(r#"{{"devices":[{{"id":"TESTDEVICE01","label":"Bedroom",{fields}}}]}}"#);
+            fs::write(dir.path().join("desktop.json"), file).unwrap();
+            let loaded = store(&dir).load();
+            assert_eq!(loaded.notice, None, "{fields}");
+            let device = &loaded.state.devices[ID1];
+            assert_eq!(device.sent_profile.is_some(), has_schedule, "{fields}");
+            assert_eq!(device.sent_profile_at, None, "{fields}");
+        }
+    }
+
+    #[test]
     fn a_file_from_before_schedules_were_saved_loads_cleanly() {
         let dir = TempDir::new("no-schedule");
         fs::write(
@@ -788,9 +858,12 @@ mod tests {
         .unwrap();
         let loaded = store(&dir).load();
         assert_eq!(loaded.notice, None);
+        // It has neither a schedule with its time nor a `ui` object.
+        assert_eq!(loaded.appearance, Appearance::System);
         let device = &loaded.state.devices[ID1];
         assert_eq!(device.label, "Bedroom");
         assert_eq!(device.sent_profile, None);
+        assert_eq!(device.sent_profile_at, None);
         assert!(dir.path().join("desktop.json").exists());
         assert!(!dir.path().join("desktop.json.corrupt").exists());
     }

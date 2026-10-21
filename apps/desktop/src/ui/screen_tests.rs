@@ -436,7 +436,7 @@ fn a_schedule_is_sent_only_once_it_is_confirmed() {
         panic!("one schedule");
     };
     assert_eq!(device_id, ONE);
-    // It started from the schedule this app sent: always on, at UTC-5. The test time
+    // It started from the last schedule sent: always on, at UTC-5. The test time
     // starts 3 minutes from now there (10:30 on a Tuesday).
     let Profile {
         always_on,
@@ -673,7 +673,7 @@ fn after_a_relaunch_the_schedule_sent_still_shows_today_and_what_to_expect() {
         Some("07:00 to 09:00 at Medium; always on at Low the rest of the day")
     );
     let _ = harness.get_by_label(
-        "Based on the schedule this app last sent, it should be on at Low (always-on entry).",
+        "Based on the last schedule sent from Scent Control, it should be on at Low (always-on entry).",
     );
     assert!(harness.query_by_label("Nothing yet").is_none());
 }
