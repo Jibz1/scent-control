@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use scent_core::{
     APP_PREFIX, Ack, Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Online, Profile,
-    ScheduleFlag, Status, Via, online_status, parse_mqtt, parse_notification,
+    ScheduleFlag, Status, Via, device_id_from_name, online_status, parse_mqtt, parse_notification,
     schedule_topic_device, valid_device_id,
 };
 
@@ -403,7 +403,10 @@ impl AppState {
                 self.on_ble_notification(&ble_id, &bytes, at);
             }
             Event::BleInfo { ble_id, info, at } => self.on_ble_info(ble_id, info, at),
-            Event::Scanned(hits) => self.scan = hits,
+            Event::Scanned(hits) => {
+                self.link_known_hits(&hits);
+                self.scan = hits;
+            }
             Event::Sent {
                 device_id,
                 summary,
@@ -756,6 +759,34 @@ impl AppState {
             text: note.raw,
             sent: false,
         });
+    }
+
+    /// Links each diffuser we know that a scan found to the peripheral it advertises from.
+    /// A diffuser's advertised name ends with its device ID (see `docs/findings.md`), so a
+    /// diffuser known from the broker, or added by another app, can be reached over
+    /// Bluetooth without adding it again. An ID that two hits name is ambiguous and links
+    /// nothing. A peripheral belongs to one diffuser at a time. Linking hears nothing from
+    /// the diffuser, so nothing else about it changes.
+    fn link_known_hits(&mut self, hits: &[ScanHit]) {
+        let mut named: BTreeMap<String, Vec<&ScanHit>> = BTreeMap::new();
+        for hit in hits {
+            if let Some(id) = device_id_from_name(&hit.name) {
+                named.entry(id).or_default().push(hit);
+            }
+        }
+        for (id, hits) in named {
+            let [hit] = hits.as_slice() else { continue };
+            if !self.devices.contains_key(&id) {
+                continue;
+            }
+            for (device_id, device) in &mut self.devices {
+                if *device_id == id {
+                    device.ble_id = Some(hit.ble_id.clone());
+                } else if device.ble_id.as_deref() == Some(hit.ble_id.as_str()) {
+                    device.ble_id = None;
+                }
+            }
+        }
     }
 
     fn on_ble_info(&mut self, ble_id: String, info: DeviceInfo, at: i64) {
@@ -1369,6 +1400,105 @@ mod tests {
         assert_eq!(s.scan.len(), 2);
         s.apply_at(Event::Scanned(vec![hit("c")]), NOW);
         assert_eq!(s.scan, vec![hit("c")]);
+    }
+
+    // Recognizing a known diffuser by the device ID in its Bluetooth name
+
+    const HEX1: &str = "0A1B2C3D4E5F";
+    const HEX2: &str = "0A1B2C3D4E60";
+
+    fn named_hit(ble: &str, id: &str) -> ScanHit {
+        ScanHit {
+            ble_id: ble.to_owned(),
+            name: format!("Scentiment-D B n {id}"),
+            rssi: Some(-60),
+        }
+    }
+
+    fn knowing(ids: &[&str]) -> AppState {
+        let mut s = AppState::default();
+        for id in ids {
+            s.devices.insert((*id).to_owned(), DeviceView::new(id));
+        }
+        s
+    }
+
+    #[test]
+    fn a_scan_links_a_known_diffuser_by_the_id_in_its_name() {
+        let mut s = knowing(&[HEX1]);
+        s.apply_at(Event::Scanned(vec![named_hit("ble-a", HEX1)]), NOW);
+        assert_eq!(s.devices[HEX1].ble_id.as_deref(), Some("ble-a"));
+        assert_eq!(
+            s.scan,
+            vec![named_hit("ble-a", HEX1)],
+            "the scan list is still every hit"
+        );
+    }
+
+    #[test]
+    fn a_lower_case_id_in_the_name_still_links() {
+        let mut s = knowing(&[HEX1]);
+        s.apply_at(
+            Event::Scanned(vec![named_hit("ble-a", &HEX1.to_ascii_lowercase())]),
+            NOW,
+        );
+        assert_eq!(s.devices[HEX1].ble_id.as_deref(), Some("ble-a"));
+    }
+
+    #[test]
+    fn a_scan_link_replaces_a_stale_bluetooth_id() {
+        let mut s = knowing(&[HEX1]);
+        s.devices.get_mut(HEX1).unwrap().ble_id = Some("ble-old".to_owned());
+        s.apply_at(Event::Scanned(vec![named_hit("ble-new", HEX1)]), NOW);
+        assert_eq!(s.devices[HEX1].ble_id.as_deref(), Some("ble-new"));
+    }
+
+    #[test]
+    fn a_scan_never_adds_a_diffuser_it_does_not_know() {
+        let mut s = knowing(&[HEX1]);
+        s.apply_at(Event::Scanned(vec![named_hit("ble-b", HEX2)]), NOW);
+        assert!(!s.devices.contains_key(HEX2));
+        assert_eq!(s.devices[HEX1].ble_id, None);
+    }
+
+    #[test]
+    fn two_hits_with_the_same_id_link_neither() {
+        let mut s = knowing(&[HEX1]);
+        s.devices.get_mut(HEX1).unwrap().ble_id = Some("ble-old".to_owned());
+        s.apply_at(
+            Event::Scanned(vec![named_hit("ble-a", HEX1), named_hit("ble-b", HEX1)]),
+            NOW,
+        );
+        assert_eq!(s.devices[HEX1].ble_id.as_deref(), Some("ble-old"));
+    }
+
+    #[test]
+    fn a_bluetooth_id_moves_to_the_diffuser_its_name_names() {
+        let mut s = knowing(&[HEX1, HEX2]);
+        s.devices.get_mut(HEX1).unwrap().ble_id = Some("ble-a".to_owned());
+        s.apply_at(Event::Scanned(vec![named_hit("ble-a", HEX2)]), NOW);
+        assert_eq!(s.devices[HEX2].ble_id.as_deref(), Some("ble-a"));
+        assert_eq!(s.devices[HEX1].ble_id, None);
+    }
+
+    #[test]
+    fn linking_is_not_hearing_from_the_diffuser() {
+        let mut s = knowing(&[HEX1]);
+        let before = s.devices[HEX1].clone();
+        s.apply_at(Event::Scanned(vec![named_hit("ble-a", HEX1)]), NOW);
+        let after = s.devices[HEX1].clone();
+        assert_eq!(
+            DeviceView {
+                ble_id: None,
+                ..after
+            },
+            before,
+            "only the Bluetooth ID changes"
+        );
+        assert!(
+            s.log.is_empty(),
+            "a scan sends and hears nothing, so it logs nothing"
+        );
     }
 
     // Sent commands
