@@ -1,6 +1,6 @@
 # The listener: design
 
-Status: draft for the owner's review, 2026-10-22.
+Status: approved by the owner, 2026-10-22.
 
 The listener is the first piece of `apps/server`. It runs all the time on Railway, hears
 everything the diffusers say on our broker, keeps each diffuser's latest state, pings each
