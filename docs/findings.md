@@ -588,21 +588,30 @@ The throwaway spike (`spikes/ios-core`, branch `spike/ios-core`) ran the Rust co
 owner's iPhone through UniFFI. It sends a diffuser no command: its only Bluetooth operation
 is reading `0xFEF4`. The owner ran its three checks with both diffusers nearby.
 
-- **The phone.** An iPhone 16 Pro Max on iOS 27.0.1, running a signed Release build
-  installed with `xcrun devicectl`. **[observed]**
+- **The phone.** An iPhone 16 Pro Max on iOS 27.0.1 (as `xcrun devicectl` reports it),
+  running a signed Release build installed with `devicectl`. **[observed]**
 - **Bluetooth works through `btleplug` 0.13.4.** **[observed]**
   - A 5-second scan found both diffusers, the Air 2 and the HVAC 2.
   - Reading `0xFEF4` worked on both: each showed its firmware and WiFi state, with no
     error.
+  - In the simulator, Bluetooth stays in state Unknown, and a scan ends with "Bluetooth
+    isn't ready (Unknown)…", without a crash.
 - **The broker works with both kinds of root certificates.** Over `wss://` to the test
   broker, each sent a probe message and got it back. **[observed]**
-  - System roots: rumqttc's default config, which loads the operating system's roots
-    (`rustls-native-certs`), as the Mac app does.
+  - System roots: rumqttc's default config, the same call the Mac app makes. The mechanism
+    differs: `rustls-native-certs` 0.8.5 has no Security-framework backend on iOS, so it
+    takes its Unix path, which looks for certificate files and returns an empty store,
+    without an error, when it finds none. The connection was verified, so some roots
+    loaded, but where they came from and how many wasn't recorded.
   - Bundled roots: Mozilla's list from `webpki-roots` 1.0.10.
-- **Not recorded.** The timings weren't noted, and the console wasn't captured: the app
-  was launched without `--console`. **[observed]**
-- **Building.** UniFFI 0.32.2 with a static-library XCFramework (an ios-arm64 slice and an
-  ios-arm64-simulator slice) works. **[observed]**
+- **Not recorded.** **[observed]**
+  - The timings, and the exact firmware and WiFi values each diffuser showed.
+  - Whether both advertised names carried a device ID.
+  - The console: the app was launched without `--console`.
+- **Building.** A static-library XCFramework (an ios-arm64 slice and an
+  ios-arm64-simulator slice) with UniFFI 0.32.2 works. **[observed]**
+  - What was exercised: records, enums, an error enum, and blocking exports called from
+    Swift's `Task.detached`. No callback or listener interface was tried.
   - Bindgen reads the metadata straight from the device's `.a`. No host library is needed.
   - The generated Swift records and enums are `Sendable`, so Swift 6's strict concurrency
     accepts them.
@@ -613,13 +622,14 @@ is reading `0xFEF4`. The owner ran its three checks with both diffusers nearby.
     declares.
   - The Rust slice is arm64 only, so a simulator build needs a named destination
     (`platform=iOS Simulator,name=…`). The generic simulator destination asks for x86_64.
-  - In the simulator, Bluetooth stays in state Unknown, and a scan ends with "Bluetooth
-    isn't ready (Unknown)…", without a crash.
 
-The decisions for part 2:
+The spike's two decision lines for part 2 were:
 
 - Bluetooth on iPhone: Rust (btleplug)
 - Root certificates on iPhone: system
 
-Both kinds of roots worked. System roots keep one TLS path for the Mac and the iPhone, and
-they follow Apple's updates instead of the app's releases.
+**Superseded (owner, 2026-10-22).** After the spike, the owner decided there is no Rust on
+the phone: the iPhone app is written in Swift. So:
+
+- Bluetooth on iPhone: Swift (Core Bluetooth). `btleplug` worked; the choice is the owner's.
+- Root certificates on iPhone: Swift's own TLS, settled in the revised iPhone design.
