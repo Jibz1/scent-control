@@ -26,7 +26,7 @@ use super::add_sheet::Target;
 use super::device_panel::DevicePanel;
 use super::glyphs::{self, Ink, Mark};
 use super::schedule_editor::{DraftEntry, test_time};
-use super::settings::{self, Build, SettingsWindow};
+use super::settings::{self, Build, ListenerLine, SettingsWindow};
 use super::tests::{NOW, ONE, TWO};
 use super::theme::{self, Appearance, Palette};
 use crate::add_flow::{AddStep, wait_outcome};
@@ -606,7 +606,9 @@ fn settings_window(
                     ui.ctx().request_repaint();
                     return;
                 }
-                let _ = whole_window(ui, |ui| window.window(ui, &BrokerState::Connected));
+                let _ = whole_window(ui, |ui| {
+                    window.window(ui, &BrokerState::Connected, &ListenerLine::default())
+                });
             },
             window,
         );

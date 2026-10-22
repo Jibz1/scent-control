@@ -8,9 +8,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use scent_core::{
-    APP_PREFIX, Ack, Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Online, Profile,
-    ScheduleFlag, Status, Via, online_status, parse_mqtt, parse_notification,
-    schedule_topic_device, valid_device_id,
+    APP_PREFIX, Ack, Connected, DeviceInfo, Direction, Heartbeat, LISTENER_TOPIC, MqttMessage,
+    NoteKind, Online, Profile, STATE_PREFIX, ScheduleFlag, Status, Via, decode_heartbeat,
+    decode_state, is_current, online_status, parse_mqtt, parse_notification, schedule_topic_device,
+    state_topic_device, valid_device_id,
 };
 
 use crate::add_flow::AddStep;
@@ -177,6 +178,15 @@ impl DeviceView {
         let sent = self.sent?;
         let intensity = sent.intensity?;
         (!self.reported_since(Field::Intensity, sent.at)).then_some(intensity)
+    }
+
+    /// The reading of `field` only while it still counts: one reported before the diffuser's
+    /// last reconnect does not, since it may have come back otherwise (owner, 2026-10-22). The
+    /// screens show these; the readings themselves are kept.
+    pub fn current(&self, field: Field) -> Option<&Reading> {
+        self.readings
+            .get(&field)
+            .filter(|reading| is_current(reading.at, self.connected_at))
     }
 
     fn reported_since(&self, field: Field, at: i64) -> bool {
@@ -386,6 +396,10 @@ pub struct AppState {
     pub log: VecDeque<LogEntry>,
     /// The adds the screens started, by Bluetooth ID. Not saved.
     pub adding: BTreeMap<String, Adding>,
+    /// The listener's last heartbeat or will (see `scent_core::listener_running`). Not saved.
+    pub listener: Option<Heartbeat>,
+    /// When a heartbeat last said the listener was running. Not saved.
+    pub listener_seen_at: Option<i64>,
 }
 
 impl AppState {
@@ -676,6 +690,14 @@ impl AppState {
         if body.is_empty() {
             return;
         }
+        if topic == LISTENER_TOPIC {
+            self.on_heartbeat(body, at);
+            return;
+        }
+        if topic.starts_with(STATE_PREFIX) {
+            self.on_shared_state(topic, body, at);
+            return;
+        }
         let text = String::from_utf8_lossy(body).into_owned();
         let device_id = schedule_topic_device(topic);
         let decoded = device_id
@@ -724,6 +746,67 @@ impl AppState {
                 text,
                 sent: false,
             });
+        }
+    }
+
+    /// The listener's heartbeat, or its will. One that can't be used changes nothing and is
+    /// not logged: a heartbeat comes every 30 s and would fill the log.
+    fn on_heartbeat(&mut self, body: &[u8], at: i64) {
+        let Ok(beat) = decode_heartbeat(body, at) else {
+            return;
+        };
+        if beat.running {
+            self.listener_seen_at = self.listener_seen_at.max(beat.at);
+        }
+        self.listener = Some(beat);
+    }
+
+    /// The listener's record of a diffuser (spec 2026-10-22-listener-design §6.8): each
+    /// reading the Mac knows of is taken when it is newer than the Mac's own, the heard and
+    /// ping times when they are later, and a later reconnect as one heard here. A diffuser
+    /// not known yet becomes known. A record that can't be used changes nothing and is not
+    /// logged: records come every 30 s.
+    fn on_shared_state(&mut self, topic: &str, body: &[u8], at: i64) {
+        let Some(id) = state_topic_device(topic) else {
+            return;
+        };
+        let Ok(shared) = decode_state(body, at) else {
+            return;
+        };
+        let device = self
+            .devices
+            .entry(id.to_owned())
+            .or_insert_with_key(|id| DeviceView::new(id));
+        for (key, stamped) in &shared.fields {
+            // The HVAC's fan, gas pump and light have no reading here.
+            let Some(field) = Field::from_key(key) else {
+                continue;
+            };
+            if device
+                .readings
+                .get(&field)
+                .is_none_or(|own| stamped.at > own.at)
+            {
+                let reading = Reading {
+                    value: stamped.value,
+                    at: stamped.at,
+                    via: Via::Wifi,
+                };
+                device.readings.insert(field, reading);
+            }
+        }
+        device.heard_wifi = device.heard_wifi.max(shared.heard_at);
+        device.ping_at = device.ping_at.max(shared.ping_at);
+        if let Some(connected) = &shared.connected
+            && device.connected_at.is_none_or(|known| connected.at > known)
+        {
+            let said = Connected {
+                fw: connected.fw.clone(),
+                model: connected.model.clone(),
+                variant: connected.variant.clone(),
+                manufacturer: connected.manufacturer.clone(),
+            };
+            device.note_connected(&said, connected.at);
         }
     }
 
@@ -1759,6 +1842,175 @@ mod tests {
             );
             assert!(!entry.text.contains("hunter2"), "{}", entry.text);
         }
+    }
+
+    // The listener's shared state (spec 2026-10-22-listener-design §6.8)
+
+    const STATE1_TOPIC: &str = "scent-control/v1/state/TESTDEVICE01";
+    const LISTENER: &str = "scent-control/v1/listener";
+    const CONNECTED1: &str = r#"{"action":"device_connected","payload":{"deviceId":"TESTDEVICE01","fw":"2.30","model":"Diffuser","variant":"Black","manufacturer":"01"}}"#;
+
+    /// The listener's record of TESTDEVICE01, written at `at`: `fields` and `extra` are JSON
+    /// members.
+    fn shared(fields: &str, extra: &str, at: i64) -> Event {
+        let body = format!(r#"{{"v":1,"updated_at":{at},"fields":{{{fields}}}{extra}}}"#);
+        mqtt(STATE1_TOPIC, &body, at)
+    }
+
+    #[test]
+    fn a_newer_listener_reading_is_adopted_and_an_older_one_is_not() {
+        let mut s = known_air2();
+        s.apply_at(report(ID1, "S:1,L:2", 100), NOW);
+        s.apply_at(
+            shared(
+                r#""power":{"value":0,"at":150},"intensity":{"value":3,"at":50},"fan":{"value":1,"at":150}"#,
+                "",
+                160,
+            ),
+            NOW,
+        );
+        let d = &s.devices[ID1];
+        assert_eq!(
+            d.readings[&Field::Power],
+            Reading {
+                value: 0,
+                at: 150,
+                via: Via::Wifi
+            }
+        );
+        assert_eq!(
+            d.readings[&Field::Intensity],
+            Reading {
+                value: 2,
+                at: 100,
+                via: Via::Wifi
+            }
+        );
+        // The fan is the HVAC's; the Mac has no reading for it.
+        assert_eq!(d.readings.len(), 2);
+    }
+
+    #[test]
+    fn a_diffuser_known_only_to_the_listener_is_added() {
+        let mut s = AppState::default();
+        s.apply_at(
+            shared(r#""power":{"value":1,"at":90}"#, r#","heard_at":95"#, 100),
+            NOW,
+        );
+        let d = &s.devices[ID1];
+        assert_eq!(d.label, ID1);
+        assert_eq!(d.readings[&Field::Power].value, 1);
+        assert_eq!(d.heard_wifi, Some(95));
+        assert!(s.log.is_empty());
+    }
+
+    #[test]
+    fn listener_state_of_another_version_or_from_the_future_changes_nothing_and_is_not_logged() {
+        for (topic, body) in [
+            (
+                STATE1_TOPIC,
+                r#"{"v":2,"updated_at":60,"fields":{}}"#.to_owned(),
+            ),
+            (
+                STATE1_TOPIC,
+                format!(r#"{{"v":1,"updated_at":{},"fields":{{}}}}"#, 60 + 86_401),
+            ),
+            (STATE1_TOPIC, "{ not json".to_owned()),
+            (
+                "scent-control/v1/state/testdevice01",
+                r#"{"v":1,"updated_at":60,"fields":{}}"#.to_owned(),
+            ),
+            (LISTENER, r#"{"v":2,"running":true,"at":60}"#.to_owned()),
+            (LISTENER, "{ not json".to_owned()),
+        ] {
+            let mut s = known_air2();
+            let before = s.clone();
+            s.apply_at(mqtt(topic, &body, 60), NOW);
+            assert_eq!(s, before, "{topic} {body}");
+        }
+    }
+
+    #[test]
+    fn the_listeners_heard_and_ping_times_count_when_newer() {
+        let mut s = known_air2();
+        s.apply_at(report(ID1, "S:1,L:2", 100), NOW);
+        s.apply_at(shared("", r#","heard_at":120,"ping_at":110"#, 130), NOW);
+        let times = |s: &AppState| (s.devices[ID1].heard_wifi, s.devices[ID1].ping_at);
+        assert_eq!(times(&s), (Some(120), Some(110)));
+        s.apply_at(shared("", r#","heard_at":90,"ping_at":80"#, 140), NOW);
+        assert_eq!(times(&s), (Some(120), Some(110)));
+    }
+
+    #[test]
+    fn a_reading_from_before_the_last_reconnect_is_not_current() {
+        let mut s = known_air2();
+        s.apply_at(report(ID1, "S:1,L:2", 100), NOW);
+        s.apply_at(mqtt(USER_TOPIC, CONNECTED1, 200), NOW);
+        let d = &s.devices[ID1];
+        assert_eq!(d.current(Field::Power), None);
+        // Kept, only not current: the diffuser may have come back as it was, or not.
+        assert!(d.readings.contains_key(&Field::Power));
+        // A report in the same second as the reconnect counts.
+        s.apply_at(report(ID1, "S:0,L:1", 200), NOW);
+        assert_eq!(
+            s.devices[ID1].current(Field::Power).map(|r| r.value),
+            Some(0)
+        );
+        // A reconnect the listener heard while this Mac wasn't listening counts too.
+        s.apply_at(
+            shared(
+                "",
+                r#","connected":{"fw":"2.30","model":"Diffuser","variant":"Black","manufacturer":"01","at":300}"#,
+                310,
+            ),
+            NOW,
+        );
+        assert_eq!(s.devices[ID1].connected_at, Some(300));
+        assert_eq!(s.devices[ID1].current(Field::Power), None);
+    }
+
+    #[test]
+    fn a_listener_report_after_a_send_clears_it_and_one_before_does_not() {
+        let mut s = known_air2();
+        s.apply_at(sent(ID1, Some(true), None, NOW), NOW);
+        // The listener republishes an old report every 30 s: it confirms nothing.
+        let before = format!(r#""power":{{"value":0,"at":{}}}"#, NOW - 30);
+        s.apply_at(shared(&before, "", NOW), NOW);
+        assert_eq!(s.devices[ID1].pending_power(), Some(true));
+        let after = format!(r#""power":{{"value":1,"at":{}}}"#, NOW + 2);
+        s.apply_at(shared(&after, "", NOW + 3), NOW);
+        assert_eq!(s.devices[ID1].pending_power(), None);
+    }
+
+    #[test]
+    fn the_will_keeps_when_the_listener_was_last_seen() {
+        let mut s = AppState::default();
+        s.apply_at(
+            mqtt(
+                LISTENER,
+                r#"{"v":1,"running":true,"at":100,"started_at":50}"#,
+                100,
+            ),
+            NOW,
+        );
+        assert_eq!(
+            s.listener,
+            Some(Heartbeat {
+                running: true,
+                at: Some(100)
+            })
+        );
+        assert_eq!(s.listener_seen_at, Some(100));
+        s.apply_at(mqtt(LISTENER, r#"{"v":1,"running":false}"#, 150), NOW);
+        assert_eq!(
+            s.listener,
+            Some(Heartbeat {
+                running: false,
+                at: None
+            })
+        );
+        assert_eq!(s.listener_seen_at, Some(100));
+        assert!(s.log.is_empty());
     }
 
     #[test]

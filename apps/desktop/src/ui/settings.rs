@@ -13,9 +13,9 @@ use eframe::egui::{
     self, Id, Key, KeyboardShortcut, Modifiers, Pos2, RichText, ViewportBuilder, ViewportClass,
     ViewportCommand, ViewportId, pos2,
 };
-use scent_core::Secret;
+use scent_core::{Heartbeat, Secret, listener_running};
 
-use super::format::broker_text;
+use super::format::{ago, broker_text};
 use super::theme::{Appearance, GRID, MARGIN, Palette, SECTION_GAP, broker_color, set_appearance};
 use super::widgets::{default_button, footnote, grouped, plain_button, row, segmented, status_dot};
 use crate::mqtt::{BrokerSettings, BrokerUrl};
@@ -182,7 +182,12 @@ impl SettingsWindow {
     ///
     /// The window is a viewport of its own. Where egui can't open one (a test's
     /// context), it is drawn inside the main window instead.
-    pub fn show(&mut self, ctx: &egui::Context, broker: &BrokerState) -> Option<Submitted> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        broker: &BrokerState,
+        listener: &ListenerLine,
+    ) -> Option<Submitted> {
         if !self.open {
             return None;
         }
@@ -203,9 +208,9 @@ impl SettingsWindow {
         let action = ctx.show_viewport_immediate(Self::viewport_id(), builder, |ui, class| {
             let closing = ui.input(|input| input.viewport().close_requested());
             let action = if class == ViewportClass::EmbeddedWindow {
-                self.contents(ui, broker)
+                self.contents(ui, broker, listener)
             } else {
-                self.window(ui, broker)
+                self.window(ui, broker, listener)
             };
             if closing {
                 Some(Action::Cancel)
@@ -233,14 +238,19 @@ impl SettingsWindow {
 
     /// The whole of the window: its background and margins, and what it holds. Notes
     /// how tall that is, for the window to fit it from the next frame.
-    pub fn window(&mut self, ui: &mut egui::Ui, broker: &BrokerState) -> Option<Action> {
+    pub fn window(
+        &mut self,
+        ui: &mut egui::Ui,
+        broker: &BrokerState,
+        listener: &ListenerLine,
+    ) -> Option<Action> {
         let frame = egui::Frame::new()
             .fill(Palette::of(ui).window)
             .inner_margin(MARGIN);
         egui::CentralPanel::default()
             .frame(frame)
             .show(ui, |ui| {
-                let action = self.contents(ui, broker);
+                let action = self.contents(ui, broker, listener);
                 self.height = Some((ui.min_rect().height() + 2.0 * MARGIN).ceil());
                 action
             })
@@ -272,7 +282,12 @@ impl SettingsWindow {
 
     /// What the window holds: the broker fields in a grouped box, the connection's
     /// state, what went wrong, and Cancel and Save. Returns what the person did.
-    pub fn contents(&mut self, ui: &mut egui::Ui, broker: &BrokerState) -> Option<Action> {
+    pub fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        broker: &BrokerState,
+        listener: &ListenerLine,
+    ) -> Option<Action> {
         let palette = Palette::of(ui);
         let mut enter = false;
         grouped(ui, "Broker", |ui| {
@@ -302,6 +317,15 @@ impl SettingsWindow {
             let text = broker_text(broker);
             status_dot(ui, broker_color(&palette, broker), &text);
             ui.label(RichText::new(text).color(palette.label));
+        });
+        ui.horizontal_wrapped(|ui| {
+            let color = if listener.running {
+                palette.green
+            } else {
+                palette.gray
+            };
+            status_dot(ui, color, &listener.text);
+            ui.label(RichText::new(&listener.text).color(palette.label));
         });
         if let Some(error) = &self.error {
             ui.add_space(GRID / 2.0);
@@ -371,6 +395,37 @@ impl SettingsWindow {
 
 /// The About box: the app's name, and the version it is with the commit it was built
 /// from. The version can be selected, or copied from its context menu, for a bug report.
+/// What Settings says about the listener, under the broker's status: worked out by the
+/// caller from `AppState::listener` and `listener_seen_at`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListenerLine {
+    pub running: bool,
+    pub text: String,
+}
+
+impl ListenerLine {
+    pub fn of(listener: Option<&Heartbeat>, seen_at: Option<i64>, now: i64) -> ListenerLine {
+        ListenerLine {
+            running: listener_running(listener, now),
+            text: listener_text(listener, seen_at, now),
+        }
+    }
+}
+
+/// Whether the listener is running, in words: while it isn't, what it shared may be out of
+/// date, and the Mac relies on what it hears itself.
+pub fn listener_text(listener: Option<&Heartbeat>, seen_at: Option<i64>, now: i64) -> String {
+    if listener_running(listener, now) {
+        "Listener: running".to_owned()
+    } else if let Some(seen) = seen_at {
+        format!("Listener: not running, last seen {}", ago(seen, now))
+    } else if listener.is_some() {
+        "Listener: not running".to_owned()
+    } else {
+        "Listener: not seen yet".to_owned()
+    }
+}
+
 fn about(ui: &mut egui::Ui, build: &Build) {
     grouped(ui, "About", |ui| {
         row(ui, "Scent Control", |ui| {
@@ -433,7 +488,10 @@ mod tests {
                         ui.ctx().request_repaint();
                         return;
                     }
-                    if let Some(saved) = rig.window.show(ui.ctx(), &BrokerState::Connected) {
+                    if let Some(saved) =
+                        rig.window
+                            .show(ui.ctx(), &BrokerState::Connected, &ListenerLine::default())
+                    {
                         rig.saved = Some(saved);
                     }
                 },
@@ -527,7 +585,10 @@ mod tests {
                         ui.ctx().request_repaint();
                         return;
                     }
-                    if let Some(saved) = rig.window.show(ui.ctx(), &BrokerState::Connected) {
+                    if let Some(saved) =
+                        rig.window
+                            .show(ui.ctx(), &BrokerState::Connected, &ListenerLine::default())
+                    {
                         rig.saved = Some(saved);
                     }
                 },
@@ -612,7 +673,10 @@ mod tests {
                         ui.ctx().request_repaint();
                         return;
                     }
-                    if let Some(saved) = rig.window.show(ui.ctx(), &BrokerState::Connected) {
+                    if let Some(saved) =
+                        rig.window
+                            .show(ui.ctx(), &BrokerState::Connected, &ListenerLine::default())
+                    {
                         rig.saved = Some(saved);
                     }
                 },
@@ -759,5 +823,31 @@ mod tests {
             ("wss://broker.example/mqtt", "someone", "route-1")
         );
         assert!(window.password.is_empty() && window.error.is_none());
+    }
+
+    #[test]
+    fn the_listener_line_says_running_not_running_or_not_seen_yet() {
+        let running = Heartbeat {
+            running: true,
+            at: Some(1_000),
+        };
+        assert_eq!(
+            listener_text(Some(&running), Some(1_000), 1_060),
+            "Listener: running"
+        );
+        // Its heartbeat 5 minutes old: it stopped without its will reaching us.
+        assert_eq!(
+            listener_text(Some(&running), Some(1_000), 1_300),
+            "Listener: not running, last seen 5 min ago"
+        );
+        let will = Heartbeat {
+            running: false,
+            at: None,
+        };
+        assert_eq!(
+            listener_text(Some(&will), None, 1_000),
+            "Listener: not running"
+        );
+        assert_eq!(listener_text(None, None, 1_000), "Listener: not seen yet");
     }
 }

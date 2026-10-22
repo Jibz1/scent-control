@@ -42,7 +42,7 @@ use self::device_panel::DevicePanel;
 use self::format::{Model, name_from_scan};
 use self::log_view::LogView;
 use self::schedule_editor::ScheduleEditor;
-use self::settings::{SettingsWindow, Submitted};
+use self::settings::{ListenerLine, SettingsWindow, Submitted};
 use self::theme::{
     Appearance, CONTENT_MAX_WIDTH, GRID, MARGIN, Palette, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
     SIDEBAR_TOP_INSET, SIDEBAR_WIDTH, TOOLBAR_HEIGHT,
@@ -273,7 +273,8 @@ impl Screens {
         ];
         requests.commands.extend(sheets.into_iter().flatten());
 
-        requests.settings = self.settings.show(ui.ctx(), &state.broker);
+        let listener = ListenerLine::of(state.listener.as_ref(), state.listener_seen_at, now);
+        requests.settings = self.settings.show(ui.ctx(), &state.broker, &listener);
         requests.appearance = self.settings.take_appearance();
         requests
     }
