@@ -581,3 +581,45 @@ Also seen during the same watch:
   broker's connect log line.
 - The add flow's Bluetooth wording for "Credentials saved", and whether the `SECRET_COMMAND`
   restart write is acknowledged before the reboot.
+
+## iPhone spike (2026-10-22) [observed]
+
+The throwaway spike (`spikes/ios-core`, branch `spike/ios-core`) ran the Rust core on the
+owner's iPhone through UniFFI. It sends a diffuser no command: its only Bluetooth operation
+is reading `0xFEF4`. The owner ran its three checks with both diffusers nearby.
+
+- **The phone.** An iPhone 16 Pro Max on iOS 27.0.1, running a signed Release build
+  installed with `xcrun devicectl`. **[observed]**
+- **Bluetooth works through `btleplug` 0.13.4.** **[observed]**
+  - A 5-second scan found both diffusers, the Air 2 and the HVAC 2.
+  - Reading `0xFEF4` worked on both: each showed its firmware and WiFi state, with no
+    error.
+- **The broker works with both kinds of root certificates.** Over `wss://` to the test
+  broker, each sent a probe message and got it back. **[observed]**
+  - System roots: rumqttc's default config, which loads the operating system's roots
+    (`rustls-native-certs`), as the Mac app does.
+  - Bundled roots: Mozilla's list from `webpki-roots` 1.0.10.
+- **Not recorded.** The timings weren't noted, and the console wasn't captured: the app
+  was launched without `--console`. **[observed]**
+- **Building.** UniFFI 0.32.2 with a static-library XCFramework (an ios-arm64 slice and an
+  ios-arm64-simulator slice) works. **[observed]**
+  - Bindgen reads the metadata straight from the device's `.a`. No host library is needed.
+  - The generated Swift records and enums are `Sendable`, so Swift 6's strict concurrency
+    accepts them.
+  - `cargo build` needs `IPHONEOS_DEPLOYMENT_TARGET=18.0`. Without it, rustc targets
+    iOS 10.0 while aws-lc's C code is built for the SDK's version, and linking fails on
+    `___chkstk_darwin`.
+  - Linking needed no frameworks beyond CoreBluetooth and Security, which the project
+    declares.
+  - The Rust slice is arm64 only, so a simulator build needs a named destination
+    (`platform=iOS Simulator,name=…`). The generic simulator destination asks for x86_64.
+  - In the simulator, Bluetooth stays in state Unknown, and a scan ends with "Bluetooth
+    isn't ready (Unknown)…", without a crash.
+
+The decisions for part 2:
+
+- Bluetooth on iPhone: Rust (btleplug)
+- Root certificates on iPhone: system
+
+Both kinds of roots worked. System roots keep one TLS path for the Mac and the iPhone, and
+they follow Apple's updates instead of the app's releases.
