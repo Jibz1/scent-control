@@ -4,7 +4,8 @@ Status: draft for the owner's review, 2026-10-22.
 
 The listener is the first piece of `apps/server`. It runs all the time on Railway, hears
 everything the diffusers say on our broker, keeps each diffuser's latest state, pings each
-one to know whether it is online, and shares all of that through the broker. The Mac app
+one to know whether it is online, asks for its state when that isn't known, and shares all
+of that through the broker. The Mac app
 reads it from the start, and the iPhone app is built on top of it (its revised design comes
 next).
 
@@ -49,8 +50,8 @@ listening all the time, and that is the listener.
 
 ## 3. Non-goals
 
-- Sending any command other than `PING`. The apps still send their own commands, and the
-  listener hears the result.
+- Sending any command other than `PING` and `GET_STATUS`, which only ask. The apps still
+  send their own commands, and the listener hears the result.
 - The rest of the server: accounts, homes, invites, an HTTP API, a database, per-diffuser
   broker logins, the master copy of the schedules, time zone and daylight-saving re-sends,
   and the desired-state reconciler (parent design §6.6).
@@ -67,8 +68,8 @@ listening all the time, and that is the listener.
   an app *asked* for.
 - Publishing a retained message anywhere under `scentiment-mqtt-prod/`. The broker would
   replay it to the diffusers on every connect.
-- Sending a diffuser anything but `PING`. Never `UPDATE_FIRMWARE`, `U_FW`, `RESET`,
-  `SECRET_COMMAND` or any other command.
+- Sending a diffuser anything but `PING` and `GET_STATUS`. Never `UPDATE_FIRMWARE`,
+  `U_FW`, `RESET`, `SECRET_COMMAND` or any other command.
 - Pinging with a `userid` other than the route ID the diffusers already hold. Its effect on
   a diffuser is unknown (Phase 0 only saw `ADDED` and `ALREADY_ADDED`), and it could change
   where a diffuser reports.
@@ -86,13 +87,16 @@ listening all the time, and that is the listener.
   - it keeps each diffuser's latest readings, with the time each was heard;
   - it pings each diffuser every 30 seconds;
   - it shares through retained messages on our own prefix;
-  - it sends nothing but pings.
+  - it sends nothing but pings. This was later widened to `GET_STATUS` as well (below).
 - Also confirmed in that playback:
   - it uses the broker's one shared login for now;
   - the Mac app reads the same state;
   - accounts, schedules, time zones and the reconciler wait.
 - The stack, from `CLAUDE.md`: Bun 1.4, TypeScript, Effect v4 only, Railway, following the
   HCCNA monorepo's conventions.
+- **After a diffuser reconnects, its earlier readings are not known** until it reports
+  again. Meanwhile the listener asks with `GET_STATUS`, at most every 5 minutes, as the Home
+  Assistant adapter does. The Mac follows the same rule. (Decided after the builder check.)
 
 **My calls (the owner can overrule any of them):**
 
@@ -169,13 +173,24 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
   On a first-ever start the listener knows nothing. A diffuser joins as soon as it says
   anything, for example its reply to the Mac app's next ping.
 
-### 6.3 Pinging
+### 6.3 Pinging and asking
 
 - Every 30 s, while connected, it pings every known diffuser. Each ping is
   `{"action":"PING","payload":{"userid":"<SCENT_ROUTE_ID>"}}`, published at QoS 1, not
   retained, to `scentiment-mqtt-prod/device/<id>`. It sets `ping_at`.
-- One function builds the only thing the listener ever publishes under
-  `scentiment-mqtt-prod/`, and it can build only this `PING`. A test pins that.
+- **Asking for status**, the Home Assistant adapter's rule (`docs/home-assistant.md`,
+  "State and outages"):
+  - A diffuser that is reachable (heard within the last 75 s) gets
+    `{"action":"GET_STATUS","payload":{}}`, at QoS 1 and not retained, in either case:
+    - its power or intensity is not known (never reported, or reported before its last
+      reconnect; see §6.4);
+    - its newest power or intensity report is more than 5 minutes (`STALE_AFTER_S`) old.
+  - It gets at most one every 5 minutes.
+  - Firmware 2.30 answers only sometimes. An answer without a status array changes
+    nothing.
+- One function builds the only things the listener ever publishes under
+  `scentiment-mqtt-prod/`, and it can build only this `PING` and `GET_STATUS`. A test pins
+  that.
 
 ### 6.4 The state message
 
@@ -220,7 +235,14 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
   - ignore any `v` other than 1;
   - ignore any time more than a day ahead of the reader's own clock, as for shared
     schedules;
-  - ignore an empty retained message: that is how a record is taken off the broker.
+  - ignore an empty retained message: that is how a record is taken off the broker;
+  - **a field reported before the diffuser's last reconnect is not known** (owner,
+    2026-10-22):
+    - if its `at` is earlier than `connected.at`, readers show it as not known since
+      `connected.at`;
+    - a field reported in the same second still counts;
+    - the old value stays in the record, because newer-wins merging can't delete a field,
+      so this is a rule applied when reading.
 
 ### 6.5 The heartbeat
 
@@ -261,8 +283,8 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
       and listener topics;
     - from `message.rs`: `parse_mqtt` and `parse_notification`, including the repair of
       firmware 2.30's unquoted `"data":enable:0`;
-    - from `status.rs`: the three timing constants;
-    - from `command.rs`: the MQTT body of `PING`.
+    - from `status.rs`: the timing constants;
+    - from `command.rs`: the MQTT bodies of `PING` and `GET_STATUS`.
   - The core (pure): applying a parsed message to a diffuser's record, merging retained
     records, and building the state and heartbeat payloads.
   - The shell (Effect services): the MQTT connection, the clock, the 30 s ping and
@@ -278,11 +300,19 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
 
     The same goes for `parse_notification` on the `ble-notify` fixtures, because MQTT
     `notification` data uses the same text shapes.
-  - The core: newer-wins merging; commands to a diffuser being ignored; invalid IDs being
-    ignored; and a retained schedule making a diffuser known.
-  - The two gates: the retained-publish gate refuses every topic outside our prefix (the
-    Mac's list of foreign topics), and the ping builder makes only `PING` with the
-    configured route ID.
+  - The core:
+    - newer-wins merging;
+    - commands to a diffuser being ignored;
+    - invalid IDs being ignored;
+    - a retained schedule making a diffuser known;
+    - a field older than `connected.at` reading as not known;
+    - `GET_STATUS` going only to a reachable diffuser whose state is not known or is
+      5 minutes old, and at most every 5 minutes.
+  - The two gates:
+    - the retained-publish gate refuses every topic outside our prefix (the Mac's list of
+      foreign topics);
+    - the command builder makes only `PING`, with the configured route ID, and
+      `GET_STATUS`.
 - **Deploying:** a new Railway service, `listener`, in the `scent-control` project, beside
   `test-broker`.
   - The image builds from the repo root with `apps/server/Dockerfile`, so it uses the root
@@ -319,8 +349,16 @@ topics:
 
   The wording and placement follow the Mac's design language. Nothing else changes when the
   listener isn't running: the Mac carries on with its own pings and readings, as today.
+- **The reconnect rule (owner, 2026-10-22):**
+  - the Mac applies §6.4's rule to its own readings as well as the listener's;
+  - a power or intensity reported before the diffuser's last `device_connected` shows as
+    not known, in the list and on its screen, until a newer report;
+  - the Mac adopts the listener's `connected.at` when it is newer than its own
+    `connected_at`, and the add flow, which waits for a `connected_at` after its restart,
+    keeps working.
 - **Tests** go in `state.rs`, next to the shared-schedule ones:
   - a newer listener reading is adopted and an older one is not;
+  - a reading from before the last reconnect shows as not known;
   - an unknown diffuser is added;
   - another `v`, or a time more than a day ahead, is ignored;
   - the heartbeat counts as stale after 75 s.
@@ -369,8 +407,11 @@ The owner's checks, with both diffusers powered and the Mac nearby:
    2. Turn the Air 2 on at intensity 2 with `tools/broker.py publish`.
    3. Turn the Mac's Bluetooth off and open the app.
    4. It shows the Air 2 on, at intensity 2, with the time of the report.
-4. **It sees a diffuser go away.** Unplug the HVAC 2. Within about 75 s the Mac shows it
-   offline.
+4. **It sees a diffuser go away, and come back.**
+   1. Unplug the HVAC 2. Within about 75 s the Mac shows it offline.
+   2. Plug it back in. Once it is back, its power and intensity show as not known since it
+      reconnected, until it reports or answers a `GET_STATUS`.
+   3. `tools/broker.py watch` shows the listener asking within 5 minutes.
 5. **The two open questions.** Record both in `docs/findings.md`, dated, as **[observed]**:
    - after a `SET_LEVEL` over WiFi, does an `update_status` arrive?
    - when the Air 2's own schedule starts and stops it, does it report?
@@ -385,7 +426,8 @@ The owner's checks, with both diffusers powered and the Mac nearby:
 - **Two pingers.** If a diffuser misbehaves with pings every 15 s on average, the Mac stops
   pinging while the listener is running.
 - **A diffuser that never changes and never speaks.** It stays unknown until it says
-  anything. A ping reply is enough.
+  anything, and a ping reply is enough. Its state comes with its next report, or with an
+  answer to `GET_STATUS`, which firmware 2.30 gives only sometimes.
 - **A wrong `SCENT_ROUTE_ID`.** See §4. Check it against the Mac's value before the first
   deploy.
 
