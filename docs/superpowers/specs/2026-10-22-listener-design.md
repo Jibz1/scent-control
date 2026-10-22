@@ -54,7 +54,8 @@ listening all the time, and that is the listener.
 - The rest of the server: accounts, homes, invites, an HTTP API, a database, per-diffuser
   broker logins, the master copy of the schedules, time zone and daylight-saving re-sends,
   and the desired-state reconciler (parent design §6.6).
-- Any change to the broker (Mosquitto stays as it is), except the storage volume in §7.
+- Any change to the broker's setup. Step 0 in §7 only brings the running broker up to the
+  repo's current `infra/test-broker` and gives it its storage volume.
 - The iPhone app.
 - Sharing what an app reads over Bluetooth. The parent design wants Bluetooth changes
   reported to the server (§6.5); that comes later.
@@ -293,7 +294,8 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
     route ID isn't a secret, but it stays out of the repo.
   - It connects through the broker's public `wss://` address, the path the diffusers and
     apps already use. Railway's private network is a possible later change.
-  - Nothing about `test-broker` changes, apart from the volume in §7.
+  - Deploying the listener never touches `test-broker`. Step 0 in §7 is the only broker
+    change in this work.
 
 ### 6.8 The Mac app
 
@@ -325,9 +327,25 @@ topics:
 
 ## 7. Order of work
 
-0. **The broker's volume.** If `/mosquitto/data` still has no volume, attach one, with the
-   owner's go-ahead (already given). Without it, a broker restart loses every retained
-   message until the listener reconnects and republishes. Stored schedules are lost too.
+0. **Bring the broker up to date.**
+   - **Why:** the running broker was deployed from the first `infra/test-broker` commit,
+     which has `persistence false` and no packet limit. The commits that turned storage on
+     and capped packets at 256 KiB say nothing was deployed. Until this step, any broker
+     restart loses every retained message, and §6.1's packet limit isn't in force.
+   - **What:** attach a Railway volume at `/mosquitto/data`, then redeploy the broker from
+     the repo (`railway up infra/test-broker --path-as-root --service test-broker`). This
+     is the volume, redeploy and persistence check the owner approved earlier. Confirm with
+     the owner just before running it.
+   - **Do it with both diffusers nearby.** The redeploy drops them, and Phase 0 never
+     recorded whether a diffuser reconnects on its own after a broker restart.
+     - A diffuser that isn't back within 5 minutes gets a soft restart over Bluetooth
+       (`SECRET_COMMAND {"command":"restart"}`). Phase 0 saw that reconnect it.
+     - Record in `docs/findings.md` whether each came back by itself, and how long it took.
+   - **What's lost:** the retained messages on the broker now, such as the old probe and
+     any stored schedules. The Mac keeps its own copy of each schedule.
+   - **Then the persistence check:** a retained probe under `scent-control/v1/probe/…`
+     must still be there after a broker restart. That restarts the broker a second time,
+     so the same care applies.
 1. **Prove the client.** In `apps/server`, show MQTT.js under Bun connecting over `wss://`
    to the test broker with the shared login, subscribing, and receiving a probe on
    `scent-control/v1/probe/…`. That is the riskiest unknown. If it fails, stop and bring it
