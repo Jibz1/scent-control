@@ -47,7 +47,9 @@ export const runListener: Effect.Effect<never, never, Broker | ListenerConfig> =
           return [[next.publishes, newIds, next.memory.size] as const, next.memory];
         });
         if (added.length > 0) {
-          yield* Effect.logInfo(`${knows(count)} (new: ${added.map(shortId).join(", ")}).`);
+          yield* Effect.logInfo(
+            `${knows(count)} (new: ${added.map((id) => shortId(id)).join(", ")}).`,
+          );
         }
         yield* carryOut(publishes);
       });

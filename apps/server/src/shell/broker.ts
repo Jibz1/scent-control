@@ -51,8 +51,9 @@ const make = Effect.gen(function* () {
         Queue.offerUnsafe(events, { _tag: "Message", topic, body: new Uint8Array(payload) }),
       );
       created.on("close", () => Queue.offerUnsafe(events, { _tag: "Closed" }));
-      // A refused or failed connect is reported here, then closes; the close is what counts.
-      created.on("error", () => undefined);
+      created.on("error", () => {
+        // A refused or failed connect is reported here, then closes; the close is what counts.
+      });
       return created;
     }),
     // A clean DISCONNECT, so the broker sends no will: a listener replacing this one during a
