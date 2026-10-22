@@ -37,13 +37,15 @@ bundle use Bluetooth.
 ## 3. Finding and adding the diffusers
 
 5. Click Scan for Diffusers. macOS asks "Scent Control would like to use Bluetooth": allow it.
-   Both diffusers appear under Found Nearby with a signal reading. If the prompt comes back after a
-   later rebuild, that's expected for now.
+   Diffusers the app doesn't know yet appear under Found Nearby with a signal reading. If the
+   prompt comes back after a later rebuild, that's expected for now.
    Diffusers the app already knows (from the broker, or added before) aren't listed under Found
    Nearby: the scan recognizes them by the device ID in their Bluetooth name, and Send Over
-   Bluetooth reaches them without adding them again. To add one of those again in steps 6–7,
-   select it in the sidebar and click Set Up Again… (or Add to Broker… on its notice).
-6. Select the HVAC 2 under Found Nearby, click Add Diffuser…, give it a name, and click Add.
+   Bluetooth reaches them without adding them again. Check each known diffuser's detail pane: it
+   now offers Set Up Again… (or Add to Broker… on its notice), which shows the scan linked it.
+6. Add the HVAC 2. If it's under Found Nearby, select it and click Add Diffuser…. If the app
+   already knows it, select it in the sidebar and click Set Up Again… (or Add to Broker… on its
+   notice). Give it a name, and click Add.
    - The steps tick off in order: reading, moving it to your broker, restarting (after a 25 s
      wait), waiting for it to connect, done.
    - Expect it to finish within about 2 minutes. Note how long it took.
