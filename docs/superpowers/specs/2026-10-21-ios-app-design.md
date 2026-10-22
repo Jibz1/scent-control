@@ -1,6 +1,6 @@
 # Scent Control for iPhone: design
 
-Date: 2026-10-21. Status: draft for approval.
+Date: 2026-10-21. Status: approved by the owner, 2026-10-21.
 
 Decisions are marked **(owner)** when the project owner made them and **(designer's call)**
 when the designer made them. Anything marked "builder's call" is left to whoever plans and

@@ -8,8 +8,11 @@ at any point.
 
 - Design (approved): `docs/superpowers/specs/2026-10-20-scent-control-design.md`
 - Device facts, with dates and sources: `docs/findings.md`
-- Current plan: `docs/superpowers/plans/2026-10-20-phase-1-desktop-app.md` (desktop app built;
-  the owner's acceptance session, `docs/phase-1-owner-session.md`, is in progress)
+- iPhone design (approved): `docs/superpowers/specs/2026-10-21-ios-app-design.md`
+- Current plan: `docs/superpowers/plans/2026-10-21-ios-app-part-1.md` (the phone spike, and
+  the Mac recognizing diffusers by name). The desktop app's plan,
+  `docs/superpowers/plans/2026-10-20-phase-1-desktop-app.md`, is built; the owner's
+  acceptance session, `docs/phase-1-owner-session.md`, is in progress.
 
 ## Devices
 
@@ -51,9 +54,12 @@ Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconci
 ## Stack
 
 - **Product code:** Bun 1.4 workspaces + Turborepo, **Effect v4 only**, Hono, Drizzle +
-  Postgres, Expo SDK 57 (custom dev build for Bluetooth), hosted on Railway. Follow
-  the conventions of the HCCNA monorepo (`~/Documents/Dev/Projects/HCCNA`, see its
-  `AGENTS.md`). Don't copy its domain code (GraphQL/Relay, Strapi, CCB, Firebase).
+  Postgres, hosted on Railway. Follow the conventions of the HCCNA monorepo
+  (`~/Documents/Dev/Projects/HCCNA`, see its `AGENTS.md`). Don't copy its domain code
+  (GraphQL/Relay, Strapi, CCB, Firebase).
+- **iPhone app:** native SwiftUI over the shared Rust engine through UniFFI (see the
+  iPhone design). The server's language is still open: Rust, sharing the engine, or the
+  TypeScript stack above.
 - **Phase 0 tools:** Python ≥ 3.11 with `bleak` (Bluetooth) and `paho-mqtt`, under
   `tools/`, tested with `pytest`.
 - **Rust crates:** `packages/scent-core`, `apps/desktop`, and `apps/home-assistant` are members of the Cargo
@@ -70,7 +76,7 @@ turbo.json           Turborepo tasks: build, test, lint, fmt:check
 Cargo.toml           Cargo workspace root (the Rust crates)
 apps/desktop         Rust desktop app for macOS (Phase 1, on main)
 apps/home-assistant  headless Rust adapter for Home Assistant MQTT Discovery
-apps/mobile          Expo app (Phase 1+)
+apps/ios             SwiftUI iPhone app (next; see the iPhone design)
 apps/server          API, MQTT client, reconciler (Phase 1+)
 packages/scent-core  pure Rust crate: codec, parsing, schedules; fixture-tested
 infra/               broker and hosting config (test broker in Phase 0)
@@ -112,10 +118,12 @@ docs/                findings, design, plans
    If `SAVE_MQTT` or on-device schedules fail, or only plain `mqtt://` works, stop and
    ask the owner.
 1. **One diffuser end to end for the owner:** protocol package, server and broker on
-   Railway, app setup and manual control. Android first.
+   Railway, app setup and manual control.
    The owner chose a Rust desktop app for macOS first (spec addendum). It is built and on
    `main`: Bluetooth-first control with WiFi fallback, adding a diffuser, schedules
    kept on the Mac, rooms, and Apple's design language.
+   Next: the iPhone app (`docs/superpowers/specs/2026-10-21-ios-app-design.md`), then the
+   server.
 2. **Schedules, status, resilience:** the reconciler, Bluetooth-first control,
    and the HVAC 2.
 3. **Other people:** sign-up with an emailed code, homes and invites, TestFlight and

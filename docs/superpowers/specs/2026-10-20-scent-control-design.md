@@ -705,3 +705,6 @@ firmware 2.30), firmware updates, Windows/Linux and the mobile app.
   email).
   - **Open for the owner before Phase 3:** React Native/Expo, as planned, or SwiftUI on
     iPhone over the same Rust core through UniFFI, which is what `bible-rs` does.
+- **2026-10-21 (owner):** the iPhone app comes next, before the server, in native Swift
+  over the Mac's engine. See [2026-10-21-ios-app-design.md](2026-10-21-ios-app-design.md).
+  It replaces the open React Native or SwiftUI question above.
