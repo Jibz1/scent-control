@@ -1,5 +1,6 @@
 // Reading what the diffusers send: a line-for-line port of scent-core's message.rs, which
 // is the specification. The two must read every message the same way.
+import { isInteger, isObject, parseJson } from "./json.ts";
 import { DEVICE_PREFIX } from "./topics.ts";
 
 // Status array positions. Indices 0-3 are a header; 7, 10 and 13 are read by nobody (7 is
@@ -74,22 +75,6 @@ export interface MqttMessage {
   /** The body as text, exactly as received (bad bytes replaced). */
   readonly raw: string;
 }
-
-type Json = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
-
-const parseJson = (text: string): Json => {
-  try {
-    return { ok: true, value: JSON.parse(text) };
-  } catch {
-    return { ok: false };
-  }
-};
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const isInteger = (value: unknown): value is number =>
-  typeof value === "number" && Number.isInteger(value);
 
 const asciiLower = (text: string): string => text.replaceAll(/[A-Z]/gu, (c) => c.toLowerCase());
 

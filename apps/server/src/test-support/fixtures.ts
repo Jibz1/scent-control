@@ -36,5 +36,11 @@ export const fixture = (name: string): Fixture => {
   return found;
 };
 
+const SCENT_CONTROL = new URL("../../../../fixtures/scent-control/", import.meta.url);
+
+/** A message Scent Control itself publishes, from `fixtures/scent-control/`, as text. */
+export const contractFixture = (name: string): string =>
+  readFileSync(new URL(name, SCENT_CONTROL), "utf8");
+
 export const onChannel = (channel: string): Fixture[] =>
   fixtures().filter((f) => f.channel === channel);
