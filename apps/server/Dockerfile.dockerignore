@@ -1,0 +1,12 @@
+# For apps/server/Dockerfile, whose context is the repo root. Keeps local builds,
+# installs and settings out of the image.
+**/node_modules
+target
+.git
+.env
+.env.*
+**/.env.local
+tools/.venv
+captures
+.superpowers
+.claude
