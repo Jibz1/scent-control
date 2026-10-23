@@ -1,0 +1,24 @@
+{
+  "name": "@scent-control/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p .",
+    "test": "bun test src/",
+    "lint": "oxlint",
+    "fmt:check": "oxfmt --check",
+    "start": "bun run src/main.ts",
+    "probe": "bun run scripts/probe.ts"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.2",
+    "effect": "catalog:",
+    "mqtt": "5.16.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "typescript": "7.0.2"
+  }
+}

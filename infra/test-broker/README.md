@@ -42,6 +42,10 @@ server.
   service (port 443, Railway certificate), routed to container port 8080. Put it in
   the repo-root `.env` as `SCENT_BROKER_URL` (see `.env.example`); it is not in the repo.
 - Deployed and checked with a wss round trip on 2026-10-20.
+- Deployed with persistence on, and the volume `test-broker-volume` at
+  `/mosquitto/data`, on 2026-10-22. A retained message survived a `railway redeploy`.
+  Both diffusers reconnected by themselves within about 35 s of each restart (see
+  `docs/findings.md`, 2026-10-22).
 
 ## Deploy
 

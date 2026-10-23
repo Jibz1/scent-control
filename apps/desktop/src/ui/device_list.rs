@@ -128,11 +128,11 @@ pub fn sections(state: &AppState) -> Vec<Section<'_>> {
 /// and not yet reported on, else what it reported.
 fn power_and_level(device: &DeviceView) -> (Option<bool>, Option<u8>) {
     let power = device.pending_power().or_else(|| {
-        let reading = device.readings.get(&Field::Power)?;
+        let reading = device.current(Field::Power)?;
         Some(reading.value != 0)
     });
     let level = device.pending_intensity().or_else(|| {
-        let reading = device.readings.get(&Field::Intensity)?;
+        let reading = device.current(Field::Intensity)?;
         u8::try_from(reading.value).ok()
     });
     (power, level.filter(|level| (1..=3).contains(level)))
@@ -676,6 +676,26 @@ mod tests {
             .map(|hit| hit.name.as_str())
             .collect();
         assert_eq!(names, ["Air 2 new"]);
+    }
+
+    #[test]
+    fn a_known_diffuser_found_by_name_is_not_found_nearby() {
+        let mut state = AppState::default();
+        state
+            .devices
+            .insert("0A1B2C3D4E5F".to_owned(), DeviceView::new("0A1B2C3D4E5F"));
+        state.apply_at(
+            Event::Scanned(vec![
+                hit("ble-known", "Scentiment-D B n 0A1B2C3D4E5F"),
+                hit("ble-new", "Scentiment-H B n 0A1B2C3D4E60"),
+            ]),
+            5_000,
+        );
+        let names: Vec<&str> = unknown_hits(&state)
+            .iter()
+            .map(|hit| hit.name.as_str())
+            .collect();
+        assert_eq!(names, ["Scentiment-H B n 0A1B2C3D4E60"]);
     }
 
     /// Each section's heading and its diffusers' IDs, in order.

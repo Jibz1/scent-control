@@ -3,12 +3,26 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
-  "workspaces": ["apps/*", "packages/*", "tools"],
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*",
+      "tools"
+    ],
+    "catalog": {
+      "effect": "4.0.2"
+    }
+  },
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "fmt:check": "turbo run fmt:check"
   },
-  "devDependencies": { "turbo": "2.11.7" }
+  "devDependencies": {
+    "turbo": "2.11.7"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.2"
+  }
 }

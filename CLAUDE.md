@@ -40,6 +40,10 @@ Mobile app ──HTTPS──▶ Server (API, accounts, homes, schedules, reconci
 - **Server:** API, accounts and homes, device registry, schedules, per-device broker
   logins, and the desired-state reconciler. The person's most recent change wins,
   wherever it was made. A reboot or reconnect is never a change.
+- **Listener (built):** the server's first piece, Railway service `listener`. It hears
+  every diffuser, pings each every 30 s, and keeps their latest readings as retained
+  `scent-control/v1/state/<id>` records that every app reads (spec
+  `docs/superpowers/specs/2026-10-22-listener-design.md`).
 - **MQTT broker:** on Railway. Diffusers connect over `wss://` with a public
   certificate. Each diffuser has one login and may only use its own topics.
 - **Protocol package:** pure codec shared by app and server.
@@ -79,7 +83,7 @@ Cargo.toml           Cargo workspace root (the Rust crates)
 apps/desktop         Rust desktop app for macOS (Phase 1, on main)
 apps/home-assistant  headless Rust adapter for Home Assistant MQTT Discovery
 apps/ios             SwiftUI iPhone app: Packages/ (protocol, MQTT, Bluetooth, engine, UI), App/
-apps/server          API, MQTT client, reconciler (Phase 1+)
+apps/server          the listener (first piece of the server; see its spec)
 packages/scent-core  pure Rust crate: codec, parsing, schedules; fixture-tested
 infra/               broker and hosting config (test broker in Phase 0)
 tools/               Phase 0 CLI tools: scan, GATT dump, session, broker

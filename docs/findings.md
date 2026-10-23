@@ -577,8 +577,8 @@ Also seen during the same watch:
 
 - A large `UPDATE_PROFILE`: 99 entries is about 13.5 KB. The app and broker accept it, but
   it hasn't been sent to real firmware.
-- Whether the diffusers connect with `clean_session` set. Read the `c` flag from the
-  broker's connect log line.
+- ~~Whether the diffusers connect with `clean_session` set.~~ They do: see "The broker
+  restarted with persistence on" (2026-10-22).
 - The add flow's Bluetooth wording for "Credentials saved", and whether the `SECRET_COMMAND`
   restart write is acknowledged before the reboot.
 
@@ -633,6 +633,118 @@ the phone: the iPhone app is written in Swift. So:
 
 - Bluetooth on iPhone: Swift (Core Bluetooth). `btleplug` worked; the choice is the owner's.
 - Root certificates on iPhone: Swift's own TLS, settled in the revised iPhone design.
+
+## 2026-10-22: The broker restarted with persistence on [observed]
+
+The live broker had been running with persistence off and no volume, so every restart
+threw its retained messages away. With both diffusers powered and nearby and the owner
+present, a Railway volume was attached to `test-broker` at `/mosquitto/data`, and the
+broker was redeployed from `infra/test-broker` (persistence on). Mosquitto 2.0.22 started
+with its config loaded and no error. Then it was restarted once more with
+`railway redeploy`.
+
+- **Diffusers after a broker restart: both came back by themselves, both times.** Neither
+  needed a soft restart over Bluetooth.
+
+  | Restart | Diffusers reconnected, after Mosquitto started |
+  |---|---|
+  | Redeploy from the repo | about 23 s and 28 s |
+  | `railway redeploy` | both about 34 s |
+
+  Both then answered the 30 s pings for as long as they were watched: 5 minutes after the
+  first restart, 1 minute after the second.
+- **How they connect** (the broker's connect log line): MQTT 3.1.1 (`p2`), **clean
+  session** (`c1`), keepalive 1200 s, and no will. So a diffuser keeps no session on the
+  broker: anything sent while it is offline is lost, and it subscribes again on every
+  connect, at QoS 0, to its device topic and `scentiment-mqtt-prod/announcements`.
+- **Retained messages now survive a restart.** A retained probe under
+  `scent-control/v1/probe/server/` was stored, and the broker was left for 70 s, past
+  Mosquitto's 60 s autosave. The probe was found after the `railway redeploy`, then
+  cleared. The retained messages from before the volume were lost at the first restart,
+  as expected: two listener state records from a local test run, and an older probe. No
+  schedules were stored on the broker at the time.
+- **Not seen:** whether a diffuser sends `device_connected` after a broker restart. The
+  watches connected after the diffusers were already back.
+
+## 2026-10-22: The listener, and the owner's checks [observed]
+
+The listener ran on Railway as service `listener`. The Mac app was built from the branch
+with `main` merged in (Settings → About: 0.1.0, 6843a8e). These are the checks from the
+listener's spec (§8). The HVAC 2 was in the attic, so check 4 used the Air 2.
+
+| Check | Result |
+|---|---|
+| 1. It's running | **Pass.** Railway showed the deployment running, and the Mac's Settings showed "Listener: running" with a green dot. |
+| 2. It knows the diffusers | **Pass.** A state record for each diffuser arrived within 15 s of opening the app. |
+| 3. It catches changes nobody saw | **Pass.** See below. |
+| 4. A diffuser goes away and comes back | **Partly.** Done with a soft restart of the Air 2; see below. |
+| 6. Stopping it is visible | **Pass.** See below. |
+| 7. Redeploying it doesn't touch the diffusers | **Pass.** See below. |
+
+- **Check 3.**
+  - With the Mac app closed, the Air 2 was sent `TURN_ON` `{"on":1}` and then
+    `SET_LEVEL` `{"intensity":2}` over WiFi.
+  - It reported on at intensity 2 (19:15:29), then **off with intensity 0 at 19:16:51**,
+    by itself.
+  - The app was then reopened with the Mac's Bluetooth off. It showed the Air 2 off,
+    "reported 5 min ago over WiFi". That is the latest report, which the app had never
+    seen. The owner confirmed the Air 2 was off.
+- **Check 4, on the Air 2.**
+  - Unplugging the Air 2 wouldn't take it off WiFi, because it has a battery. So it was
+    sent `RESET` `{"mode":"soft"}` over WiFi instead.
+  - It missed two pings, and sent `device_connected` 26 s after the restart. The
+    listener recorded the reconnect, so the off reading from before it stopped being
+    current.
+  - The Air 2 didn't report its state again until the owner switched it on (19:35).
+  - The listener sent `GET_STATUS` at 19:32:13, while the Air 2 was restarting, so that
+    one was lost. It sent another at 19:40:18, 5 minutes after the Air 2's last report.
+    It was answered only with the usual `ALREADY_ADDED` acknowledgements, with no state.
+  - **Not covered:**
+    - "Offline within 75 s" isn't covered: the Air 2 was gone for only about 26 s.
+    - Nobody watched the app during the "Not known since it reconnected" window.
+      Unit tests cover both instead.
+- **Check 6.**
+  - The deployment was removed at 19:45:00; the last heartbeat was at 19:44:51.
+  - The Mac's Settings said "Listener: not running, last seen 2 min ago", with a grey
+    dot.
+  - The state records stayed on the broker, and the app worked as before.
+- **Check 7.**
+  - The listener was redeployed from 19:47 to 19:49. `railway up` reported "Failed to
+    stream build logs", but the deployment succeeded.
+  - The broker's log for 19:43:40–19:49:30 shows no diffuser disconnecting or
+    reconnecting.
+  - The new listener knew both diffusers within 0.1 s of connecting, from the retained
+    state records. Heartbeats resumed, and the Mac's Settings showed "Listener: running"
+    again.
+
+### The two open questions
+
+- **After a `SET_LEVEL` over WiFi, does an `update_status` arrive? Yes, when the level
+  changes.**
+  - About 4 s after `SET_LEVEL` `{"intensity":2}`, the Air 2 (firmware 2.30) sent a
+    `notification` with `level:2`, then an `update_status`. (Phase 0 saw no reply.)
+  - The `TURN_ON` before it got no reply, probably because the Air 2 was already on.
+- **Do the diffusers report when they switch themselves on or off? Yes.**
+  - The Air 2 switched itself off at 19:16:51, about 85 s after it was switched on over
+    WiFi. The HVAC 2 switched itself off at 19:50:02. The owner switched neither.
+  - Both reported it over WiFi straight away, and the Mac showed it.
+  - The cause is inferred to be their stored schedules, from Scentiment's app. Scent
+    Control has sent neither diffuser a schedule, and no command reads a schedule back,
+    so this isn't confirmed.
+  - It matters: a manual "on" over WiFi can be undone by the stored schedule within
+    minutes. Scentiment's app sets power and level over MQTT with `UPDATE_PROFILE`
+    (which changes the schedule's master entry), which may be why.
+
+### Also seen
+
+- **The HVAC 2 reports often while running.** It sends an `update_status` every 15 s,
+  then every 90 s. Index 11 flips between 1 and 0 each time: the spray and pause phases.
+  Its power stays on. The updates stopped once it switched itself off.
+- **Bluetooth.** During the session, both diffusers gained a Bluetooth link in the app,
+  through recognition by name (PR #15). After the Mac's Bluetooth was turned back on, the
+  app's attempts at 19:41 to set the Air 2's intensity and to read its status over
+  Bluetooth both timed out "while reading the services". This is separate from the
+  listener.
 
 ## iPhone app, first run on the phone (2026-10-23) [observed]
 

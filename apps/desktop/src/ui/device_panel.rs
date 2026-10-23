@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Id, Key, RichText, Sense, vec2};
-use scent_core::{Command, Level, Online, Via, expected_state, is_stale};
+use scent_core::{Command, Level, Online, Via, expected_state, is_current, is_stale};
 
 use super::OpenSheet;
 use super::add_sheet::Target;
@@ -89,8 +89,8 @@ fn row_of(name: &'static str, said: Said) -> ReadingRow {
 /// The readings in Details: the power source, from two readings, the newer of which tells
 /// its age; and the WiFi signal, in words.
 pub fn detail_rows(device: &DeviceView, now: i64) -> [ReadingRow; 2] {
-    let charging = device.readings.get(&Field::Charging);
-    let battery = device.readings.get(&Field::Battery);
+    let charging = device.current(Field::Charging);
+    let battery = device.current(Field::Battery);
     let newest = [charging, battery]
         .into_iter()
         .flatten()
@@ -98,7 +98,7 @@ pub fn detail_rows(device: &DeviceView, now: i64) -> [ReadingRow; 2] {
     let source = reading_text(newest, now, |_| {
         power_source(charging.map(|r| r.value), battery.map(|r| r.value))
     });
-    let wifi = reading_text(device.readings.get(&Field::Rssi), now, |dbm| {
+    let wifi = reading_text(device.current(Field::Rssi), now, |dbm| {
         signal_quality(dbm).words().to_owned()
     });
     [row_of("Power source", source), row_of("WiFi signal", wifi)]
@@ -137,8 +137,7 @@ fn add_target(device: &DeviceView) -> Option<Target> {
 fn shown_intensity(device: &DeviceView) -> Option<i64> {
     device.pending_intensity().map(i64::from).or_else(|| {
         device
-            .readings
-            .get(&Field::Intensity)
+            .current(Field::Intensity)
             .map(|reading| reading.value)
     })
 }
@@ -148,8 +147,7 @@ fn shown_intensity(device: &DeviceView) -> Option<i64> {
 fn shown_power(device: &DeviceView) -> Option<bool> {
     device.pending_power().or_else(|| {
         device
-            .readings
-            .get(&Field::Power)
+            .current(Field::Power)
             .map(|reading| reading.value != 0)
     })
 }
@@ -166,14 +164,22 @@ fn hero_state(device: &DeviceView, asked: Option<Asked>, sending: bool, now: i64
             .and_then(|level| u8::try_from(level).ok())
             .filter(|level| (1..=3).contains(level))
     });
-    let power_reading = device.readings.get(&Field::Power);
+    let power_reading = device.current(Field::Power);
     let pending = device.pending_power().is_some() || device.pending_intensity().is_some();
-    let newest = [power_reading, device.readings.get(&Field::Intensity)]
-        .into_iter()
-        .flatten()
-        .max_by_key(|reading| reading.at);
+    // The newest report, current or not: one from before a reconnect says it is not known.
+    let newest = [
+        device.readings.get(&Field::Power),
+        device.readings.get(&Field::Intensity),
+    ]
+    .into_iter()
+    .flatten()
+    .max_by_key(|reading| reading.at);
     let note = match newest {
         _ if pending => WAITING.to_owned(),
+        Some(reading) if !is_current(reading.at, device.connected_at) => format!(
+            "Not known since it reconnected {}",
+            ago(device.connected_at.unwrap_or(reading.at), now)
+        ),
         Some(reading) => format!(
             "Reported {} over {}",
             ago(reading.at, now),
@@ -790,7 +796,7 @@ fn details_box(
         });
         row(ui, "WiFi signal", |ui| {
             let shown = value_with_note(ui, value(&wifi), wifi.note.as_deref());
-            if let Some(reading) = device.readings.get(&Field::Rssi) {
+            if let Some(reading) = device.current(Field::Rssi) {
                 signal_beside(ui, &shown, &wifi, reading.value);
             }
         });
@@ -1315,6 +1321,19 @@ mod tests {
         assert!(hero.stale);
         assert_eq!((hero.power, hero.level), (Some(false), None));
         assert_eq!(hero.note, "Reported 15 min ago over WiFi");
+    }
+
+    #[test]
+    fn a_state_reported_before_a_reconnect_is_not_shown() {
+        let mut d = device();
+        d.label = "Bedroom".to_owned();
+        read(&mut d, Field::Power, 1, 300, Via::Wifi);
+        read(&mut d, Field::Intensity, 2, 300, Via::Wifi);
+        d.connected_at = Some(NOW - 60);
+        let hero = hero_state(&d, None, false, NOW);
+        assert_eq!((hero.power, hero.level), (None, None));
+        assert_eq!(hero.note, "Not known since it reconnected 1 min ago");
+        assert!(!hero.stale);
     }
 
     #[test]

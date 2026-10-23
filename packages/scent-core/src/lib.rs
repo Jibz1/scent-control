@@ -5,6 +5,7 @@
 
 mod command;
 mod level;
+mod listener;
 mod message;
 mod names;
 mod schedule;
@@ -13,6 +14,10 @@ mod topics;
 
 pub use command::{BLE_CHUNK, Command, Secret, Via, chunks};
 pub use level::Level;
+pub use listener::{
+    ConnectedAt, DAY_AHEAD_S, FIELD_KEYS, Heartbeat, SharedState, Stamped, Unusable,
+    decode_heartbeat, decode_state, is_current, listener_running,
+};
 pub use message::{
     Ack, Connected, DeviceInfo, Direction, MqttMessage, NoteKind, Notification, Status, parse_info,
     parse_mqtt, parse_notification,
@@ -26,6 +31,7 @@ pub use status::{
     ANSWER_WITHIN_S, ONLINE_FOR_S, Online, PING_EVERY_S, STALE_AFTER_S, is_stale, online_status,
 };
 pub use topics::{
-    APP_PREFIX, DEVICE_PREFIX, SCHEDULE_PREFIX, SUBSCRIBE_ALL, SUBSCRIBE_APP, device_topic,
-    schedule_topic, schedule_topic_device, valid_device_id,
+    APP_PREFIX, DEVICE_PREFIX, LISTENER_TOPIC, SCHEDULE_PREFIX, STATE_PREFIX, SUBSCRIBE_ALL,
+    SUBSCRIBE_APP, device_topic, schedule_topic, schedule_topic_device, state_topic,
+    state_topic_device, valid_device_id,
 };

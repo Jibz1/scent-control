@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "by": "0a1b2c3d",
+  "updated_at": 1792510230,
+  "heard_at": 1792510229,
+  "ping_at": 1792510200,
+  "fields": {
+    "power":     { "value": 1,   "at": 1792510100 },
+    "intensity": { "value": 2,   "at": 1792510100 },
+    "charging":  { "value": 2,   "at": 1792510100 },
+    "battery":   { "value": 200, "at": 1792510100 },
+    "rssi":      { "value": -66, "at": 1792510100 }
+  },
+  "connected": { "fw": "2.30", "model": "D", "variant": "B", "manufacturer": "01", "at": 1792509000 }
+}
