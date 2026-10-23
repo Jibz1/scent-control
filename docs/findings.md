@@ -633,3 +633,19 @@ the phone: the iPhone app is written in Swift. So:
 
 - Bluetooth on iPhone: Swift (Core Bluetooth). `btleplug` worked; the choice is the owner's.
 - Root certificates on iPhone: Swift's own TLS, settled in the revised iPhone design.
+
+## iPhone app, first run on the phone (2026-10-23) [observed]
+
+The Swift app (`apps/ios`, branch `ios-app`) on the owner's iPhone 16 Pro Max, iOS 27.0.1, as
+a Debug build installed over USB-C with `devicectl`. It started from what the Mac app knew
+(`apps/ios/scripts/seed-from-mac.py`: the broker's address, username and route ID, and both
+diffusers' IDs, names, rooms, info and last schedule; no Bluetooth IDs and no password).
+
+- **Broker: works.** After the broker password was saved in Settings (to the phone's
+  Keychain), the app's own MQTT client connected over `wss://` with the system's TLS, and
+  both diffusers showed as answering, which means they answered its pings. **[observed]**
+- **Control over WiFi: works.** On/off and intensity worked on both diffusers through the
+  broker. **[observed]**
+- **Not tried yet:** Bluetooth from the phone (scanning, linking by name, Bluetooth-first
+  control), schedules and copying them, adding a diffuser, and control from outside the home
+  network. The phone version of `docs/phase-1-owner-session.md` covers them.
