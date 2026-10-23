@@ -1,0 +1,13 @@
+{
+  "name": "@scent-control/ios",
+  "private": true,
+  "scripts": {
+    "ios:generate": "swift run --package-path Tools xcodegen generate --spec project.yml --quiet",
+    "ios:seed": "python3 scripts/seed-from-mac.py",
+    "ios:build": "bun run ios:seed && bun run ios:generate && xcodebuild build -project ScentControl.xcodeproj -scheme ScentControl -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData -allowProvisioningUpdates -quiet",
+    "ios:build:sim": "bun run ios:generate && xcodebuild build -project ScentControl.xcodeproj -scheme ScentControl -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath build/DerivedData -quiet",
+    "ios:test": "for p in ScentProtocol ScentMQTT ScentBluetooth ScentKit; do swift test --package-path Packages/$p || exit 1; done",
+    "ios:fmt": "swift format --in-place --recursive App Packages",
+    "ios:screens": "sh scripts/screens.sh"
+  }
+}

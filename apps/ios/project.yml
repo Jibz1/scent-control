@@ -1,0 +1,63 @@
+# Source of truth for ScentControl.xcodeproj. Run `bun run ios:generate` after editing;
+# never edit the generated project. The app target is thin: the code lives in the local
+# ScentKit (logic) and ScentUI (screens) packages.
+name: ScentControl
+options:
+  bundleIdPrefix: dev.scentcontrol
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  ScentUI:
+    path: Packages/ScentUI
+  ScentKit:
+    path: Packages/ScentKit
+targets:
+  ScentControl:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+    dependencies:
+      - package: ScentUI
+      - package: ScentKit
+        product: ScentEngine
+      - sdk: CoreBluetooth.framework
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Scent Control
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSBluetoothAlwaysUsageDescription: Scent Control uses Bluetooth to find, set up and control the diffusers near you.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.scentcontrol.app
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # The seed script below reads build/Seed, which the sandbox would refuse.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postCompileScripts:
+      - name: Copy the seed from the Mac app
+        # A local build starts from what the Mac app knows (scripts/seed-from-mac.py), when
+        # the phone has no state of its own. The seed is never committed.
+        script: |
+          seed="$SRCROOT/build/Seed/seed.json"
+          target="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/seed.json"
+          if [ -f "$seed" ]; then cp "$seed" "$target"; else rm -f "$target"; fi
+        basedOnDependencyAnalysis: false

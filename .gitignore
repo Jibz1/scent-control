@@ -43,3 +43,11 @@ btsnoop_hci.log
 
 # Rust
 /target
+
+# iPhone app (apps/ios): generated project, local signing, build outputs
+apps/ios/*.xcodeproj/
+apps/ios/App/Info.plist
+apps/ios/Config/Local.xcconfig
+apps/ios/Tools/.build/
+apps/ios/Packages/*/.build/
+apps/ios/Packages/*/.swiftpm/
