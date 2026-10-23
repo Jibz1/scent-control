@@ -89,7 +89,8 @@ const latest = (a: number | undefined, b: number | undefined): number | undefine
 };
 
 // A tie (the same second) must go the same way whichever listener merges, or two of them
-// would keep republishing their own copy to each other.
+// would keep republishing their own copy to each other. It goes to the lower value, so a
+// power tie reads as off. (Only another listener's records are merged: our own are ignored.)
 const laterReading = (
   a: FieldReading | undefined,
   b: FieldReading | undefined,
@@ -100,7 +101,7 @@ const laterReading = (
   if (a.at !== b.at) {
     return a.at > b.at ? a : b;
   }
-  return a.value >= b.value ? a : b;
+  return a.value <= b.value ? a : b;
 };
 
 const connectedKey = (c: ConnectedInfo): string =>

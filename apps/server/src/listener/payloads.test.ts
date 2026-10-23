@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { contractFixture } from "../test-support/fixtures.ts";
-import { WILL_BODY, parseState, renderHeartbeat, renderState } from "./payloads.ts";
+import { WILL_BODY, parseState, publishedBy, renderHeartbeat, renderState } from "./payloads.ts";
 import type { DeviceRecord } from "./record.ts";
 
 const NOW = 1_792_510_230;
@@ -23,14 +23,24 @@ const example: DeviceRecord = {
 };
 
 test("the spec's example renders exactly", () => {
-  expect(JSON.parse(renderState(example, NOW))).toEqual(
+  expect(JSON.parse(renderState(example, NOW, "0a1b2c3d"))).toEqual(
     JSON.parse(contractFixture("state-v1.json")),
   );
 });
 
+test("a record names the listener that published it, and reading it back ignores the name", () => {
+  const body = renderState({ fields: {} }, NOW, "0a1b2c3d");
+  expect(JSON.parse(body).by).toBe("0a1b2c3d");
+  expect(publishedBy(bytes(body))).toBe("0a1b2c3d");
+  expect(parseState(bytes(body), NOW)).toEqual({ fields: {} });
+  expect(publishedBy(bytes(`{"v":1,"updated_at":${NOW},"fields":{}}`))).toBeUndefined();
+  expect(publishedBy(bytes("not json"))).toBeUndefined();
+});
+
 test("what is never known is left out, and when it asked is never published", () => {
-  expect(JSON.parse(renderState({ askedAt: NOW, fields: {} }, NOW))).toEqual({
+  expect(JSON.parse(renderState({ askedAt: NOW, fields: {} }, NOW, "0a1b2c3d"))).toEqual({
     v: 1,
+    by: "0a1b2c3d",
     updated_at: NOW,
     fields: {},
   });

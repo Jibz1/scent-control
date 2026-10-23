@@ -8,10 +8,12 @@ import { WILL_BODY } from "../listener/payloads.ts";
 import { randomHex8 } from "../probe.ts";
 import { LISTENER_TOPIC } from "../protocol/topics.ts";
 import { ListenerConfig } from "./config.ts";
+import { errorKind } from "./error-kind.ts";
 
 export type BrokerEvent =
   | { readonly _tag: "ConnAck" }
   | { readonly _tag: "Message"; readonly topic: string; readonly body: Uint8Array }
+  | { readonly _tag: "Error"; readonly kind: string }
   | { readonly _tag: "Closed" };
 
 /** Why the broker didn't take something: a fixed phrase, never the library's own message. */
@@ -24,6 +26,8 @@ export interface BrokerContract {
   readonly isConnected: Effect.Effect<boolean>;
   readonly subscribe: (filters: readonly string[]) => Effect.Effect<void, BrokerError>;
   readonly publish: (publish: Publish) => Effect.Effect<void, BrokerError>;
+  /** Drops the connection and connects again, as after an outage. */
+  readonly reconnect: Effect.Effect<void>;
 }
 
 const RECONNECT_MS = 5000;
@@ -51,9 +55,10 @@ const make = Effect.gen(function* () {
         Queue.offerUnsafe(events, { _tag: "Message", topic, body: new Uint8Array(payload) }),
       );
       created.on("close", () => Queue.offerUnsafe(events, { _tag: "Closed" }));
-      created.on("error", () => {
-        // A refused or failed connect is reported here, then closes; the close is what counts.
-      });
+      // A refused or failed connect is reported here, then closes. Only its kind is kept.
+      created.on("error", (error) =>
+        Queue.offerUnsafe(events, { _tag: "Error", kind: errorKind(error) }),
+      );
       return created;
     }),
     // A clean DISCONNECT, so the broker sends no will: a listener replacing this one during a
@@ -86,6 +91,9 @@ const make = Effect.gen(function* () {
     isConnected: Effect.sync(() => client.connected),
     subscribe,
     publish,
+    reconnect: Effect.sync(() => {
+      client.reconnect();
+    }),
   };
   return broker;
 });

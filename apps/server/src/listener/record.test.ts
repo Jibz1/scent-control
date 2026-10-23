@@ -66,6 +66,18 @@ describe("mergeRecords", () => {
     };
     expect(mergeRecords(one, other)).toEqual(mergeRecords(other, one));
   });
+
+  test("a same-second tie goes to the lower value, so a power tie reads as off", () => {
+    const on: DeviceRecord = {
+      fields: { power: { value: 1, at: NOW }, intensity: { value: 3, at: NOW } },
+    };
+    const off: DeviceRecord = {
+      fields: { power: { value: 0, at: NOW }, intensity: { value: 1, at: NOW } },
+    };
+    const expected = { power: { value: 0, at: NOW }, intensity: { value: 1, at: NOW } };
+    expect(mergeRecords(on, off).fields).toEqual(expected);
+    expect(mergeRecords(off, on).fields).toEqual(expected);
+  });
 });
 
 describe("hearMessage", () => {

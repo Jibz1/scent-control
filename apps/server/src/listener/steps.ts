@@ -10,7 +10,7 @@ import {
   stateTopicDevice,
 } from "../protocol/topics.ts";
 import { commandPublish, retainedPublish, type Publish } from "./gates.ts";
-import { parseState, renderHeartbeat, renderState } from "./payloads.ts";
+import { parseState, publishedBy, renderHeartbeat, renderState } from "./payloads.ts";
 import {
   EMPTY_RECORD,
   hearMessage,
@@ -38,23 +38,50 @@ const withRecord = (memory: Memory, id: string, record: DeviceRecord): Memory =>
 const heartbeat = (now: number, startedAt: number): Publish | undefined =>
   retainedPublish(LISTENER_TOPIC, renderHeartbeat(now, startedAt));
 
-const statePublish = (id: string, record: DeviceRecord, now: number): Publish | undefined => {
+const statePublish = (
+  id: string,
+  record: DeviceRecord,
+  now: number,
+  self: string,
+): Publish | undefined => {
   const topic = stateTopic(id);
-  return topic === undefined ? undefined : retainedPublish(topic, renderState(record, now));
+  return topic === undefined ? undefined : retainedPublish(topic, renderState(record, now, self));
 };
 
-/** On every connect: the heartbeat, then every record, in case the broker lost them. */
-export const onConnAck = (memory: Memory, now: number, startedAt: number): readonly Publish[] =>
-  defined([heartbeat(now, startedAt), ...byId(memory).map(([id, r]) => statePublish(id, r, now))]);
+/**
+ * On every connect: the heartbeat, then every record, in case the broker lost them. `self`
+ * is this listener's instance tag, put on every record it publishes.
+ */
+export const onConnAck = (
+  memory: Memory,
+  now: number,
+  startedAt: number,
+  self: string,
+): readonly Publish[] =>
+  defined([
+    heartbeat(now, startedAt),
+    ...byId(memory).map(([id, r]) => statePublish(id, r, now, self)),
+  ]);
 
 /**
- * A message under our own prefix: a record (ours, or another listener's during a deploy) or
- * a stored schedule. A record is merged in, and the merge is published only when it differs
- * from what arrived, so our own record coming back publishes nothing.
+ * A message under our own prefix: a record or a stored schedule. Our own record coming back
+ * changes nothing: what we hold is never older than what we published, and an older copy of
+ * it, heard after a newer report from the same second, must not undo that report. Another
+ * listener's record (during a deploy) is merged in, and the merge is published only when it
+ * differs from what arrived.
  */
-const onOwnMessage = (memory: Memory, topic: string, body: Uint8Array, now: number): Step => {
+const onOwnMessage = (
+  memory: Memory,
+  topic: string,
+  body: Uint8Array,
+  now: number,
+  self: string,
+): Step => {
   const stateId = stateTopicDevice(topic);
   if (stateId !== undefined) {
+    if (publishedBy(body) === self) {
+      return { memory, publishes: [] };
+    }
     const arrived = parseState(body, now);
     if (arrived === undefined) {
       return { memory, publishes: [] };
@@ -65,7 +92,7 @@ const onOwnMessage = (memory: Memory, topic: string, body: Uint8Array, now: numb
       memory: withRecord(memory, stateId, merged),
       publishes: samePublished(merged, arrived)
         ? []
-        : defined([statePublish(stateId, merged, now)]),
+        : defined([statePublish(stateId, merged, now, self)]),
     };
   }
   const scheduleId = scheduleTopicDevice(topic);
@@ -76,9 +103,15 @@ const onOwnMessage = (memory: Memory, topic: string, body: Uint8Array, now: numb
 };
 
 /** One message from the broker, at `now`. */
-export const onMessage = (memory: Memory, topic: string, body: Uint8Array, now: number): Step => {
+export const onMessage = (
+  memory: Memory,
+  topic: string,
+  body: Uint8Array,
+  now: number,
+  self: string,
+): Step => {
   if (topic.startsWith(APP_PREFIX)) {
-    return onOwnMessage(memory, topic, body, now);
+    return onOwnMessage(memory, topic, body, now, self);
   }
   const message = parseMqtt(topic, body);
   const id = message.deviceId;
@@ -88,7 +121,7 @@ export const onMessage = (memory: Memory, topic: string, body: Uint8Array, now: 
   const record = hearMessage(memory.get(id), message, now);
   return {
     memory: withRecord(memory, id, record),
-    publishes: defined([statePublish(id, record, now)]),
+    publishes: defined([statePublish(id, record, now, self)]),
   };
 };
 
@@ -96,7 +129,13 @@ export const onMessage = (memory: Memory, topic: string, body: Uint8Array, now: 
  * Every 30 s: the heartbeat, then for each known diffuser a ping, a status request if it
  * needs one (judged before this tick's changes), and its updated record.
  */
-export const onTick = (memory: Memory, now: number, routeId: string, startedAt: number): Step => {
+export const onTick = (
+  memory: Memory,
+  now: number,
+  routeId: string,
+  startedAt: number,
+  self: string,
+): Step => {
   const publishes = defined([heartbeat(now, startedAt)]);
   const next = new Map(memory);
   for (const [id, record] of byId(memory)) {
@@ -113,7 +152,7 @@ export const onTick = (memory: Memory, now: number, routeId: string, startedAt: 
       updated = { ...updated, askedAt: now };
     }
     next.set(id, updated);
-    publishes.push(...defined([statePublish(id, updated, now)]));
+    publishes.push(...defined([statePublish(id, updated, now, self)]));
   }
   return { memory: next, publishes };
 };
