@@ -19,8 +19,11 @@ export const WILL_BODY = JSON.stringify({ v: 1, running: false });
 export const renderHeartbeat = (at: number, startedAt: number): string =>
   JSON.stringify({ v: 1, running: true, at, started_at: startedAt });
 
-/** A diffuser's record as published. What was never known is left out; `askedAt` always is. */
-export const renderState = (record: DeviceRecord, updatedAt: number): string => {
+/**
+ * A diffuser's record as published by the listener instance `by`. What was never known is
+ * left out; `askedAt` always is.
+ */
+export const renderState = (record: DeviceRecord, updatedAt: number, by: string): string => {
   const fields: Partial<Record<FieldKey, FieldReading>> = {};
   for (const key of FIELD_KEYS) {
     const reading = record.fields[key];
@@ -32,6 +35,7 @@ export const renderState = (record: DeviceRecord, updatedAt: number): string => 
   // JSON.stringify leaves out the keys whose value is undefined.
   return JSON.stringify({
     v: STATE_VERSION,
+    by,
     updated_at: updatedAt,
     heard_at: record.heardAt,
     ping_at: record.pingAt,
@@ -85,6 +89,16 @@ const readConnected = (
     manufacturer: String(manufacturer),
     at,
   };
+};
+
+/** Which listener instance published a record, when it says. */
+export const publishedBy = (body: Uint8Array): string | undefined => {
+  const json = parseJson(new TextDecoder().decode(body));
+  if (!json.ok || !isObject(json.value)) {
+    return undefined;
+  }
+  const { by } = json.value;
+  return typeof by === "string" ? by : undefined;
 };
 
 /**

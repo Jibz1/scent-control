@@ -202,6 +202,7 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
   ```json
   {
     "v": 1,
+    "by": "0a1b2c3d",
     "updated_at": 1792510230,
     "heard_at": 1792510229,
     "ping_at": 1792510200,
@@ -219,18 +220,28 @@ Each message goes through the TypeScript port of `scent-core`'s `parse_mqtt` (§
   - The keys of `fields` are `power`, `intensity`, `charging`, `battery`, `fan`, `gas_pump`,
     `light` and `rssi`. The values are the raw integers, exactly as the diffuser sent them.
   - `updated_at` is when the listener wrote the message.
+  - `by` is the tag of the listener instance that wrote it: 8 random hex characters, new
+    on every start. Readers ignore it. (Added 2026-10-22 after the final review; see
+    Merging.)
 - **Publishing:** retained at QoS 1, whenever the record changes. The builder may merge
   changes that come close together, as long as no change waits more than a second.
 - **One gate for retained messages:** a single function makes every retained publish, and
   it refuses any topic not under `scent-control/v1/`, as the Mac's `retained_publish` does,
   with the same tests.
 - **Merging (newer wins):**
-  - each field keeps whichever copy has the later `at`;
+  - each field keeps whichever copy has the later `at`; in a tie (the same second) the
+    lower value wins, so a power tie reads as off;
   - `heard_at` and `ping_at` keep the later value;
   - `connected` keeps the later `at`.
 
   This is how the listener restores itself from its own retained records on start. It also
   makes a second listener, briefly running during a deploy, harmless.
+  - **A listener ignores records carrying its own `by`.** An older copy of its own record,
+    heard back after a newer report from the same second, must not undo that report
+    (found by the final review, 2026-10-22).
+  - For that to be safe, the listener handles its ticks and the broker's events one at a
+    time, in order, each with its publishes. The last record it publishes is then always
+    its newest.
 - **Rules for readers:**
   - ignore any `v` other than 1;
   - ignore any time more than a day ahead of the reader's own clock, as for shared

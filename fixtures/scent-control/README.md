@@ -11,3 +11,4 @@ app) decodes them; both test against these files. See
 - `will-v1.json`: its last will, on the same topic.
 
 The values are synthetic. No device ID appears in a body: it is in the topic.
+`by` (`0a1b2c3d`) is a synthetic listener instance tag; readers ignore it.
