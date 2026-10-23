@@ -1,6 +1,6 @@
 # Scent Control
 
-An **experimental, throwaway project** for controlling Scentiment smart diffusers
+An **experimental, throwaway project** for controlling smart diffusers
 without Scentiment's cloud. Built for personal tinkering, with no guarantees of
 stability, support, or continued development.
 
@@ -10,7 +10,7 @@ stability, support, or continued development.
 
 ## Why
 
-Scentiment's official app has to reach Scentiment's servers before it will set up or
+Scentiment's official app has to reach diffusers servers before it will set up or
 control a diffuser. The app is not reliable also I wanted something to work with other brand and possibly HomeKit support.
 
 ## Where it stands
