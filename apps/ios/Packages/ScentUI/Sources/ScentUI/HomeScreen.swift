@@ -128,7 +128,9 @@ struct DiffuserTile: View {
 
   @Environment(\.colorScheme) private var colorScheme
 
-  private var lit: Bool { diffuser.shownPower == true && diffuser.reachability != .notAnswering }
+  private var lit: Bool {
+    diffuser.shownPower == true && diffuser.reachability != .notAnswering && !diffuser.stateIsStale(now: now)
+  }
 
   var body: some View {
     Button(action: open) {
@@ -148,7 +150,7 @@ struct DiffuserTile: View {
           .font(Theme.headline(.headline, weight: .semibold))
           .foregroundStyle(lit ? Theme.roomInk : Color.primary)
           .lineLimit(1)
-        Text(Words.summary(diffuser))
+        Text(Words.summary(diffuser, now: now))
           .font(.subheadline)
           .foregroundStyle(summaryStyle)
           .contentTransition(.interpolate)
@@ -178,7 +180,7 @@ struct DiffuserTile: View {
     .animation(.smooth(duration: 0.5), value: lit)
     .animation(.smooth(duration: 0.3), value: diffuser.pending)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(diffuser.title), \(Words.summary(diffuser))")
+    .accessibilityLabel("\(diffuser.title), \(Words.summary(diffuser, now: now))")
     .accessibilityAction(named: diffuser.shownPower == true ? "Turn Off" : "Turn On", togglePower)
   }
 

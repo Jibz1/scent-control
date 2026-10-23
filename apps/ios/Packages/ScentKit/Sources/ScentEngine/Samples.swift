@@ -51,7 +51,8 @@ public enum Samples {
         level: Reading(.medium, at: ago(1), via: .bluetooth),
         pluggedIn: Reading(true, at: ago(1), via: .bluetooth),
         signal: Reading(-58, at: ago(3), via: .wifi), lastReport: ago(1),
-        schedule: bedsideSchedule, scheduleSentAt: ago(60 * 26), bluetoothLinked: true),
+        schedule: bedsideSchedule, scheduleSentAt: ago(60 * 26),
+        bluetoothID: UUID(uuidString: "0B5E7C1D-0000-4000-8000-000000000001")),
       DiffuserState(
         id: "TESTDEVICE02", name: "Hallway", room: "Downstairs", kind: .hvac2,
         variant: "White", firmware: "2.30", reachability: .answering(.wifi),

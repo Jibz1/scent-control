@@ -12,6 +12,8 @@ final class FakeRadios: Radios {
   var report: (EngineEvent) -> Void = { _ in }
   var brokerUp = true
   var bluetoothFails: BluetoothError?
+  /// Refuses retained writes only, as a broker can while taking everything else.
+  var storeFails = false
   var hits: [ScanHit] = []
   var infoText = "01|Diffuser|Black|TESTDEVICE04|2.30|true|3"
   private(set) var bluetoothSent: [(UUID, Command)] = []
@@ -43,6 +45,7 @@ final class FakeRadios: Radios {
 
   func storeSchedule(_ deviceID: String, _ body: Data) async throws(MQTTError) {
     guard brokerUp else { throw MQTTError(message: "Not connected to the broker.") }
+    if storeFails { throw MQTTError(message: "The broker refused the retained message.") }
     stored.append((deviceID, body))
   }
 
@@ -270,6 +273,62 @@ let evening = Profile(
     #expect(rig.radios.bluetoothSent.isEmpty)
   }
 
+  @Test func anAddThatStoppedCanBeFinishedFromTheDiffuserEvenAfterARelaunch() async throws {
+    // Review on #18: once its info is read, the diffuser is known and leaves Found Nearby,
+    // so its own screen must offer the setup again.
+    let rig = Rig(file: twoDiffusers())
+    rig.radios.infoText = "01|Diffuser|Black|TESTDEVICE04|2.30|false|0"
+    rig.model.send(.add(found: newOne, name: nil, room: nil, wifiName: nil, wifiPassword: nil))
+    await rig.settle()
+    let stopped = try #require(rig.diffuser("TESTDEVICE04"))
+    #expect(stopped.setUpTarget?.id == newOne && !stopped.onOurBroker)
+    let saved = try #require(try Store(folder: rig.folder).load())
+    let again = Rig(file: saved)
+    let relaunched = try #require(again.diffuser("TESTDEVICE04"))
+    #expect(relaunched.setUpTarget?.id == newOne && !relaunched.onOurBroker)
+    // Finishing it from there runs the add on the same peripheral, with a network now.
+    again.radios.infoText = "01|Diffuser|Black|TESTDEVICE04|2.30|false|0"
+    again.model.send(
+      .add(found: newOne, name: "Kitchen", room: nil, wifiName: "ExampleWiFi", wifiPassword: "example-wifi"))
+    await again.settle(2000)
+    #expect(again.radios.bluetoothSent.map { $0.1.action(via: .bluetooth) } == ["SAVE_MQTT", "WIFI_CONNECT", "SECRET_COMMAND"])
+  }
+
+  @Test func aDiffuserOnTheBrokerCanBeSetUpAgain() async {
+    let rig = Rig(file: twoDiffusers())
+    #expect(rig.diffuser("TESTDEVICE01")?.setUpTarget?.id == bedside)
+    #expect(rig.diffuser("TESTDEVICE01")?.onOurBroker == true)
+    #expect(rig.diffuser("TESTDEVICE02")?.setUpTarget == nil)
+  }
+
+  @Test func anOldPowerReportIsStaleWhatevertheAnswersToPings() async {
+    // Review on #18: answering pings doesn't make a power report from before current.
+    let rig = Rig(file: twoDiffusers())
+    let now = Date(timeIntervalSince1970: TimeInterval(rig.clock.now))
+    let old = rig.diffuser("TESTDEVICE01")!  // its saved power reading is 1,000 s old
+    #expect(old.stateIsStale(now: now))
+    var fresh = old
+    fresh.power = Reading(true, at: now - 60, via: .wifi)
+    #expect(!fresh.stateIsStale(now: now))
+    var sending = old
+    sending.pending = Pending(power: true, stage: .sending(.wifi))
+    #expect(!sending.stateIsStale(now: now))
+  }
+
+  @Test func aCopyWhoseSharedCopyWasNotStoredIsNotReportedAsCopied() async {
+    // Review on #18: the diffuser took it, but the other apps still see the old one.
+    let rig = Rig(file: twoDiffusers(schedule: evening))
+    rig.radios.storeFails = true
+    rig.model.send(.copySchedule(from: "TESTDEVICE01", to: ["TESTDEVICE02"]))
+    await rig.settle()
+    #expect(rig.radios.wifiActions("TESTDEVICE02") == ["UPDATE_PROFILE", "SYNC_TIME"])
+    guard case .failed(let why)? = rig.model.copies["TESTDEVICE02"] else {
+      Issue.record("expected the copy to fail, got \(String(describing: rig.model.copies["TESTDEVICE02"]))")
+      return
+    }
+    #expect(why.contains("wasn't stored on the broker"))
+  }
+
   @Test func addingWithoutABrokerPasswordStopsBeforeWritingAnything() async {
     let rig = Rig(file: twoDiffusers(), password: nil)
     rig.model.send(.add(found: newOne, name: nil, room: nil, wifiName: nil, wifiPassword: nil))
@@ -352,6 +411,23 @@ let evening = Profile(
     #expect(shared.profile.alwaysOn == AlwaysOn(enable: true, level: .medium))
     #expect(shared.profile.entries.first?.start == HhMm(parsing: "07:30"))
     #expect(shared.profile.timezoneHours == -5)
+  }
+
+  @Test func theScheduleLimitLeavesRoomForTheAlwaysOnEntry() throws {
+    // Review on #18: the firmware's 7 and 100 include the factory entry.
+    #expect(maxTimes(firmware: "2.30") == 99)
+    #expect(maxTimes(firmware: "3.0") == 99)
+    #expect(maxTimes(firmware: "2.21") == 6)
+    #expect(maxTimes(firmware: "2.0") == 6)
+    #expect(maxTimes(firmware: nil) == 6)
+    #expect(maxTimes(firmware: "garbled") == 6)
+    // The largest schedule the editor allows can be read back by the other apps.
+    let entry = evening.entries[0]
+    var largest = evening
+    largest.entries = Array(repeating: entry, count: maxTimes(firmware: "2.30"))
+    #expect(try decodeShared(#require(encodeShared(largest, sentAt: 1_000)), now: 1_000).get().profile == largest)
+    largest.entries.append(entry)
+    #expect(decodeShared(try #require(encodeShared(largest, sentAt: 1_000)), now: 1_000) == .failure(.invalid))
   }
 
   @Test func namesAreTidied() {

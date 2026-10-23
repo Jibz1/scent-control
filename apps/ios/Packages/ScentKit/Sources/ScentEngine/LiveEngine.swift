@@ -197,7 +197,7 @@ public final class LiveEngine: Engine {
       reachability: reachability(of: device, now: now), power: power, level: level, pluggedIn: pluggedIn,
       battery: batteryLevel, signal: signal, lastReport: heard.map(date), pending: pending,
       failure: device.failure, schedule: device.sentProfile, scheduleSentAt: device.sentProfileAt.map(date),
-      sendOver: device.sendOver, bluetoothLinked: device.bleID != nil)
+      sendOver: device.sendOver, bluetoothID: device.bleID, onOurBroker: device.onOurBroker)
   }
 
   /// Answering when heard recently over either transport; otherwise what the pings say.
@@ -600,7 +600,9 @@ public final class LiveEngine: Engine {
   /// Sends the schedule, stores its copy on the broker for the app's other copies, waits,
   /// then tells the diffuser the time. All over WiFi. The copy is stored only once the
   /// broker has taken the table; a copy it didn't take is tried once more after the time
-  /// sync, unless a newer one was adopted meanwhile. The error, or nil when it all went.
+  /// sync, unless a newer one was adopted meanwhile. The error, or nil when it all went:
+  /// a copy that still wasn't stored is an error too, so a copy to another diffuser says so
+  /// instead of looking done.
   @discardableResult
   private func sendSchedule(_ id: String, _ profile: Profile) async -> String? {
     let held = remember(ledger.devices[id]?.sentProfile, profile)
@@ -610,12 +612,14 @@ public final class LiveEngine: Engine {
     var shared = await share(id, held, at)
     await pause(Self.syncTimeAfter)
     let synced = await deliver(id, Work(.syncTime(serverTime: UInt64(max(clock(), 0)))), .wifi) != nil
+    var notStored: String?
     if shared != nil, !newerScheduleKnown(id, than: at) {
       shared = await share(id, held, at)
       if let shared {
         let message =
           "The schedule went out, but the copy that other copies of Scent Control read wasn't stored on the broker. \(shared) Send the schedule again to store it."
         apply(.failed(deviceID: id, what: "Schedule", error: message, at: clock()))
+        notStored = message
       }
     }
     if !synced {
@@ -624,7 +628,7 @@ public final class LiveEngine: Engine {
       apply(.failed(deviceID: id, what: "Schedule", error: message, at: clock()))
       return message
     }
-    return nil
+    return notStored
   }
 
   private func newerScheduleKnown(_ id: String, than at: Int) -> Bool {

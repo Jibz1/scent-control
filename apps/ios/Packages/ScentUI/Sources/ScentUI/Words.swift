@@ -21,13 +21,17 @@ enum Words {
     }
   }
 
-  /// What it is doing, for a tile's second line: "Diffusing at Medium", "Off".
-  static func summary(_ d: DiffuserState) -> String {
+  /// What it is doing, for a tile's second line: "Diffusing at Medium", "Off", or for an
+  /// old report, what it said and when: "Reported on, 17 min ago".
+  static func summary(_ d: DiffuserState, now: Date) -> String {
     if let pending = d.pending {
       if pending.stage == .waitingForDiffuser { return "Sent, waiting for it" }
       return "Sending…"
     }
     if d.reachability == .notAnswering { return "Not answering" }
+    if d.stateIsStale(now: now), let power = d.power {
+      return "Reported \(power.value ? "on" : "off"), \(ago(power.at, now: now))"
+    }
     switch d.power?.value {
     case true?: return d.level.map { "Diffusing at \(level($0.value))" } ?? "Diffusing"
     case false?: return "Off"
@@ -35,11 +39,13 @@ enum Words {
     }
   }
 
-  /// The line under the room's headline: the intensity and how it last answered.
+  /// The line under the room's headline: the intensity, and how it answers pings.
   static func detail(_ d: DiffuserState) -> String {
     var parts: [String] = []
     if let level = d.shownLevel, d.shownPower == true {
       parts.append("\(Words.level(level)) intensity")
+    } else if d.shownPower == false {
+      parts.append("Not diffusing")
     }
     parts.append(reachability(d.reachability))
     return parts.joined(separator: ", ").capitalizedFirst

@@ -46,10 +46,10 @@ struct ScheduleDraft: Equatable {
     return nil
   }
 
-  /// How many times a firmware keeps: 7 up to 2.21, 100 after.
+  /// How many times a firmware keeps besides its always-on entry: 6 up to 2.21, 99 after,
+  /// and 6 when the firmware isn't known (see `maxTimes`).
   static func limit(firmware: String?) -> Int {
-    guard let firmware, let version = Double(firmware) else { return 100 }
-    return version <= 2.21 ? 7 : 100
+    maxTimes(firmware: firmware)
   }
 }
 
