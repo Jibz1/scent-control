@@ -16,7 +16,10 @@ struct RoomHero: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var on: Bool { diffuser.shownPower == true }
-  private var lit: Bool { on && diffuser.reachability != .notAnswering }
+  /// An old report is not shown as the room's state: the room stays grey and says how old
+  /// it is, as the Mac's does.
+  private var stale: Bool { diffuser.stateIsStale(now: now) }
+  private var lit: Bool { on && diffuser.reachability != .notAnswering && !stale }
   private var mistIntensity: Double { lit ? Double(diffuser.shownLevel?.value ?? 1) : 0 }
 
   var body: some View {
@@ -46,12 +49,20 @@ struct RoomHero: View {
       VStack(spacing: 6) {
         Text(Words.state(diffuser))
           .font(Theme.headline(.largeTitle))
-          .foregroundStyle(diffuser.pending != nil ? Theme.pending : Theme.roomInk)
+          .foregroundStyle(
+            diffuser.pending != nil ? Theme.pending : stale ? Theme.roomInkSecondary : Theme.roomInk
+          )
           .contentTransition(.interpolate)
         Text(subline)
           .font(.callout)
           .foregroundStyle(Theme.roomInkSecondary)
           .contentTransition(.interpolate)
+        if let note {
+          Text(note)
+            .font(.footnote)
+            .foregroundStyle(Theme.roomInkSecondary)
+            .contentTransition(.interpolate)
+        }
         if let failure = diffuser.failure {
           Label(failure, systemImage: "exclamationmark.circle.fill")
             .font(.footnote.weight(.medium))
@@ -96,6 +107,13 @@ struct RoomHero: View {
   private var subline: String {
     if let pending = diffuser.pending { return Words.pending(pending) }
     return Words.detail(diffuser, now: now)
+  }
+
+  /// Where the state comes from: "Reported 3 min ago over WiFi". None while a change is on
+  /// its way, which the line above says.
+  private var note: String? {
+    guard diffuser.pending == nil, let reported = diffuser.stateReported else { return nil }
+    return "Reported \(Words.ago(reported.at, now: now)) over \(reported.via.name)"
   }
 }
 

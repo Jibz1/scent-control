@@ -25,9 +25,12 @@ struct DiffuserScreen: View {
               withAnimation(.smooth(duration: 0.25)) { pastRoom = !visible }
             }
             VStack(spacing: 28) {
+              if let target = diffuser.setUpTarget, !diffuser.onOurBroker {
+                NotOnBroker { open(.add(target, name: diffuser.name ?? "", room: diffuser.room ?? "")) }
+              }
               ScheduleSection(diffuser: diffuser, now: model.now, open: open)
               StatusSection(diffuser: diffuser, now: model.now)
-              ConnectionSection(diffuser: diffuser)
+              ConnectionSection(diffuser: diffuser, open: open)
               DetailsSection(diffuser: diffuser, open: open)
             }
             .padding(.horizontal, 16)
@@ -174,10 +177,36 @@ private struct StatusSection: View {
   }
 }
 
-/// How the app reaches it: Send Over, and Read Status.
+/// A diffuser found over Bluetooth that hasn't been heard on the broker: an add that
+/// stopped partway, or one still on another broker. As the Mac says, with its Add to Broker…
+private struct NotOnBroker: View {
+  let add: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Label {
+        Text(
+          "This diffuser hasn't been heard on your broker, so WiFi commands may not reach it. Bluetooth works while this iPhone is in range."
+        )
+      } icon: {
+        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.pending)
+      }
+      .font(.callout)
+      Button("Add to Broker…", action: add)
+        .buttonStyle(.glassProminent)
+        .fontWeight(.semibold)
+    }
+    .padding(16)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Theme.pending.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+  }
+}
+
+/// How the app reaches it: Send Over, Read Status, and Set Up Again for one on the broker.
 private struct ConnectionSection: View {
   @Environment(AppModel.self) private var model
   let diffuser: DiffuserState
+  let open: (Route) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -214,6 +243,26 @@ private struct ConnectionSection: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.tint)
+        if let target = diffuser.setUpTarget, diffuser.onOurBroker {
+          RowDivider()
+          Button {
+            open(.add(target, name: diffuser.name ?? "", room: diffuser.room ?? ""))
+          } label: {
+            Label("Set Up Again…", systemImage: "arrow.triangle.2.circlepath")
+              .padding(.horizontal, 16)
+              .padding(.vertical, 13)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(.tint)
+        }
+      }
+      if diffuser.setUpTarget != nil, diffuser.onOurBroker {
+        Text("Set Up Again points it at the broker in Settings and restarts it.")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 6)
       }
     }
   }

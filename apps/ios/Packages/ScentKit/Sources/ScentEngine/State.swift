@@ -131,8 +131,11 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
   public var schedule: Profile?
   public var scheduleSentAt: Date?
   public var sendOver: SendOver
-  /// True once a Bluetooth peripheral is linked to this diffuser.
-  public var bluetoothLinked: Bool
+  /// The Bluetooth peripheral linked to this diffuser on this phone, once one is.
+  public var bluetoothID: UUID?
+  /// Whether it has been heard on our broker. One that hasn't may be on another broker or
+  /// not on WiFi at all, so WiFi commands may not reach it until it is set up.
+  public var onOurBroker: Bool
 
   public init(
     id: String, name: String? = nil, room: String? = nil, kind: DiffuserKind,
@@ -140,7 +143,8 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
     power: Reading<Bool>? = nil, level: Reading<Level>? = nil, pluggedIn: Reading<Bool>? = nil,
     battery: Reading<Int>? = nil, signal: Reading<Int>? = nil, lastReport: Date? = nil,
     notKnownSince: Date? = nil, pending: Pending? = nil, failure: String? = nil, schedule: Profile? = nil,
-    scheduleSentAt: Date? = nil, sendOver: SendOver = .auto, bluetoothLinked: Bool = false
+    scheduleSentAt: Date? = nil, sendOver: SendOver = .auto, bluetoothID: UUID? = nil,
+    onOurBroker: Bool = true
   ) {
     self.id = id
     self.name = name
@@ -161,7 +165,8 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
     self.schedule = schedule
     self.scheduleSentAt = scheduleSentAt
     self.sendOver = sendOver
-    self.bluetoothLinked = bluetoothLinked
+    self.bluetoothID = bluetoothID
+    self.onOurBroker = onOurBroker
   }
 
   /// What the list calls it: its name, or its model, never its raw ID.
@@ -172,6 +177,29 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
 
   /// The intensity to show: the one on its way, else the last reported.
   public var shownLevel: Level? { pending?.level ?? level?.value }
+
+  /// True once a Bluetooth peripheral is linked to this diffuser.
+  public var bluetoothLinked: Bool { bluetoothID != nil }
+
+  /// The newest power or intensity reading's time and transport: where the state shown
+  /// comes from.
+  public var stateReported: (at: Date, via: Via)? {
+    [power.map { ($0.at, $0.via) }, level.map { ($0.at, $0.via) }].compactMap { $0 }.max { $0.0 < $1.0 }
+  }
+
+  /// Whether the power shown is a report more than 5 minutes old with nothing on its way,
+  /// as the Mac's room says: answering pings doesn't make an old report current, since a
+  /// diffuser reports its state only when it changes.
+  public func stateIsStale(now: Date) -> Bool {
+    guard pending == nil, let at = power?.at else { return false }
+    return now.timeIntervalSince(at) > TimeInterval(staleAfterSeconds)
+  }
+
+  /// The peripheral to set it up again with, as the add sheet takes one: it points it at
+  /// the broker in Settings and restarts it.
+  public var setUpTarget: FoundDiffuser? {
+    bluetoothID.map { FoundDiffuser(id: $0, kind: kind, variant: variant) }
+  }
 }
 
 /// A Scentiment diffuser a scan found that the app doesn't know yet.

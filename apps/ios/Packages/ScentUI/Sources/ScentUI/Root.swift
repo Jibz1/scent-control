@@ -8,7 +8,8 @@ enum Route: Identifiable, Hashable {
   case diffuser(String)
   case schedule(String)
   case copy(String)
-  case add(FoundDiffuser)
+  /// Adds a found diffuser, or sets up a known one again with its name and room.
+  case add(FoundDiffuser, name: String? = nil, room: String? = nil)
   case rename(String)
   case log
   case settings
@@ -127,8 +128,8 @@ public struct ScentControlRoot: View {
       if let diffuser = model.diffuser(id) {
         CopyScheduleSheet(source: diffuser, chosen: start == .copy ? ["TESTDEVICE02"] : [])
       }
-    case .add(let found):
-      AddSheet(found: found)
+    case .add(let found, let name, let room):
+      AddSheet(found: found, name: name, room: room)
     case .rename(let id):
       if let diffuser = model.diffuser(id) {
         RenameSheet(diffuser: diffuser)

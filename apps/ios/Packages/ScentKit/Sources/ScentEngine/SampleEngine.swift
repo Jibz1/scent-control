@@ -144,7 +144,7 @@ public final class SampleEngine: Engine {
               DiffuserState(
                 id: "TESTDEVICE04", name: name, room: room, kind: diffuser.kind,
                 variant: diffuser.variant, firmware: "2.30", reachability: .answering(.wifi),
-                lastReport: .now, bluetoothLinked: true))
+                lastReport: .now, bluetoothID: found))
           }
         }
       }

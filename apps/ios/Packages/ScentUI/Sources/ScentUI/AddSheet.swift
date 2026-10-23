@@ -9,12 +9,21 @@ struct AddSheet: View {
   @Environment(AppModel.self) private var model
   @Environment(\.dismiss) private var dismiss
   let found: FoundDiffuser
-  @State private var name = ""
-  @State private var room = ""
+  /// True for a diffuser the app knows, being set up again.
+  private let again: Bool
+  @State private var name: String
+  @State private var room: String
   @State private var wifiName = ""
   @State private var wifiPassword = ""
 
   private var progress: AddProgress? { model.adds[found.id] }
+
+  init(found: FoundDiffuser, name: String? = nil, room: String? = nil) {
+    self.found = found
+    again = name != nil || room != nil
+    _name = State(initialValue: name ?? "")
+    _room = State(initialValue: room ?? "")
+  }
 
   private var shownName: String { progress?.name ?? name }
 
@@ -117,7 +126,7 @@ struct AddSheet: View {
           }
         }
       }
-      .navigationTitle(progress?.finished == true ? "Added" : "Add Diffuser")
+      .navigationTitle(progress?.finished == true ? "Added" : again ? "Set Up Again" : "Add Diffuser")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
