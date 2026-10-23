@@ -30,6 +30,24 @@ pub const SUBSCRIBE_APP: &str = concat!(app_prefix!(), "#");
 /// plus its device ID.
 pub const SCHEDULE_PREFIX: &str = concat!(app_prefix!(), "schedule/");
 
+/// The listener's retained record of a diffuser is kept at this prefix plus its device ID.
+pub const STATE_PREFIX: &str = concat!(app_prefix!(), "state/");
+
+/// The listener's retained heartbeat, and the will the broker publishes if it drops off.
+pub const LISTENER_TOPIC: &str = concat!(app_prefix!(), "listener");
+
+/// The topic of a diffuser's record, or `None` when `device_id` is not a device ID.
+pub fn state_topic(device_id: &str) -> Option<String> {
+    valid_device_id(device_id).then(|| format!("{STATE_PREFIX}{device_id}"))
+}
+
+/// The device ID a record's topic is for, or `None` when the topic is not one.
+pub fn state_topic_device(topic: &str) -> Option<&str> {
+    topic
+        .strip_prefix(STATE_PREFIX)
+        .filter(|device_id| valid_device_id(device_id))
+}
+
 /// The topic of a diffuser's stored schedule, or `None` when `device_id` is not a
 /// device ID, so that no ID can build a topic outside [`SCHEDULE_PREFIX`].
 pub fn schedule_topic(device_id: &str) -> Option<String> {
@@ -146,6 +164,31 @@ mod tests {
             "TESTDEVICE+1",
         ] {
             assert!(!valid_device_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn state_topics_are_built_only_for_valid_ids_and_read_back_exactly() {
+        assert_eq!(STATE_PREFIX, "scent-control/v1/state/");
+        assert_eq!(LISTENER_TOPIC, "scent-control/v1/listener");
+        for ours in [STATE_PREFIX, LISTENER_TOPIC] {
+            assert!(ours.starts_with(APP_PREFIX), "{ours}");
+        }
+        assert_eq!(
+            state_topic("TESTDEVICE01").as_deref(),
+            Some("scent-control/v1/state/TESTDEVICE01")
+        );
+        assert_eq!(state_topic("TESTDEVIC/#"), None);
+        assert_eq!(
+            state_topic_device("scent-control/v1/state/TESTDEVICE01"),
+            Some("TESTDEVICE01")
+        );
+        for other in [
+            "scent-control/v1/state/TESTDEVICE01/x",
+            "scent-control/v1/state/",
+            "scent-control/v1/schedule/TESTDEVICE01",
+        ] {
+            assert_eq!(state_topic_device(other), None, "{other:?}");
         }
     }
 }

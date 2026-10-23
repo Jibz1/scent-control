@@ -128,11 +128,11 @@ pub fn sections(state: &AppState) -> Vec<Section<'_>> {
 /// and not yet reported on, else what it reported.
 fn power_and_level(device: &DeviceView) -> (Option<bool>, Option<u8>) {
     let power = device.pending_power().or_else(|| {
-        let reading = device.readings.get(&Field::Power)?;
+        let reading = device.current(Field::Power)?;
         Some(reading.value != 0)
     });
     let level = device.pending_intensity().or_else(|| {
-        let reading = device.readings.get(&Field::Intensity)?;
+        let reading = device.current(Field::Intensity)?;
         u8::try_from(reading.value).ok()
     });
     (power, level.filter(|level| (1..=3).contains(level)))

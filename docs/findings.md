@@ -577,7 +577,39 @@ Also seen during the same watch:
 
 - A large `UPDATE_PROFILE`: 99 entries is about 13.5 KB. The app and broker accept it, but
   it hasn't been sent to real firmware.
-- Whether the diffusers connect with `clean_session` set. Read the `c` flag from the
-  broker's connect log line.
+- ~~Whether the diffusers connect with `clean_session` set.~~ They do: see "The broker
+  restarted with persistence on" (2026-10-22).
 - The add flow's Bluetooth wording for "Credentials saved", and whether the `SECRET_COMMAND`
   restart write is acknowledged before the reboot.
+
+## 2026-10-22: The broker restarted with persistence on [observed]
+
+The live broker had been running with persistence off and no volume, so every restart
+threw its retained messages away. With both diffusers powered and nearby and the owner
+present, a Railway volume was attached to `test-broker` at `/mosquitto/data`, and the
+broker was redeployed from `infra/test-broker` (persistence on). Mosquitto 2.0.22 started
+with its config loaded and no error. Then it was restarted once more with
+`railway redeploy`.
+
+- **Diffusers after a broker restart: both came back by themselves, both times.** Neither
+  needed a soft restart over Bluetooth.
+
+  | Restart | Diffusers reconnected, after Mosquitto started |
+  |---|---|
+  | Redeploy from the repo | about 23 s and 28 s |
+  | `railway redeploy` | both about 34 s |
+
+  Both then answered the 30 s pings for as long as they were watched: 5 minutes after the
+  first restart, 1 minute after the second.
+- **How they connect** (the broker's connect log line): MQTT 3.1.1 (`p2`), **clean
+  session** (`c1`), keepalive 1200 s, and no will. So a diffuser keeps no session on the
+  broker: anything sent while it is offline is lost, and it subscribes again on every
+  connect, at QoS 0, to its device topic and `scentiment-mqtt-prod/announcements`.
+- **Retained messages now survive a restart.** A retained probe under
+  `scent-control/v1/probe/server/` was stored, and the broker was left for 70 s, past
+  Mosquitto's 60 s autosave. The probe was found after the `railway redeploy`, then
+  cleared. The retained messages from before the volume were lost at the first restart,
+  as expected: two listener state records from a local test run, and an older probe. No
+  schedules were stored on the broker at the time.
+- **Not seen:** whether a diffuser sends `device_connected` after a broker restart. The
+  watches connected after the diffusers were already back.
