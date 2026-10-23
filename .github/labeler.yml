@@ -11,13 +11,16 @@ server:
 
 mobile:
   - changed-files:
-      - any-glob-to-any-file: apps/mobile/**
+      - any-glob-to-any-file:
+          - apps/mobile/**
+          - apps/ios/**
 
 scent-core:
   - changed-files:
       - any-glob-to-any-file:
           - packages/scent-core/**
           - fixtures/scentiment/**
+          - fixtures/commands/**
 
 tools:
   - changed-files:
