@@ -120,6 +120,10 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
   /// WiFi signal in dBm.
   public var signal: Reading<Int>?
   public var lastReport: Date?
+  /// When it last rejoined the broker, if that came after its last report of power or
+  /// intensity: what it is doing is then not known, since it may have come back otherwise
+  /// (owner, 2026-10-22). `power` and `level` hold only reports made since.
+  public var notKnownSince: Date?
   public var pending: Pending?
   /// The last failure, kept until a newer one replaces it or an action succeeds.
   public var failure: String?
@@ -135,7 +139,7 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
     variant: String? = nil, firmware: String? = nil, reachability: Reachability = .unknown,
     power: Reading<Bool>? = nil, level: Reading<Level>? = nil, pluggedIn: Reading<Bool>? = nil,
     battery: Reading<Int>? = nil, signal: Reading<Int>? = nil, lastReport: Date? = nil,
-    pending: Pending? = nil, failure: String? = nil, schedule: Profile? = nil,
+    notKnownSince: Date? = nil, pending: Pending? = nil, failure: String? = nil, schedule: Profile? = nil,
     scheduleSentAt: Date? = nil, sendOver: SendOver = .auto, bluetoothLinked: Bool = false
   ) {
     self.id = id
@@ -151,6 +155,7 @@ public struct DiffuserState: Identifiable, Hashable, Sendable {
     self.battery = battery
     self.signal = signal
     self.lastReport = lastReport
+    self.notKnownSince = notKnownSince
     self.pending = pending
     self.failure = failure
     self.schedule = schedule
@@ -195,6 +200,18 @@ public enum BrokerStatus: Hashable, Sendable {
   /// No broker address, or no password, has been saved.
   case notSetUp
   case unreachable(String)
+}
+
+/// The always-on listener (apps/server), by its heartbeat on the broker. While it isn't
+/// running, what it shared may be out of date, and the app relies on what it hears itself.
+public enum ListenerStatus: Hashable, Sendable {
+  /// A heartbeat said so within the last `onlineForSeconds`.
+  case running
+  /// Its will came, or its last heartbeat is too old. `lastSeen` is when a heartbeat last
+  /// said it was running, if one did.
+  case notRunning(lastSeen: Date?)
+  /// Nothing heard from it yet.
+  case notSeen
 }
 
 /// The broker's address and login, minus the password, which lives in the Keychain.

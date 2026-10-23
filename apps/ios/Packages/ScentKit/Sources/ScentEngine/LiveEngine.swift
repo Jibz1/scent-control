@@ -154,6 +154,7 @@ public final class LiveEngine: Engine {
     model.diffusers = ledger.devices.values.sorted { $0.id < $1.id }.map { state(of: $0, now: now) }
     model.found = found()
     model.broker = brokerStatus()
+    model.listener = listenerStatus(now: now)
     model.brokerSettings = settings
     model.appearance = appearance
     model.notice = notice
@@ -163,21 +164,27 @@ public final class LiveEngine: Engine {
     model.adds = adds
   }
 
+  /// What the screens show of `device`. Only readings that still count are shown: one from
+  /// before its last reconnect is kept, not shown.
   private func state(of device: DeviceRecord, now: Int) -> DiffuserState {
-    func date(_ at: Int) -> Date { Date(timeIntervalSince1970: TimeInterval(at)) }
-    let readings = device.readings
-    let power = readings[.power].map { Reading($0.value != 0, at: date($0.at), via: $0.via) }
-    let level = readings[.intensity].flatMap { r in Level(r.value).map { Reading($0, at: date(r.at), via: r.via) } }
-    let charging = readings[.charging]
-    let battery = readings[.battery]
+    let power = device.current(.power).map { Reading($0.value != 0, at: date($0.at), via: $0.via) }
+    let level = device.current(.intensity).flatMap { r in Level(r.value).map { Reading($0, at: date(r.at), via: r.via) } }
+    let charging = device.current(.charging)
+    let battery = device.current(.battery)
     var pluggedIn: Reading<Bool>?
     if let source = [charging, battery].compactMap({ $0 }).max(by: { $0.at < $1.at }) {
       let plugged = charging?.value == 2 || charging?.value == 1 || battery?.value == 200
       pluggedIn = Reading(plugged, at: date(source.at), via: source.via)
     }
     let batteryLevel = battery.flatMap { $0.value <= 100 ? Reading($0.value, at: date($0.at), via: $0.via) : nil }
-    let signal = readings[.rssi].map { Reading($0.value, at: date($0.at), via: $0.via) }
+    let signal = device.current(.rssi).map { Reading($0.value, at: date($0.at), via: $0.via) }
     let heard = [device.heardWifi, device.heardBluetooth].compactMap { $0 }.max()
+    // The newest report, current or not: one from before a reconnect says it is not known.
+    let newest = [device.readings[.power], device.readings[.intensity]].compactMap { $0 }.max { $0.at < $1.at }
+    var notKnownSince: Date?
+    if let newest, let connectedAt = device.connectedAt, !isCurrent(readingAt: newest.at, connectedAt: connectedAt) {
+      notKnownSince = date(connectedAt)
+    }
 
     var pending = inFlight[device.id]
     if pending == nil, let sent = device.sent, now - sent.at < Self.waitingShownFor,
@@ -195,7 +202,8 @@ public final class LiveEngine: Engine {
       variant: device.info.flatMap { $0.variantName.isEmpty ? nil : $0.variantName },
       firmware: device.info.flatMap { $0.firmware.isEmpty ? nil : $0.firmware },
       reachability: reachability(of: device, now: now), power: power, level: level, pluggedIn: pluggedIn,
-      battery: batteryLevel, signal: signal, lastReport: heard.map(date), pending: pending,
+      battery: batteryLevel, signal: signal, lastReport: heard.map(date), notKnownSince: notKnownSince,
+      pending: pending,
       failure: device.failure, schedule: device.sentProfile, scheduleSentAt: device.sentProfileAt.map(date),
       sendOver: device.sendOver, bluetoothLinked: device.bleID != nil)
   }
@@ -223,6 +231,12 @@ public final class LiveEngine: Engine {
         !linked.contains(hit.id) && deviceIDFromName(hit.name).map { ledger.devices[$0] == nil } ?? true
       }
       .map { FoundDiffuser(id: $0.id, kind: DiffuserKind(scanName: $0.name), variant: parseName($0.name).variant, rssi: $0.rssi) }
+  }
+
+  private func listenerStatus(now: Int) -> ListenerStatus {
+    if listenerRunning(ledger.listener, now: now) { return .running }
+    if ledger.listener == nil && ledger.listenerSeenAt == nil { return .notSeen }
+    return .notRunning(lastSeen: ledger.listenerSeenAt.map(date))
   }
 
   private func brokerStatus() -> BrokerStatus {
@@ -868,4 +882,9 @@ extension BrokerSettings {
   var isSet: Bool {
     URL(string: url)?.host?.isEmpty == false && !username.isEmpty
   }
+}
+
+/// A time in seconds since 1970, as a date.
+private func date(_ at: Int) -> Date {
+  Date(timeIntervalSince1970: TimeInterval(at))
 }

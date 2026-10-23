@@ -28,7 +28,8 @@ struct Reported: Equatable, Sendable {
   var via: Via
 }
 
-/// What a diffuser can report, one reading each. The raw values are the saved file's keys.
+/// What a diffuser can report, one reading each. The raw values are the saved file's keys,
+/// and the listener's (`fieldKeys`): the HVAC's fan, gas pump and light have no reading here.
 enum Field: String, CaseIterable, Sendable {
   case power, intensity, charging, battery, rssi
 }
@@ -87,6 +88,13 @@ struct DeviceRecord: Equatable, Sendable {
       return nil
     }
     return intensity
+  }
+
+  /// The reading of `field` only while it still counts: one reported before the diffuser's
+  /// last reconnect does not, since it may have come back otherwise (owner, 2026-10-22). The
+  /// screens show these; the readings themselves are kept.
+  func current(_ field: Field) -> Reported? {
+    readings[field].flatMap { isCurrent(readingAt: $0.at, connectedAt: connectedAt) ? $0 : nil }
   }
 
   private func reportedSince(_ field: Field, _ at: Int) -> Bool {
@@ -200,6 +208,10 @@ struct Ledger: Equatable, Sendable {
   /// Oldest first, at most `logCap` entries.
   var log: [LogEntry] = []
   var adding: [UUID: Adding] = [:]
+  /// The listener's last heartbeat or will (see `listenerRunning`). Not saved.
+  var listener: Heartbeat?
+  /// When a heartbeat last said the listener was running. Not saved.
+  var listenerSeenAt: Int?
   private var nextLogID = 1
 
   /// Folds one event in, at `now` for events that carry no time.
@@ -321,9 +333,14 @@ struct Ledger: Equatable, Sendable {
   private mutating func onAppMessage(_ topic: String, _ body: Data, _ at: Int) {
     // An empty retained message is how a stored one is taken off the broker.
     guard !body.isEmpty else { return }
-    // The listener's records and heartbeat (apps/server). The phone doesn't read them yet;
-    // they aren't schedules, so they aren't logged as unreadable ones either.
-    if Topics.stateDevice(topic) != nil || topic == Topics.listenerTopic { return }
+    if topic == Topics.listenerTopic {
+      onHeartbeat(body, at)
+      return
+    }
+    if topic.hasPrefix(Topics.statePrefix) {
+      onSharedState(topic, body, at)
+      return
+    }
     let text = String(decoding: body, as: UTF8.self)
     let deviceID = Topics.scheduleDevice(topic)
     let decoded = deviceID == nil ? .failure(.invalid) : decodeShared(body, now: at)
@@ -351,6 +368,41 @@ struct Ledger: Equatable, Sendable {
           id: 0, at: at, deviceID: deviceID, via: .wifi, direction: .fromDevice,
           action: sharedScheduleAction, text: text, sent: false))
     }
+  }
+
+  /// The listener's heartbeat, or its will. One that can't be used changes nothing and is
+  /// not logged: a heartbeat comes every 30 s and would fill the log.
+  private mutating func onHeartbeat(_ body: Data, _ at: Int) {
+    guard case .success(let beat) = decodeHeartbeat(body, now: at) else { return }
+    if beat.running { listenerSeenAt = later(listenerSeenAt, beat.at) }
+    listener = beat
+  }
+
+  /// The listener's record of a diffuser (spec 2026-10-22-listener-design §6.8): each
+  /// reading the app knows of is taken when it is newer than the app's own, the heard and
+  /// ping times when they are later, and a later reconnect as one heard here. A diffuser not
+  /// known yet becomes known. A record that can't be used changes nothing and is not logged:
+  /// records come every 30 s.
+  private mutating func onSharedState(_ topic: String, _ body: Data, _ at: Int) {
+    guard let id = Topics.stateDevice(topic), case .success(let shared) = decodeState(body, now: at) else {
+      return
+    }
+    var device = devices[id] ?? DeviceRecord(id: id)
+    for (key, stamped) in shared.fields {
+      // The HVAC's fan, gas pump and light have no reading here.
+      guard let field = Field(rawValue: key) else { continue }
+      if device.readings[field].map({ stamped.at > $0.at }) ?? true {
+        device.readings[field] = Reported(value: stamped.value, at: stamped.at, via: .wifi)
+      }
+    }
+    device.heardWifi = later(device.heardWifi, shared.heardAt)
+    device.pingAt = later(device.pingAt, shared.pingAt)
+    if let connected = shared.connected, device.connectedAt.map({ connected.at > $0 }) ?? true {
+      let said = Connected(
+        fw: connected.fw, model: connected.model, variant: connected.variant, manufacturer: connected.manufacturer)
+      device.noteConnected(said, at: connected.at)
+    }
+    devices[id] = device
   }
 
   private mutating func onNotification(_ bleID: UUID, _ bytes: Data, _ at: Int) {
@@ -469,6 +521,11 @@ struct Ledger: Equatable, Sendable {
     if log.count >= logCap { log.removeFirst(log.count - logCap + 1) }
     log.append(entry)
   }
+}
+
+/// The later of two times, either of which may be unknown.
+private func later(_ a: Int?, _ b: Int?) -> Int? {
+  [a, b].compactMap { $0 }.max()
 }
 
 /// What the diffuser holds after `UPDATE_PROFILE` with `sent`: with flag 0 only the
