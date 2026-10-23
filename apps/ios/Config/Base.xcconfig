@@ -1,0 +1,4 @@
+// Build settings shared by every configuration. DEVELOPMENT_TEAM goes in the gitignored
+// Local.xcconfig; see Local.xcconfig.example.
+
+#include? "Local.xcconfig"

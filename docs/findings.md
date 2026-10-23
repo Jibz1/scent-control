@@ -582,6 +582,58 @@ Also seen during the same watch:
 - The add flow's Bluetooth wording for "Credentials saved", and whether the `SECRET_COMMAND`
   restart write is acknowledged before the reboot.
 
+## iPhone spike (2026-10-22) [observed]
+
+The throwaway spike (`spikes/ios-core`, branch `spike/ios-core`) ran the Rust core on the
+owner's iPhone through UniFFI. It sends a diffuser no command: its only Bluetooth operation
+is reading `0xFEF4`. The owner ran its three checks with both diffusers nearby.
+
+- **The phone.** An iPhone 16 Pro Max on iOS 27.0.1 (as `xcrun devicectl` reports it),
+  running a signed Release build installed with `devicectl`. **[observed]**
+- **Bluetooth works through `btleplug` 0.13.4.** **[observed]**
+  - A 5-second scan found both diffusers, the Air 2 and the HVAC 2.
+  - Reading `0xFEF4` worked on both: each showed its firmware and WiFi state, with no
+    error.
+  - In the simulator, Bluetooth stays in state Unknown, and a scan ends with "Bluetooth
+    isn't ready (Unknown)…", without a crash.
+- **The broker works with both kinds of root certificates.** Over `wss://` to the test
+  broker, each sent a probe message and got it back. **[observed]**
+  - System roots: rumqttc's default config, the same call the Mac app makes. The mechanism
+    differs: `rustls-native-certs` 0.8.5 has no Security-framework backend on iOS, so it
+    takes its Unix path, which looks for certificate files and returns an empty store,
+    without an error, when it finds none. The connection was verified, so some roots
+    loaded, but where they came from and how many wasn't recorded.
+  - Bundled roots: Mozilla's list from `webpki-roots` 1.0.10.
+- **Not recorded.** **[observed]**
+  - The timings, and the exact firmware and WiFi values each diffuser showed.
+  - Whether both advertised names carried a device ID.
+  - The console: the app was launched without `--console`.
+- **Building.** A static-library XCFramework (an ios-arm64 slice and an
+  ios-arm64-simulator slice) with UniFFI 0.32.2 works. **[observed]**
+  - What was exercised: records, enums, an error enum, and blocking exports called from
+    Swift's `Task.detached`. No callback or listener interface was tried.
+  - Bindgen reads the metadata straight from the device's `.a`. No host library is needed.
+  - The generated Swift records and enums are `Sendable`, so Swift 6's strict concurrency
+    accepts them.
+  - `cargo build` needs `IPHONEOS_DEPLOYMENT_TARGET=18.0`. Without it, rustc targets
+    iOS 10.0 while aws-lc's C code is built for the SDK's version, and linking fails on
+    `___chkstk_darwin`.
+  - Linking needed no frameworks beyond CoreBluetooth and Security, which the project
+    declares.
+  - The Rust slice is arm64 only, so a simulator build needs a named destination
+    (`platform=iOS Simulator,name=…`). The generic simulator destination asks for x86_64.
+
+The spike's two decision lines for part 2 were:
+
+- Bluetooth on iPhone: Rust (btleplug)
+- Root certificates on iPhone: system
+
+**Superseded (owner, 2026-10-22).** After the spike, the owner decided there is no Rust on
+the phone: the iPhone app is written in Swift. So:
+
+- Bluetooth on iPhone: Swift (Core Bluetooth). `btleplug` worked; the choice is the owner's.
+- Root certificates on iPhone: Swift's own TLS, settled in the revised iPhone design.
+
 ## 2026-10-22: The broker restarted with persistence on [observed]
 
 The live broker had been running with persistence off and no volume, so every restart
@@ -693,3 +745,19 @@ listener's spec (§8). The HVAC 2 was in the attic, so check 4 used the Air 2.
   app's attempts at 19:41 to set the Air 2's intensity and to read its status over
   Bluetooth both timed out "while reading the services". This is separate from the
   listener.
+
+## iPhone app, first run on the phone (2026-10-23) [observed]
+
+The Swift app (`apps/ios`, branch `ios-app`) on the owner's iPhone 16 Pro Max, iOS 27.0.1, as
+a Debug build installed over USB-C with `devicectl`. It started from what the Mac app knew
+(`apps/ios/scripts/seed-from-mac.py`: the broker's address, username and route ID, and both
+diffusers' IDs, names, rooms, info and last schedule; no Bluetooth IDs and no password).
+
+- **Broker: works.** After the broker password was saved in Settings (to the phone's
+  Keychain), the app's own MQTT client connected over `wss://` with the system's TLS, and
+  both diffusers showed as answering, which means they answered its pings. **[observed]**
+- **Control over WiFi: works.** On/off and intensity worked on both diffusers through the
+  broker. **[observed]**
+- **Not tried yet:** Bluetooth from the phone (scanning, linking by name, Bluetooth-first
+  control), schedules and copying them, adding a diffuser, and control from outside the home
+  network. The phone version of `docs/phase-1-owner-session.md` covers them.

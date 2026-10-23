@@ -1,0 +1,277 @@
+{
+  "commands": [
+    {
+      "name": "turn_on",
+      "ble_frame": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":1}}-|",
+      "mqtt_body": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":1}}",
+      "redacted_bluetooth": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":1}}-|",
+      "redacted_wifi": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":1}}"
+    },
+    {
+      "name": "turn_off",
+      "ble_frame": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":0}}-|",
+      "mqtt_body": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":0}}",
+      "redacted_bluetooth": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":0}}-|",
+      "redacted_wifi": "{\"action\":\"TURN_ON\",\"payload\":{\"on\":0}}"
+    },
+    {
+      "name": "set_level_1",
+      "ble_frame": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":1}}-|",
+      "mqtt_body": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":1}}",
+      "redacted_bluetooth": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":1}}-|",
+      "redacted_wifi": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":1}}"
+    },
+    {
+      "name": "set_level_2",
+      "ble_frame": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":2}}-|",
+      "mqtt_body": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":2}}",
+      "redacted_bluetooth": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":2}}-|",
+      "redacted_wifi": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":2}}"
+    },
+    {
+      "name": "set_level_3",
+      "ble_frame": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":3}}-|",
+      "mqtt_body": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":3}}",
+      "redacted_bluetooth": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":3}}-|",
+      "redacted_wifi": "{\"action\":\"SET_LEVEL\",\"payload\":{\"intensity\":3}}"
+    },
+    {
+      "name": "ping",
+      "ble_frame": "{\"action\":\"PING\"}-|",
+      "mqtt_body": "{\"action\":\"PING\"}",
+      "redacted_bluetooth": "{\"action\":\"PING\"}-|",
+      "redacted_wifi": "{\"action\":\"PING\"}"
+    },
+    {
+      "name": "ping_with_userid",
+      "ble_frame": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}-|",
+      "mqtt_body": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}",
+      "redacted_bluetooth": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}-|",
+      "redacted_wifi": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}"
+    },
+    {
+      "name": "ping_with_empty_userid",
+      "ble_frame": "{\"action\":\"PING\",\"payload\":{\"userid\":\"\"}}-|",
+      "mqtt_body": "{\"action\":\"PING\",\"payload\":{\"userid\":\"\"}}",
+      "redacted_bluetooth": "{\"action\":\"PING\",\"payload\":{\"userid\":\"\"}}-|",
+      "redacted_wifi": "{\"action\":\"PING\",\"payload\":{\"userid\":\"\"}}"
+    },
+    {
+      "name": "get_status",
+      "ble_frame": "{\"action\":\"GET_STATUS\",\"payload\":{}}-|",
+      "mqtt_body": "{\"action\":\"GET_STATUS\",\"payload\":{}}",
+      "redacted_bluetooth": "{\"action\":\"GET_STATUS\",\"payload\":{}}-|",
+      "redacted_wifi": "{\"action\":\"GET_STATUS\",\"payload\":{}}"
+    },
+    {
+      "name": "sync_time",
+      "ble_frame": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":1792510200}}-|",
+      "mqtt_body": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":1792510200}}",
+      "redacted_bluetooth": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":1792510200}}-|",
+      "redacted_wifi": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":1792510200}}"
+    },
+    {
+      "name": "sync_time_zero",
+      "ble_frame": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":0}}-|",
+      "mqtt_body": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":0}}",
+      "redacted_bluetooth": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":0}}-|",
+      "redacted_wifi": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":0}}"
+    },
+    {
+      "name": "sync_time_max",
+      "ble_frame": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":18446744073709551615}}-|",
+      "mqtt_body": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":18446744073709551615}}",
+      "redacted_bluetooth": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":18446744073709551615}}-|",
+      "redacted_wifi": "{\"action\":\"SYNC_TIME\",\"payload\":{\"serverTime\":18446744073709551615}}"
+    },
+    {
+      "name": "save_mqtt",
+      "ble_frame": "{\"action\":\"SAVE_MQTT\",\"payload\":{\"broker\":\"wss://broker.example.test/mqtt\",\"username\":\"example-user\",\"password\":\"example-password\"}}-|",
+      "mqtt_body": "{\"action\":\"SAVE_MQTT\",\"payload\":{\"broker\":\"wss://broker.example.test/mqtt\",\"username\":\"example-user\",\"password\":\"example-password\"}}",
+      "redacted_bluetooth": "{\"action\":\"SAVE_MQTT\",\"payload\":{\"broker\":\"wss://broker.example.test/mqtt\",\"username\":\"example-user\",\"password\":\"***\"}}-|",
+      "redacted_wifi": "{\"action\":\"SAVE_MQTT\",\"payload\":{\"broker\":\"wss://broker.example.test/mqtt\",\"username\":\"example-user\",\"password\":\"***\"}}"
+    },
+    {
+      "name": "wifi_connect",
+      "ble_frame": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"ExampleWiFi\",\"password\":\"example-password\"}}-|",
+      "mqtt_body": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"ExampleWiFi\",\"password\":\"example-password\"}}",
+      "redacted_bluetooth": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"ExampleWiFi\",\"password\":\"***\"}}-|",
+      "redacted_wifi": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"ExampleWiFi\",\"password\":\"***\"}}"
+    },
+    {
+      "name": "wifi_connect_escapes",
+      "ble_frame": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"Café \\\"5G\\\" / 🌿\\\\ \\t\\n\\r\\b\\f\\u0000\\u0001\\u001f \",\"password\":\"p\\\\w\\\"ä\\u0001\"}}-|",
+      "mqtt_body": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"Café \\\"5G\\\" / 🌿\\\\ \\t\\n\\r\\b\\f\\u0000\\u0001\\u001f \",\"password\":\"p\\\\w\\\"ä\\u0001\"}}",
+      "redacted_bluetooth": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"Café \\\"5G\\\" / 🌿\\\\ \\t\\n\\r\\b\\f\\u0000\\u0001\\u001f \",\"password\":\"***\"}}-|",
+      "redacted_wifi": "{\"action\":\"WIFI_CONNECT\",\"payload\":{\"ssid\":\"Café \\\"5G\\\" / 🌿\\\\ \\t\\n\\r\\b\\f\\u0000\\u0001\\u001f \",\"password\":\"***\"}}"
+    },
+    {
+      "name": "soft_restart",
+      "ble_frame": "{\"action\":\"SECRET_COMMAND\",\"payload\":{\"command\":\"restart\"}}-|",
+      "mqtt_body": "{\"action\":\"RESET\",\"payload\":{\"mode\":\"soft\"}}",
+      "redacted_bluetooth": "{\"action\":\"SECRET_COMMAND\",\"payload\":{\"command\":\"restart\"}}-|",
+      "redacted_wifi": "{\"action\":\"RESET\",\"payload\":{\"mode\":\"soft\"}}"
+    },
+    {
+      "name": "update_profile_replace",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true},{\"startTime\":\"07:00\",\"endTime\":\"09:00\",\"weekdays\":[1,2,3,4,5],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"18:30\",\"endTime\":\"22:00\",\"weekdays\":[0,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"12:00\",\"endTime\":\"12:30\",\"weekdays\":[3],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false}]},\"timezone\":5.5,\"schedule_flag\":1}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true},{\"startTime\":\"07:00\",\"endTime\":\"09:00\",\"weekdays\":[1,2,3,4,5],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"18:30\",\"endTime\":\"22:00\",\"weekdays\":[0,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"12:00\",\"endTime\":\"12:30\",\"weekdays\":[3],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false}]},\"timezone\":5.5,\"schedule_flag\":1}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true},{\"startTime\":\"07:00\",\"endTime\":\"09:00\",\"weekdays\":[1,2,3,4,5],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"18:30\",\"endTime\":\"22:00\",\"weekdays\":[0,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"12:00\",\"endTime\":\"12:30\",\"weekdays\":[3],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false}]},\"timezone\":5.5,\"schedule_flag\":1}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true},{\"startTime\":\"07:00\",\"endTime\":\"09:00\",\"weekdays\":[1,2,3,4,5],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"18:30\",\"endTime\":\"22:00\",\"weekdays\":[0,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true},{\"startTime\":\"12:00\",\"endTime\":\"12:30\",\"weekdays\":[3],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false}]},\"timezone\":5.5,\"schedule_flag\":1}}"
+    },
+    {
+      "name": "update_profile_always_on_only",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-5.0,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-5.0,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-5.0,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":2,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-5.0,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_replace_empty",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":1}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":1}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":1}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":3,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":false,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":1}}"
+    },
+    {
+      "name": "update_profile_zone_zero",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_negative_zero",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-0.0,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-0.0,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-0.0,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-0.0,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_quarter",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5.75,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5.75,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5.75,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5.75,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_negative_half",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-9.5,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-9.5,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-9.5,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-9.5,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_fourteen",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":14.0,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":14.0,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":14.0,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":14.0,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_tenth",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.1,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.1,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.1,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.1,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_third",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.3333333333333333,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.3333333333333333,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.3333333333333333,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.3333333333333333,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_1e15",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1000000000000000.0,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1000000000000000.0,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1000000000000000.0,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1000000000000000.0,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_1e16",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+16,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+16,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+16,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+16,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_1e-5",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.00001,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.00001,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.00001,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.00001,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_1e-6",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e-6,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e-6,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e-6,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e-6,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_small",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0000125,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0000125,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0000125,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":0.0000125,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_tiny",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-4.5e-9,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-4.5e-9,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-4.5e-9,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-4.5e-9,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_large",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-1.23456789e+20,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-1.23456789e+20,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-1.23456789e+20,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":-1.23456789e+20,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_1e23",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+23,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+23,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+23,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1e+23,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_max",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1.7976931348623157e+308,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1.7976931348623157e+308,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1.7976931348623157e+308,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":1.7976931348623157e+308,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_min_positive",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":2.2250738585072014e-308,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":2.2250738585072014e-308,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":2.2250738585072014e-308,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":2.2250738585072014e-308,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_subnormal",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5e-324,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5e-324,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5e-324,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":5e-324,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_nan",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}"
+    },
+    {
+      "name": "update_profile_zone_infinity",
+      "ble_frame": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}-|",
+      "mqtt_body": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}",
+      "redacted_bluetooth": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}-|",
+      "redacted_wifi": "{\"action\":\"UPDATE_PROFILE\",\"payload\":{\"profile\":{\"schedule\":[{\"index\":1,\"startTime\":\"00:00\",\"endTime\":\"23:59\",\"weekdays\":[0,1,2,3,4,5,6],\"workingState\":{\"level\":1,\"fan\":0,\"led\":0,\"timer\":0},\"enable\":true,\"isFactory\":true}]},\"timezone\":null,\"schedule_flag\":0}}"
+    }
+  ]
+}
