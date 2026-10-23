@@ -761,3 +761,26 @@ diffusers' IDs, names, rooms, info and last schedule; no Bluetooth IDs and no pa
 - **Not tried yet:** Bluetooth from the phone (scanning, linking by name, Bluetooth-first
   control), schedules and copying them, adding a diffuser, and control from outside the home
   network. The phone version of `docs/phase-1-owner-session.md` covers them.
+
+## The HVAC 2 didn't follow a schedule from Scent Control (2026-10-23) [observed]
+
+From the test broker's debug log on Railway (`railway logs --service test-broker`), matched
+on the HVAC 2's client ID and device topic. Times are the owner's (UTC−5).
+
+- **It received the schedule and the time.** At 11:27:29 a 796-byte `UPDATE_PROFILE` (the
+  always-on entry off, and four times a day: 08:00–10:00, 11:00–13:00, 14:00–16:00 and
+  17:00–20:00, all at intensity 1, zone −5) was delivered to it, and at 11:27:34 a 58-byte
+  `SYNC_TIME`: the order that worked on the Air 2 in Phase 0.
+- **Its clock should have held.** It didn't disconnect or reconnect from 10:11 to 14:11.
+- **It didn't stop at 13:00.** It had been switched on by hand at 11:25 (`TURN_ON`
+  `{"on":1}`, confirmed). Its running reports (139-byte `update_status`) carried on past
+  13:00, to about 13:15.
+- **It didn't start at 14:00.** It had been switched off by hand at 13:53. From 14:00 to
+  14:11 it sent nothing but answers to pings, and it reports when it switches itself on or
+  off (see "The listener, and the owner's checks").
+- **Not known:** whether a hand switch overrides its schedule until something resets it;
+  whether the HVAC 2 runs timed entries from `UPDATE_PROFILE` at all (Phase 0 confirmed
+  schedules on the Air 2 only, with a schedule of one test time); and whether the size
+  matters (796 bytes here; the Phase 0 test was about 300). The Air 2 got the same four
+  times at 13:24 and a five-time table (930 bytes) at 13:25, but it was already on at 14:00,
+  so it shows nothing either way.
