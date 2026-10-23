@@ -45,16 +45,13 @@ enum Words {
     d.notKnownSince == nil ? "Not reported yet" : "Not known"
   }
 
-  /// The line under the room's headline: the intensity, or when it reconnected if that is
-  /// why what it is doing isn't known, and how it answers pings.
-  static func detail(_ d: DiffuserState, now: Date) -> String {
+  /// The line under the room's headline: the intensity, and how it answers pings.
+  static func detail(_ d: DiffuserState) -> String {
     var parts: [String] = []
     if let level = d.shownLevel, d.shownPower == true {
       parts.append("\(Words.level(level)) intensity")
     } else if d.shownPower == false {
       parts.append("Not diffusing")
-    } else if d.shownPower == nil, let since = d.notKnownSince {
-      parts.append("reconnected \(ago(since, now: now))")
     }
     parts.append(reachability(d.reachability))
     return parts.joined(separator: ", ").capitalizedFirst
