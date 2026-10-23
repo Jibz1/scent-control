@@ -17,7 +17,7 @@ enum Words {
     switch d.power?.value {
     case true?: return "Diffusing"
     case false?: return "Off"
-    case nil: return "Not reported yet"
+    case nil: return unknownPower(d)
     }
   }
 
@@ -31,15 +31,24 @@ enum Words {
     switch d.power?.value {
     case true?: return d.level.map { "Diffusing at \(level($0.value))" } ?? "Diffusing"
     case false?: return "Off"
-    case nil: return "Not reported yet"
+    case nil: return unknownPower(d)
     }
   }
 
-  /// The line under the room's headline: the intensity and how it last answered.
-  static func detail(_ d: DiffuserState) -> String {
+  /// What it is doing when its power isn't known: not known since it reconnected, which it
+  /// may have come back from otherwise, or never reported.
+  private static func unknownPower(_ d: DiffuserState) -> String {
+    d.notKnownSince == nil ? "Not reported yet" : "Not known"
+  }
+
+  /// The line under the room's headline: the intensity, or when it reconnected if that is
+  /// why what it is doing isn't known, and how it last answered.
+  static func detail(_ d: DiffuserState, now: Date) -> String {
     var parts: [String] = []
     if let level = d.shownLevel, d.shownPower == true {
       parts.append("\(Words.level(level)) intensity")
+    } else if d.shownPower == nil, let since = d.notKnownSince {
+      parts.append("reconnected \(ago(since, now: now))")
     }
     parts.append(reachability(d.reachability))
     return parts.joined(separator: ", ").capitalizedFirst
@@ -51,6 +60,17 @@ enum Words {
     case .waiting: "waiting for an answer"
     case .notAnswering: "not answering pings"
     case .unknown: "not pinged yet"
+    }
+  }
+
+  /// Whether the always-on listener is running, for Settings: while it isn't, what it
+  /// shared may be out of date, and the app relies on what it hears itself.
+  static func listener(_ status: ListenerStatus, now: Date) -> String {
+    switch status {
+    case .running: "Running"
+    case .notRunning(let seen?): "Not running, last seen \(ago(seen, now: now))"
+    case .notRunning(nil): "Not running"
+    case .notSeen: "Not seen yet"
     }
   }
 

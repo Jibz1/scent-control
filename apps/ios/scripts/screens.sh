@@ -6,7 +6,7 @@
 set -eu
 UDID=${SIM_UDID:-$(cat build/sim-udid)}
 APP=build/DerivedData/Build/Products/Debug-iphonesimulator/ScentControl.app
-SCREENS=${SCREENS:-home diffuser diffuserDetails diffuserOff schedule copy add log settings}
+SCREENS=${SCREENS:-home diffuser diffuserDetails diffuserOff diffuserNotKnown schedule copy add log settings}
 MODES=${MODES:-light dark}
 
 xcrun simctl boot "$UDID" 2>/dev/null || true

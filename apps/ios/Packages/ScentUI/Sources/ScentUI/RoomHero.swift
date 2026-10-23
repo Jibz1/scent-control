@@ -7,6 +7,7 @@ import SwiftUI
 /// words; and the power button and intensity control at the bottom, on glass.
 struct RoomHero: View {
   let diffuser: DiffuserState
+  let now: Date
   let topInset: CGFloat
   let setPower: (Bool) -> Void
   let setLevel: (Level) -> Void
@@ -94,7 +95,7 @@ struct RoomHero: View {
 
   private var subline: String {
     if let pending = diffuser.pending { return Words.pending(pending) }
-    return Words.detail(diffuser)
+    return Words.detail(diffuser, now: now)
   }
 }
 

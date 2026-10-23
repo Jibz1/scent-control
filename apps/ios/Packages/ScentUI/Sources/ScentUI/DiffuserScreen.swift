@@ -18,7 +18,7 @@ struct DiffuserScreen: View {
         ScrollView {
           VStack(spacing: 28) {
             RoomHero(
-              diffuser: diffuser, topInset: proxy.safeAreaInsets.top,
+              diffuser: diffuser, now: model.now, topInset: proxy.safeAreaInsets.top,
               setPower: { model.send(.setPower(id: id, on: $0)) },
               setLevel: { model.send(.setLevel(id: id, level: $0)) })
             .onScrollVisibilityChange(threshold: 0.3) { visible in
