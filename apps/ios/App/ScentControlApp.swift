@@ -26,6 +26,10 @@ struct ScentControlApp: App {
         model.found = [Samples.foundAir2]
         model.adds[Samples.foundAir2.id] = Samples.addUnderWay(at: model.now)
       }
+      if start == .diffuserNotKnown {
+        let now = model.now
+        model.update("TESTDEVICE02") { Samples.reconnected(&$0, at: now) }
+      }
     } else {
       let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
       let seed = Bundle.main.url(forResource: "seed", withExtension: "json")

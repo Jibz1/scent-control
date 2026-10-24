@@ -107,6 +107,13 @@ public enum Samples {
       ])
   }
 
+  /// Hallway just after it rejoined the broker, before it has said what it is doing.
+  public static func reconnected(_ diffuser: inout DiffuserState, at now: Date) {
+    diffuser.power = nil
+    diffuser.level = nil
+    diffuser.notKnownSince = now - 2 * 60
+  }
+
   public static let brokerSettings = BrokerSettings(
     url: "wss://broker.example.test/mqtt", username: "example-user", routeID: "example-route")
 
@@ -115,7 +122,7 @@ public enum Samples {
   public static func model(frozen: Bool = true) -> AppModel {
     let at = frozen ? now : .now
     return AppModel(
-      engine: SampleEngine(), diffusers: diffusers(at: at), broker: .connected,
+      engine: SampleEngine(), diffusers: diffusers(at: at), broker: .connected, listener: .running,
       brokerSettings: brokerSettings, log: log(at: at), now: at)
   }
 }

@@ -42,7 +42,7 @@ public func isStale(at: Int, now: Int) -> Bool {
 }
 
 /// `a - b`, stopping at the ends instead of overflowing.
-private func saturatingSubtract(_ a: Int, _ b: Int) -> Int {
+func saturatingSubtract(_ a: Int, _ b: Int) -> Int {
   let (difference, overflow) = a.subtractingReportingOverflow(b)
   return overflow ? (b < 0 ? Int.max : Int.min) : difference
 }

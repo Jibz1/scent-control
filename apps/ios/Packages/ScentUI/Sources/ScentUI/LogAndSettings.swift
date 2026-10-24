@@ -96,6 +96,10 @@ struct SettingsScreen: View {
           LabeledContent("Status") {
             Text(status).foregroundStyle(statusColor)
           }
+          LabeledContent("Listener") {
+            Text(Words.listener(model.listener, now: model.now))
+              .foregroundStyle(model.listener == .running ? Theme.answering : .secondary)
+          }
           Field("Address") {
             TextField("Address", text: $settings.url, prompt: Text("wss://broker.example.com/mqtt"))
               .keyboardType(.URL)
@@ -113,7 +117,7 @@ struct SettingsScreen: View {
           Text("Broker")
         } footer: {
           Text(
-            "WiFi control goes through this broker, so it works away from home. The password stays in this iPhone's Keychain and is never shown again."
+            "WiFi control goes through this broker, so it works away from home. The listener, while it runs, keeps each diffuser's last readings there for this iPhone. The password stays in this iPhone's Keychain and is never shown again."
           )
         }
 

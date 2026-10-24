@@ -17,7 +17,7 @@ enum Words {
     switch d.power?.value {
     case true?: return "Diffusing"
     case false?: return "Off"
-    case nil: return "Not reported yet"
+    case nil: return unknownPower(d)
     }
   }
 
@@ -35,8 +35,14 @@ enum Words {
     switch d.power?.value {
     case true?: return d.level.map { "Diffusing at \(level($0.value))" } ?? "Diffusing"
     case false?: return "Off"
-    case nil: return "Not reported yet"
+    case nil: return unknownPower(d)
     }
+  }
+
+  /// What it is doing when its power isn't known: not known since it reconnected, which it
+  /// may have come back from otherwise, or never reported.
+  private static func unknownPower(_ d: DiffuserState) -> String {
+    d.notKnownSince == nil ? "Not reported yet" : "Not known"
   }
 
   /// The line under the room's headline: the intensity, and how it answers pings.
@@ -57,6 +63,17 @@ enum Words {
     case .waiting: "waiting for an answer"
     case .notAnswering: "not answering pings"
     case .unknown: "not pinged yet"
+    }
+  }
+
+  /// Whether the always-on listener is running, for Settings: while it isn't, what it
+  /// shared may be out of date, and the app relies on what it hears itself.
+  static func listener(_ status: ListenerStatus, now: Date) -> String {
+    switch status {
+    case .running: "Running"
+    case .notRunning(let seen?): "Not running, last seen \(ago(seen, now: now))"
+    case .notRunning(nil): "Not running"
+    case .notSeen: "Not seen yet"
     }
   }
 

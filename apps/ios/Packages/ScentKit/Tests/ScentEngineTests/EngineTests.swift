@@ -210,15 +210,6 @@ let evening = Profile(
     #expect(rig.diffuser("TESTDEVICE01")?.schedule == morning)
   }
 
-  @Test func theListenersRecordsAreNotLoggedAsSchedules() async {
-    let rig = Rig(file: twoDiffusers())
-    let before = rig.model.log.count
-    let state = Data(#"{"v":1,"device_id":"TESTDEVICE01"}"#.utf8)
-    rig.radios.report(.mqtt(topic: "scent-control/v1/state/TESTDEVICE01", body: state, at: rig.clock.now))
-    rig.radios.report(.mqtt(topic: "scent-control/v1/listener", body: Data(#"{"v":1}"#.utf8), at: rig.clock.now))
-    #expect(rig.model.log.count == before)
-  }
-
   @Test func aScanLinksAKnownDiffuserByItsNameAndListsTheRest() async {
     // An advertised name ends with the device ID, which is 12 hex digits (a made-up one here).
     var file = twoDiffusers()

@@ -36,6 +36,8 @@ public final class AppModel {
   public var scanning: Bool
   public var scanProblem: String?
   public var broker: BrokerStatus
+  /// Whether the always-on listener is running.
+  public var listener: ListenerStatus
   public var brokerSettings: BrokerSettings
   public var appearance: Appearance
   public var log: [LogLine]
@@ -53,7 +55,8 @@ public final class AppModel {
 
   public init(
     engine: any Engine, diffusers: [DiffuserState] = [], found: [FoundDiffuser] = [],
-    broker: BrokerStatus = .notSetUp, brokerSettings: BrokerSettings = BrokerSettings(),
+    broker: BrokerStatus = .notSetUp, listener: ListenerStatus = .notSeen,
+    brokerSettings: BrokerSettings = BrokerSettings(),
     appearance: Appearance = .system, log: [LogLine] = [], now: Date = .now
   ) {
     self.engine = engine
@@ -61,6 +64,7 @@ public final class AppModel {
     self.found = found
     self.scanning = false
     self.broker = broker
+    self.listener = listener
     self.brokerSettings = brokerSettings
     self.appearance = appearance
     self.log = log

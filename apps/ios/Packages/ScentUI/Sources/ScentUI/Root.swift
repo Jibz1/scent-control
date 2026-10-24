@@ -23,6 +23,8 @@ public enum StartScreen: String, Sendable {
   case diffuser
   case diffuserDetails
   case diffuserOff
+  /// A diffuser whose power isn't known since it reconnected.
+  case diffuserNotKnown
   case schedule
   case copy
   case add
@@ -45,7 +47,7 @@ public struct ScentControlRoot: View {
     self.start = start
     switch start {
     case .diffuser, .diffuserDetails, .schedule, .copy: _path = State(initialValue: ["TESTDEVICE01"])
-    case .diffuserOff: _path = State(initialValue: ["TESTDEVICE02"])
+    case .diffuserOff, .diffuserNotKnown: _path = State(initialValue: ["TESTDEVICE02"])
     default: _path = State(initialValue: [])
     }
     switch start {

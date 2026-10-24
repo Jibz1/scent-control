@@ -109,10 +109,15 @@ struct RoomHero: View {
     return Words.detail(diffuser)
   }
 
-  /// Where the state comes from: "Reported 3 min ago over WiFi". None while a change is on
+  /// Where the state comes from: "Reported 3 min ago over WiFi", or "Not known since it
+  /// reconnected 2 min ago" when its last report came before that. None while a change is on
   /// its way, which the line above says.
   private var note: String? {
-    guard diffuser.pending == nil, let reported = diffuser.stateReported else { return nil }
+    guard diffuser.pending == nil else { return nil }
+    if let since = diffuser.notKnownSince {
+      return "Not known since it reconnected \(Words.ago(since, now: now))"
+    }
+    guard let reported = diffuser.stateReported else { return nil }
     return "Reported \(Words.ago(reported.at, now: now)) over \(reported.via.name)"
   }
 }
