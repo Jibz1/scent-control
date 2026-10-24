@@ -1,6 +1,6 @@
 # The listener. Built from the repo root, so that the workspace's lockfile and catalog
 # apply: docker build -f apps/server/Dockerfile .
-FROM oven/bun:1.4.2
+FROM oven/bun:1.4.4
 
 WORKDIR /app
 
