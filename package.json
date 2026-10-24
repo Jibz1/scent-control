@@ -10,7 +10,7 @@
       "tools"
     ],
     "catalog": {
-      "effect": "4.0.2"
+      "effect": "4.0.6"
     }
   },
   "scripts": {
@@ -20,9 +20,9 @@
     "fmt:check": "turbo run fmt:check"
   },
   "devDependencies": {
-    "turbo": "2.11.7"
+    "turbo": "2.11.10"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.2"
+    "@effect/platform-node-shared": "4.0.6"
   }
 }
