@@ -92,7 +92,7 @@ goes in the repo-root `.env`.
 ```bash
 .venv/bin/python broker.py watch
 .venv/bin/python broker.py watch --url wss://<your-broker-host>/mqtt --username <username>
-.venv/bin/python broker.py publish --topic scentiment-mqtt-prod/device/<deviceId> --json '{"action":"PING","payload":{"userid":"example-route"}}'
+.venv/bin/python broker.py publish --topic scentiment-mqtt-prod/device/<deviceId> --json '{"action":"PING","payload":{"userid":"route-test-1"}}'
 .venv/bin/python broker.py sync-time --topic scentiment-mqtt-prod/device/<deviceId>
 .venv/bin/python broker.py publish-profile --topic scentiment-mqtt-prod/device/<deviceId> --file ../captures/sched.json --timezone -4
 ```
@@ -108,7 +108,7 @@ real app exists:
 # open http://127.0.0.1:8765
 ```
 
-`--route-id` defaults to `SCENT_ROUTE_ID` the same way, else `example-route`.
+`--route-id` defaults to `SCENT_ROUTE_ID` the same way, else `route-test-1`.
 
 The helper listens only on 127.0.0.1 and holds the broker password, taken from
 `.env.local` or a prompt. The page never sees the password. Every command goes

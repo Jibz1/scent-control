@@ -5,7 +5,7 @@ import Testing
 
 @testable import ScentProtocol
 
-private let userTopic = "scentiment-mqtt-prod/user/example-route"
+private let userTopic = "scentiment-mqtt-prod/user/route-test-1"
 
 @Suite struct NotificationTests {
   // Cases ported from tools/tests/test_scentiment_ble.py
@@ -197,7 +197,7 @@ private let userTopic = "scentiment-mqtt-prod/user/example-route"
   @Test func takesTheDeviceIDFromADeviceTopic() {
     let m = parseMqtt(
       topic: "scentiment-mqtt-prod/device/TESTDEVICE01",
-      body: data(#"{"action":"PING","payload":{"userid":"example-route"}}"#))
+      body: data(#"{"action":"PING","payload":{"userid":"route-test-1"}}"#))
     #expect(m.direction == .toDevice)
     #expect(m.deviceID == "TESTDEVICE01")
     #expect(m.action == "PING")
@@ -229,7 +229,7 @@ private let userTopic = "scentiment-mqtt-prod/user/example-route"
 
   @Test func readsAcknowledgementResults() {
     func ack(_ result: String) -> Ack? {
-      let msg = JSON.object(["user_id": .string("example-route"), "result": .string(result)]).text
+      let msg = JSON.object(["user_id": .string("route-test-1"), "result": .string(result)]).text
       let body = JSON.object([
         "action": .string("acknowledgement"),
         "payload": .object(["deviceId": .string("TESTDEVICE01"), "msg": .string(msg)]),
@@ -265,7 +265,7 @@ private let userTopic = "scentiment-mqtt-prod/user/example-route"
       utf8(#"{"payload":{"data":{"data":"x"}}}"#),
     ]
     for body in bodies {
-      let m = parseMqtt(topic: "scentiment-mqtt-prod/user/example-route", body: Data(body))
+      let m = parseMqtt(topic: "scentiment-mqtt-prod/user/route-test-1", body: Data(body))
       #expect(!m.raw.isEmpty || body.isEmpty)
     }
   }

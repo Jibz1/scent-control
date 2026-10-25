@@ -17,7 +17,7 @@ use tokio::{
 const POWER: &str = "scent-control/example-home/TESTDEVICE01/power/set";
 const LEVEL: &str = "scent-control/example-home/TESTDEVICE01/level/set";
 const DEVICE: &str = "scentiment-mqtt-prod/device/TESTDEVICE01";
-const REPORT: &str = "scentiment-mqtt-prod/user/example-route";
+const REPORT: &str = "scentiment-mqtt-prod/user/route-test-1";
 const AVAILABILITY: &str = "scent-control/example-home/availability";
 const DEVICE_AVAILABILITY: &str = "scent-control/example-home/TESTDEVICE01/availability";
 
@@ -185,7 +185,7 @@ impl Harness {
         assert_eq!(topic, DEVICE);
         assert_eq!(
             body,
-            br#"{"action":"PING","payload":{"userid":"example-route"}}"#
+            br#"{"action":"PING","payload":{"userid":"route-test-1"}}"#
         );
     }
 

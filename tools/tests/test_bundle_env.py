@@ -40,7 +40,7 @@ def test_only_the_three_broker_settings_are_exported(tmp_path):
         "# The broker the app starts with.\n"
         "SCENT_BROKER_URL=wss://broker.example.test/mqtt\n"
         'export SCENT_BROKER_USERNAME="example-user"\n'
-        "  SCENT_ROUTE_ID = 'example-route'  \n"
+        "  SCENT_ROUTE_ID = 'route-test-1'  \n"
         "\n"
         "OTHER_SETTING=not-for-the-build\n"
     )
@@ -48,7 +48,7 @@ def test_only_the_three_broker_settings_are_exported(tmp_path):
     got = exported(result)
     assert got["SCENT_BROKER_URL"] == "wss://broker.example.test/mqtt"
     assert got["SCENT_BROKER_USERNAME"] == "example-user"
-    assert got["SCENT_ROUTE_ID"] == "example-route"
+    assert got["SCENT_ROUTE_ID"] == "route-test-1"
     assert "OTHER_SETTING" not in got
     assert result.stderr == ""
 
@@ -75,11 +75,11 @@ def test_any_key_with_password_in_its_name_is_ignored(tmp_path):
     env_file.write_text(
         f"broker_password={SECRET}\n"
         f"export MY_PASSWORD_TOO='{SECRET}'\n"
-        f"SCENT_ROUTE_ID=example-route\n"
+        f"SCENT_ROUTE_ID=route-test-1\n"
     )
     result = load(env_file)
     got = exported(result)
-    assert got["SCENT_ROUTE_ID"] == "example-route"
+    assert got["SCENT_ROUTE_ID"] == "route-test-1"
     assert not any("PASSWORD" in key.upper() for key in got)
     assert SECRET not in result.stdout + result.stderr
     assert len(result.stderr.splitlines()) == 2, result.stderr
@@ -113,7 +113,7 @@ def test_an_empty_variable_in_the_environment_does_not_hide_the_file(tmp_path):
 def test_a_malformed_password_line_is_told_by_its_number_never_its_text(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "SCENT_ROUTE_ID=example-route\n"
+        "SCENT_ROUTE_ID=route-test-1\n"
         f"PASSWORD: {SECRET}=x\n"
     )
     result = load(env_file)
@@ -121,7 +121,7 @@ def test_a_malformed_password_line_is_told_by_its_number_never_its_text(tmp_path
     warning = result.stderr.splitlines()
     assert len(warning) == 1, result.stderr
     assert "line 2" in warning[0]
-    assert exported(result)["SCENT_ROUTE_ID"] == "example-route"
+    assert exported(result)["SCENT_ROUTE_ID"] == "route-test-1"
 
 
 def check_url(url: str) -> subprocess.CompletedProcess:

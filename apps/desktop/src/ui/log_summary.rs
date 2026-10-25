@@ -448,7 +448,7 @@ mod tests {
             (
                 sent(
                     &Command::Ping {
-                        userid: Some("example-route".to_owned()),
+                        userid: Some("route-test-1".to_owned()),
                     },
                     Via::Wifi,
                 ),
@@ -529,7 +529,7 @@ mod tests {
             (
                 heard(
                     "acknowledgement",
-                    r#"{"action":"acknowledgement","payload":{"deviceId":"TESTDEVICE01","msg":"{\"user_id\":\"example-route\",\"result\":\"ADDED\"}"}}"#,
+                    r#"{"action":"acknowledgement","payload":{"deviceId":"TESTDEVICE01","msg":"{\"user_id\":\"route-test-1\",\"result\":\"ADDED\"}"}}"#,
                 ),
                 "Bedroom confirmed it was added",
             ),

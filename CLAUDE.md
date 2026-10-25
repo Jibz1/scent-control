@@ -110,7 +110,8 @@ docs/                findings, design, plans
 - Raw output goes to `captures/` (gitignored). Only sanitized fixtures are committed.
 - Never delete or recreate a Railway broker service, or its domain, while a diffuser
   points at it.
-- The repo is public, so no secrets and no real personal data anywhere in it.
+- The repo is private now and will be open source later, so no secrets and no real
+  personal data anywhere in it.
 
 ## Phases
 

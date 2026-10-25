@@ -3,7 +3,7 @@
   "device": "air2",
   "firmware": "2.30",
   "channel": "mqtt",
-  "topic": "scentiment-mqtt-prod/user/example-route",
+  "topic": "scentiment-mqtt-prod/user/route-test-1",
   "note": "invalid JSON exactly as sent: data is unquoted",
   "text": "{\"action\":\"notification\",\"payload\":{\"deviceId\":\"TESTDEVICE01\",\"data\":enable:0,\"rssi\":-46}}"
 }

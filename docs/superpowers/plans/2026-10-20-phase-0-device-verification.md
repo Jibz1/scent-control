@@ -278,7 +278,7 @@ from capture import CaptureLog
 from devices import load_devices, resolve
 
 ALLOWED = [("TURN_ON", {"on": 1}), ("SET_LEVEL", {"intensity": 3}), ("SET_RGB_LEVEL", {"red": 1, "green": 2, "blue": 3}),
-           ("SET_RGB_LED", {"on": 0}), ("PING", None), ("PING", {"userid": "example-route"}), ("WIFI_CONNECT", {"ssid": "x", "password": "y"}),
+           ("SET_RGB_LED", {"on": 0}), ("PING", None), ("PING", {"userid": "route-test-1"}), ("WIFI_CONNECT", {"ssid": "x", "password": "y"}),
            ("SAVE_MQTT", {"broker": "wss://b.example.test/mqtt", "username": "u", "password": "p"}), ("SYNC_TIME", {"serverTime": 1}),
            ("UPDATE_PROFILE", {"profile": {"schedule": []}, "timezone": -4.0, "schedule_flag": 1}), ("INITIAL_LOAD", {"profile": {"schedule": []}}),
            ("GET_STATUS", {}), ("RESET", {"mode": "soft"}), ("SECRET_COMMAND", {"command": "restart"})]
@@ -504,20 +504,20 @@ connection_messages true
     - how to deploy;
     - how to watch.
 
-- [ ] **Step 6: Choose the workspace with the owner (owner).** Ask which Railway workspace to use, then confirm it with `railway list` / the `list-workspaces` tool. Keep its name in local configuration. Railway can transfer projects between workspaces later.
+- [ ] **Step 6: Choose the workspace with the owner (owner).** The owner is creating a new Pro workspace for this project. Ask for its name, then confirm it with `railway list` / the `list-workspaces` tool. If it doesn't exist yet, ask whether to use the owner's personal workspace for now. Railway can transfer projects between workspaces later.
 
 - [ ] **Step 7: Deploy.** Steps:
   1. Generate a password with `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`, without echoing it into any committed file. The owner keeps it in their password manager.
   2. Create the project `scent-control` in the chosen workspace and add the service `test-broker`.
-  3. Set the variables `TEST_BROKER_USERNAME=example-user` and `TEST_BROKER_PASSWORD`.
+  3. Set the variables `TEST_BROKER_USERNAME=scent-test` and `TEST_BROKER_PASSWORD`.
   4. Deploy with `railway up infra/test-broker --path-as-root --service test-broker` (or the Railway MCP tools).
   5. Generate a domain with target port 8080.
 
   Expected: the deployment succeeds, and the logs show `mosquitto version 2.… running`.
 
-- [ ] **Step 8: Verify a round trip over `wss`.** In one terminal, run `SCENT_BROKER_PASSWORD=… .venv/bin/python broker.py watch --url wss://<domain>/mqtt --username example-user --seconds 60`. In another, publish `{"action":"PING"}` to `scentiment-mqtt-prod/device/TESTDEVICE01`.
+- [ ] **Step 8: Verify a round trip over `wss`.** In one terminal, run `SCENT_BROKER_PASSWORD=… .venv/bin/python broker.py watch --url wss://<domain>/mqtt --username scent-test --seconds 60`. In another, publish `{"action":"PING"}` to `scentiment-mqtt-prod/device/TESTDEVICE01`.
 
-  Expected: the watcher prints the topic and payload. The Railway logs show both clients connecting with username `example-user`.
+  Expected: the watcher prints the topic and payload. The Railway logs show both clients connecting with username `scent-test`.
 
 - [ ] **Step 9: Commit.**
 
@@ -583,12 +583,12 @@ Run with the owner. Keep `broker.py watch` running throughout Steps 3–8. Each 
   Record which commands work and which notifications follow each one.
 - [ ] **Step 2: Bluetooth schedule and time** (evidence for fallback (a)). Send `sync-time`, then a `make-test-schedule --start-in 3 --duration 4` profile with `profile air2 … --timezone <Mac's current UTC offset>`. Record whether the device acknowledges and whether the entry runs.
 - [ ] **Step 3: `SAVE_MQTT` before `WIFI_CONNECT`.** Steps:
-  1. `save-mqtt air2 --broker wss://<domain>/mqtt --username example-user`
+  1. `save-mqtt air2 --broker wss://<domain>/mqtt --username scent-test`
   2. `wifi air2` (the owner types the WiFi name and password)
   3. `restart air2`
   4. Poll `info air2` every 15 s for 2 minutes.
 
-  Expected: a client logs in as `example-user` in the Railway logs within 90 s, and subscribes to `scentiment-mqtt-prod/device/<deviceId>`. Record:
+  Expected: a client logs in as `scent-test` in the Railway logs within 90 s, and subscribes to `scentiment-mqtt-prod/device/<deviceId>`. Record:
   - the client ID;
   - the subscriptions;
   - the first publishes;
@@ -599,15 +599,15 @@ Run with the owner. Keep `broker.py watch` running throughout Steps 3–8. Each 
   3. URL `wss://<domain>/`.
 
   If WiFi connects (status 2/3) but no broker login ever appears, **stop: this is the gate in spec §7.** Go to Task 9 with the evidence.
-- [ ] **Step 5: `PING` and routing.** Publish `{"action":"PING","payload":{"userid":"example-route"}}` to `scentiment-mqtt-prod/device/<deviceId>`.
+- [ ] **Step 5: `PING` and routing.** Publish `{"action":"PING","payload":{"userid":"route-test-1"}}` to `scentiment-mqtt-prod/device/<deviceId>`.
 
-  Expected: an `acknowledgement` on `scentiment-mqtt-prod/user/example-route`. Then `GET_STATUS {}`, and record the `update_status` array.
+  Expected: an `acknowledgement` on `scentiment-mqtt-prod/user/route-test-1`. Then `GET_STATUS {}`, and record the `update_status` array.
 - [ ] **Step 6: Control over MQTT.** Publish `TURN_ON {"on":1}` and `SET_LEVEL {"intensity":3}` directly. Then try the app's way: `UPDATE_PROFILE` with only the factory entry, `enable:false`, `schedule_flag:0`. Record which ones change the device.
 - [ ] **Step 7: A schedule with the phone away.** Publish `SYNC_TIME` and a `make-test-schedule` profile (`schedule_flag:1`) over MQTT. The Mac disconnects from Bluetooth, and the owner confirms the diffuser starts and stops at the scheduled minutes. Record what the device publishes.
 - [ ] **Step 8: Restart and power cut** (input for spec §6.6). Steps:
   1. With a schedule entry spanning the next 15 minutes, the owner presses the power button to turn the diffuser off by hand. Record what the device publishes, if anything.
   2. The owner unplugs it for 60 s and plugs it back in. Don't send `SYNC_TIME` or `PING`.
-  3. Record whether it reconnects, whether it publishes to `user/example-route` without a new `PING`, and whether its power, intensity, schedule and clock survive (does the entry still run?).
+  3. Record whether it reconnects, whether it publishes to `user/route-test-1` without a new `PING`, and whether its power, intensity, schedule and clock survive (does the entry still run?).
 - [ ] **Step 9: Oil level.** Record index 7 from `update_status`. The owner records the visible oil level in the bottle.
 - [ ] **Step 10: Save sanitized fixtures and commit.**
 

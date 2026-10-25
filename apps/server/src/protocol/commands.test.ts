@@ -3,8 +3,8 @@ import { expect, test } from "bun:test";
 import { commandBody } from "./commands.ts";
 
 test("PING carries the route ID", () => {
-  expect(commandBody({ action: "PING", routeId: "example-route" })).toBe(
-    '{"action":"PING","payload":{"userid":"example-route"}}',
+  expect(commandBody({ action: "PING", routeId: "route-test-1" })).toBe(
+    '{"action":"PING","payload":{"userid":"route-test-1"}}',
   );
 });
 

@@ -6,7 +6,7 @@ import { fixture, onChannel } from "../test-support/fixtures.ts";
 import { isValidDeviceId } from "./topics.ts";
 import { parseMqtt, parseNotification, type MqttMessage, type NoteKind } from "./message.ts";
 
-const USER_TOPIC = "scentiment-mqtt-prod/user/example-route";
+const USER_TOPIC = "scentiment-mqtt-prod/user/route-test-1";
 const SYNTHETIC_IDS = ["TESTDEVICE01", "TESTDEVICE02"];
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -204,7 +204,7 @@ describe("parseMqtt", () => {
   test("messages on a device topic are going to the device", () => {
     const m = parseMqtt(
       "scentiment-mqtt-prod/device/TESTDEVICE01",
-      bytes('{"action":"PING","payload":{"userid":"example-route"}}'),
+      bytes('{"action":"PING","payload":{"userid":"route-test-1"}}'),
     );
     expect(m.direction).toBe("toDevice");
     expect(m.deviceId).toBe("TESTDEVICE01");
@@ -241,7 +241,7 @@ describe("parseMqtt", () => {
 
   test("reads acknowledgement results", () => {
     const ack = (result: string) => {
-      const msg = JSON.stringify({ user_id: "example-route", result });
+      const msg = JSON.stringify({ user_id: "route-test-1", result });
       const body = JSON.stringify({
         action: "acknowledgement",
         payload: { deviceId: "TESTDEVICE01", msg },

@@ -7,7 +7,7 @@ test("nothing is stored retained outside our own prefix", () => {
   // The Mac's list (apps/desktop/src/mqtt.rs, nothing_is_stored_retained_outside_our_own_prefix).
   for (const foreign of [
     "scentiment-mqtt-prod/device/TESTDEVICE01",
-    "scentiment-mqtt-prod/user/example-route",
+    "scentiment-mqtt-prod/user/route-test-1",
     "scentiment-mqtt-prod/#",
     "",
     "scent-control/v1",
@@ -47,18 +47,18 @@ test("commands go only to valid device topics, never retained", () => {
 test("PING needs a route ID", () => {
   expect(commandPublish("TESTDEVICE01", { action: "PING", routeId: "" })).toBeUndefined();
   expect(commandPublish("TESTDEVICE01", { action: "PING", routeId: "  " })).toBeUndefined();
-  expect(commandPublish("TESTDEVICE01", { action: "PING", routeId: "example-route" })?.body).toBe(
-    '{"action":"PING","payload":{"userid":"example-route"}}',
+  expect(commandPublish("TESTDEVICE01", { action: "PING", routeId: "route-test-1" })?.body).toBe(
+    '{"action":"PING","payload":{"userid":"route-test-1"}}',
   );
 });
 
 test("the only bodies a command can carry are PING and GET_STATUS", () => {
   const allowed = [
-    '{"action":"PING","payload":{"userid":"example-route"}}',
+    '{"action":"PING","payload":{"userid":"route-test-1"}}',
     '{"action":"GET_STATUS","payload":{}}',
   ];
   const commands: ListenerCommand[] = [
-    { action: "PING", routeId: "example-route" },
+    { action: "PING", routeId: "route-test-1" },
     { action: "GET_STATUS" },
   ];
   for (const command of commands) {

@@ -39,12 +39,12 @@ def test_a_broker_setting_comes_from_the_environment_then_the_repo_env_then_env_
     env_local.write_text(
         "SCENT_BROKER_URL=wss://local.example.test/mqtt\n"
         "SCENT_BROKER_USERNAME=local-user\n"
-        "SCENT_ROUTE_ID=example-route\n"
+        "SCENT_ROUTE_ID=route-test-1\n"
     )
     assert broker_setting("SCENT_BROKER_URL") == "wss://root.example.test/mqtt"
     assert broker_setting("SCENT_BROKER_USERNAME") == "root-user"
     # Only in tools/.env.local.
-    assert broker_setting("SCENT_ROUTE_ID") == "example-route"
+    assert broker_setting("SCENT_ROUTE_ID") == "route-test-1"
     monkeypatch.setenv("SCENT_BROKER_URL", "wss://shell.example.test/mqtt")
     assert broker_setting("SCENT_BROKER_URL") == "wss://shell.example.test/mqtt"
 

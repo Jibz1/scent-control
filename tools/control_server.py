@@ -472,9 +472,9 @@ def known_devices(config: Path) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_broker_arguments(parser)
-    route_id = broker_setting("SCENT_ROUTE_ID") or "example-route"
+    route_id = broker_setting("SCENT_ROUTE_ID") or "route-test-1"
     parser.add_argument("--route-id", default=route_id,
-                        help="userid sent in PING (default: SCENT_ROUTE_ID, else example-route)")
+                        help="userid sent in PING (default: SCENT_ROUTE_ID, else route-test-1)")
     parser.add_argument("--port", type=int, default=8765)
     return parser
 

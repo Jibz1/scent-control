@@ -7,7 +7,7 @@ const env = {
   SCENT_BROKER_URL: "wss://broker.example.test/mqtt",
   SCENT_BROKER_USERNAME: "someone",
   SCENT_BROKER_PASSWORD: "pw-test-secret",
-  SCENT_ROUTE_ID: "example-route",
+  SCENT_ROUTE_ID: "route-test-1",
 };
 
 const failure = (values: Record<string, string | undefined>) =>
@@ -30,11 +30,11 @@ test("the broker address must be wss", async () => {
 
 test("good settings are read, trimmed, with the password kept redacted", async () => {
   const settings = await Effect.runPromise(
-    settingsFrom({ ...env, SCENT_ROUTE_ID: " example-route " }),
+    settingsFrom({ ...env, SCENT_ROUTE_ID: " route-test-1 " }),
   );
   expect(settings.brokerUrl).toBe("wss://broker.example.test/mqtt");
   expect(settings.username).toBe("someone");
-  expect(settings.routeId).toBe("example-route");
+  expect(settings.routeId).toBe("route-test-1");
   expect(Redacted.value(settings.password)).toBe("pw-test-secret");
   expect(String(settings.password)).not.toContain("pw-test-secret");
 });

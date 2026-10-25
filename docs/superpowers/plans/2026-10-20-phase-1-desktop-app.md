@@ -25,7 +25,7 @@ Bluetooth only works from the bundled `.app` (`scripts/bundle-macos.sh`).
 - Never contact Scentiment's servers. Never use credentials from Scentiment's app.
 - **The allow-list is the `Command` enum.** It has no variant for `UPDATE_FIRMWARE`, `U_FW`, hard or factory reset, light commands, or free-form JSON. Nothing can send a raw frame.
 - BLE: service `00000180-0000-1000-8000-00805f9b34fb`, write `0000dead-…`, notify `0000fef3-…`, info `0000fef4-…`. Frame = compact JSON + `-|`, written **with response**, in chunks of **177 bytes** (Scentiment's app requests MTU 180; btleplug doesn't expose the MTU).
-- MQTT: example broker `wss://broker.example.test/mqtt`, username `example-user`, route ID `example-route`. Supply the actual settings through the gitignored `.env` or the app’s Settings. The app subscribes to `scentiment-mqtt-prod/#` and resubscribes on every ConnAck. Commands go to `scentiment-mqtt-prod/device/<deviceId>` at QoS 1. Device IDs match `^[0-9A-Z]{12}$`.
+- MQTT: default broker `wss://test-broker-production.up.railway.app/mqtt`, username `scent-test`, route ID `route-test-1`. The app subscribes to `scentiment-mqtt-prod/#` and resubscribes on every ConnAck. Commands go to `scentiment-mqtt-prod/device/<deviceId>` at QoS 1. Device IDs match `^[0-9A-Z]{12}$`.
 - Secrets:
   - The broker password lives only in the macOS Keychain: service `scent-control`, account `<username>@<broker host>`.
   - WiFi passwords are typed into a masked field, sent once, and never stored or logged.
@@ -165,7 +165,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```rust
 #[test] fn parse_mqtt_never_panics() {
     for body in [&b"\xff\xfe"[..], b"", b"{", b"null", br#"{"action":5}"#, br#"{"payload":{"data":{"data":"x"}}}"#] {
-        let m = parse_mqtt("scentiment-mqtt-prod/user/example-route", body);
+        let m = parse_mqtt("scentiment-mqtt-prod/user/route-test-1", body);
         assert!(!m.raw.is_empty() || body.is_empty());
     }
 }
@@ -423,7 +423,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 1: Write the failing tests** in `mqtt.rs`:
   - `connack_refusal_is_reported_once`: `map_connack` returns `BrokerLoginRefused` for `NotAuthorized` and `BadUserNamePassword`, and `None` for `Success`. A small pure helper `RetryPolicy::after(&Event) -> Option<Duration>` returns `None` after a refusal and `Some(5s)` after a disconnect.
   - `send_refuses_bad_device_ids`: `"#"`, `"TESTDEVICE01/x"` and `""` all return `Err`.
-  - `broker_url_parsing`: `wss://broker.example.test/mqtt` gives host, port 443 and path `/mqtt`. Anything that isn't `wss://` is an error (encrypted only, as in Phase 0).
+  - `broker_url_parsing`: `wss://test-broker-production.up.railway.app/mqtt` gives host, port 443 and path `/mqtt`. Anything that isn't `wss://` is an error (encrypted only, as in Phase 0).
 
 - [ ] **Step 2: Run the tests to verify they fail.**
 
@@ -437,7 +437,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   Run: `cargo test -p scent-desktop`
   Expected: all pass.
 
-- [ ] **Step 5: Live check against the test broker.** MQTT needs no Bluetooth, so this runs from a plain shell. `examples/mqtt_roundtrip.rs` reads the password from the Keychain, or from `SCENT_BROKER_PASSWORD` in development, connects, sends `Command::Ping` with the configured route ID to the Air 2's device topic (the ID is taken from `desktop.json` or an argument, never hardcoded), and prints events for 10 s.
+- [ ] **Step 5: Live check against the test broker.** MQTT needs no Bluetooth, so this runs from a plain shell. `examples/mqtt_roundtrip.rs` reads the password from the Keychain, or from `SCENT_BROKER_PASSWORD` in development, connects, sends `Command::Ping { userid: Some("route-test-1") }` to the Air 2's device topic (the ID is taken from `desktop.json` or an argument, never hardcoded), and prints events for 10 s.
 
   Run: `cargo run -p scent-desktop --example mqtt_roundtrip -- <deviceId>`
   Expected: `BrokerConnected`, then an `Mqtt` event whose body is an `acknowledgement` with `ALREADY_ADDED`.

@@ -3,7 +3,7 @@
   "device": "air2",
   "firmware": "2.30",
   "channel": "mqtt",
-  "topic": "scentiment-mqtt-prod/user/example-route",
+  "topic": "scentiment-mqtt-prod/user/route-test-1",
   "note": "reply to later PINGs",
-  "text": "{\"action\":\"acknowledgement\",\"payload\":{\"deviceId\":\"TESTDEVICE01\",\"msg\":\"{\\\"user_id\\\":\\\"example-route\\\",\\\"result\\\":\\\"ALREADY_ADDED\\\"}\"}}"
+  "text": "{\"action\":\"acknowledgement\",\"payload\":{\"deviceId\":\"TESTDEVICE01\",\"msg\":\"{\\\"user_id\\\":\\\"route-test-1\\\",\\\"result\\\":\\\"ALREADY_ADDED\\\"}\"}}"
 }

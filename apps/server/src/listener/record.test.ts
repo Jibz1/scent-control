@@ -4,7 +4,7 @@ import { parseMqtt } from "../protocol/message.ts";
 import { hearMessage, isCurrent, mergeRecords, needsStatus, type DeviceRecord } from "./record.ts";
 
 const NOW = 1_792_510_200;
-const USER_TOPIC = "scentiment-mqtt-prod/user/example-route";
+const USER_TOPIC = "scentiment-mqtt-prod/user/route-test-1";
 const CONNECTED = { fw: "2.30", model: "Diffuser", variant: "Black", manufacturer: "01" };
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -16,7 +16,7 @@ const alreadyAdded = parseMqtt(
       action: "acknowledgement",
       payload: {
         deviceId: "TESTDEVICE01",
-        msg: JSON.stringify({ user_id: "example-route", result: "ALREADY_ADDED" }),
+        msg: JSON.stringify({ user_id: "route-test-1", result: "ALREADY_ADDED" }),
       },
     }),
   ),

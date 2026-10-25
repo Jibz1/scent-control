@@ -5,7 +5,7 @@ use scent_home_assistant::{
 use serde_json::{Value, json};
 
 const EXAMPLE: &str = include_str!("../config.example.json");
-const REPORT: &str = "scentiment-mqtt-prod/user/example-route";
+const REPORT: &str = "scentiment-mqtt-prod/user/route-test-1";
 const PREFIX: &str = "scent-control/example-home/TESTDEVICE01";
 const DEVICE: &str = "scentiment-mqtt-prod/device/TESTDEVICE01";
 const TURN_ON: &str = r#"{"action":"TURN_ON","payload":{"on":1}}"#;
@@ -251,7 +251,7 @@ fn reconnect_clears_state_and_new_sessions_never_replay_commands() {
     assert_eq!(pings.len(), 1);
     assert_eq!(
         pings[0].payload,
-        br#"{"action":"PING","payload":{"userid":"example-route"}}"#
+        br#"{"action":"PING","payload":{"userid":"route-test-1"}}"#
     );
     assert!(!pings[0].retain);
     assert!(fresh.pings(29).is_empty());

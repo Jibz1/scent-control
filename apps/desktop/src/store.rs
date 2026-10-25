@@ -1221,7 +1221,7 @@ mod tests {
         let mut s = AppState::default();
         s.apply_at(
             Event::Mqtt {
-                topic: "scentiment-mqtt-prod/user/example-route".into(),
+                topic: "scentiment-mqtt-prod/user/route-test-1".into(),
                 body: br#"{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":"S:1,L:2"}}"#.to_vec(),
                 at: 10,
             },
