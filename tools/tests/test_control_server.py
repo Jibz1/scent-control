@@ -21,7 +21,7 @@ def test_the_bench_takes_its_broker_from_the_broker_settings(tmp_path, monkeypat
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
     args = build_parser().parse_args(["--url", "wss://b.example.test/mqtt", "--username", "u"])
-    assert args.route_id == "route-test-1"
+    assert args.route_id == "example-route"
 
 def test_device_id_from_name():
     assert device_id_from_name("Scentiment-D B n A1B2C3D4E5F6") == "A1B2C3D4E5F6"
@@ -32,17 +32,17 @@ def test_device_id_from_name():
 def test_parse_device_message_repairs_unquoted_notification_data():
     # Exactly what an Air 2 (firmware 2.30) sent on 2026-10-20 in reply to GET_STATUS.
     raw = b'{"action":"notification","payload":{"deviceId":"TESTDEVICE01","data":enable:0,"rssi":-46}}'
-    m = parse_device_message("scentiment-mqtt-prod/user/route-test-1", raw)
+    m = parse_device_message("scentiment-mqtt-prod/user/example-route", raw)
     assert (m["action"], m["deviceId"], m["valid_json"]) == ("notification", "TESTDEVICE01", False)
     assert m["payload"]["rssi"] == -46 and m["status"]["power"] == 0
 
 def test_parse_device_message_reads_status_array_inside_update_status():
     raw = b'{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":"{\\"data\\":[85,170,11,255,1,2,200,100,255,3,3,255,255,0,41,106]}"}}'
-    m = parse_device_message("scentiment-mqtt-prod/user/route-test-1", raw)
+    m = parse_device_message("scentiment-mqtt-prod/user/example-route", raw)
     assert m["valid_json"] and m["status"]["power"] == 1 and m["status"]["intensity"] == 3
 
 def test_parse_device_message_takes_device_id_from_device_topic():
-    m = parse_device_message("scentiment-mqtt-prod/device/TESTDEVICE01", b'{"action":"PING","payload":{"userid":"route-test-1"}}')
+    m = parse_device_message("scentiment-mqtt-prod/device/TESTDEVICE01", b'{"action":"PING","payload":{"userid":"example-route"}}')
     assert (m["direction"], m["deviceId"], m["action"]) == ("to_device", "TESTDEVICE01", "PING")
     connected = parse_device_message("scentiment-mqtt-prod/server-notifications/device",
         b'{"action":"device_connected","payload":{"deviceId":"TESTDEVICE01","fw":"2.30","model":"Diffuser","variant":"Black","manufacturer":"01"}}')
@@ -69,7 +69,7 @@ def test_build_publish_rejects_bad_device_ids():
 def test_parse_device_message_reads_status_array_given_as_an_object():
     # Firmware 2.30 over MQTT sends the array as an object, not a string (observed 2026-10-20).
     raw = b'{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-66}}'
-    m = parse_device_message("scentiment-mqtt-prod/user/route-test-1", raw)
+    m = parse_device_message("scentiment-mqtt-prod/user/example-route", raw)
     assert m["valid_json"] and m["status"]["power"] == 1 and m["status"]["intensity"] == 2 and m["payload"]["rssi"] == -66
 
 def test_parse_status_output_takes_the_last_json_line():
@@ -104,7 +104,7 @@ def test_replay_captures_rebuilds_last_known_state(tmp_path):
     import json as _json
     from control_server import replay_captures
     (tmp_path / "broker-20261020T090829.jsonl").write_text(_json.dumps({
-        "ts": "2026-10-20T14:29:17.000+00:00", "dir": "rx", "channel": "mqtt:scentiment-mqtt-prod/user/route-test-1",
+        "ts": "2026-10-20T14:29:17.000+00:00", "dir": "rx", "channel": "mqtt:scentiment-mqtt-prod/user/example-route",
         "text": '{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-67}}'}) + "\n")
     (tmp_path / "session-hvac-20261020T084839.jsonl").write_text(_json.dumps({
         "ts": "2026-10-20T13:48:40.000+00:00", "dir": "rx", "channel": "ble-notify", "text": "S:0,L:1,C:2,Bat:200",
@@ -176,7 +176,7 @@ def test_hub_resubscribes_after_the_broker_reconnects(tmp_path):
         def subscribe(self, topic, qos=0):
             self.subscriptions.append(topic)
     client = FakeClient()
-    Hub(client, CaptureLog(tmp_path / "c.jsonl"), {}, "route-test-1")
+    Hub(client, CaptureLog(tmp_path / "c.jsonl"), {}, "example-route")
     client.on_connect(client, None, None, Reason(), None)  # paho reconnected with a clean session
     assert client.subscriptions == [TOPIC_PREFIX + "#", TOPIC_PREFIX + "#"]
 

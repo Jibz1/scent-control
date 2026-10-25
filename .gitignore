@@ -35,6 +35,7 @@ btsnoop_hci.log
 
 # Agent working files (progress ledgers may hold device identifiers)
 .superpowers/
+.claude/worktrees/
 
 # OS and editors
 .DS_Store

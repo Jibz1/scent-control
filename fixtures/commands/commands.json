@@ -44,10 +44,10 @@
     },
     {
       "name": "ping_with_userid",
-      "ble_frame": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}-|",
-      "mqtt_body": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}",
-      "redacted_bluetooth": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}-|",
-      "redacted_wifi": "{\"action\":\"PING\",\"payload\":{\"userid\":\"route-test-1\"}}"
+      "ble_frame": "{\"action\":\"PING\",\"payload\":{\"userid\":\"example-route\"}}-|",
+      "mqtt_body": "{\"action\":\"PING\",\"payload\":{\"userid\":\"example-route\"}}",
+      "redacted_bluetooth": "{\"action\":\"PING\",\"payload\":{\"userid\":\"example-route\"}}-|",
+      "redacted_wifi": "{\"action\":\"PING\",\"payload\":{\"userid\":\"example-route\"}}"
     },
     {
       "name": "ping_with_empty_userid",

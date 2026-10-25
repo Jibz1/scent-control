@@ -55,7 +55,7 @@ fn commands() -> Vec<(&'static str, Command)> {
         (
             "ping_with_userid",
             Command::Ping {
-                userid: Some("route-test-1".into()),
+                userid: Some("example-route".into()),
             },
         ),
         (

@@ -602,7 +602,7 @@ mod tests {
         over_wifi.apply_later(
             secs(6),
             Event::Mqtt {
-                topic: "scentiment-mqtt-prod/user/route-test-1".to_owned(),
+                topic: "scentiment-mqtt-prod/user/example-route".to_owned(),
                 body: ack.to_string().into_bytes(),
                 at: soon(),
             },

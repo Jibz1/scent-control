@@ -5,7 +5,7 @@ import { onConnAck, onMessage, onTick } from "./steps.ts";
 
 const NOW = 1_792_510_200;
 const STARTED = NOW - 1000;
-const USER_TOPIC = "scentiment-mqtt-prod/user/route-test-1";
+const USER_TOPIC = "scentiment-mqtt-prod/user/example-route";
 const STATE_01 = "scent-control/v1/state/TESTDEVICE01";
 const STATE_02 = "scent-control/v1/state/TESTDEVICE02";
 /** This listener's instance tag, and another listener's. */
@@ -200,7 +200,7 @@ describe("onTick", () => {
   ]);
 
   test("a tick pings every known diffuser and asks only those that need it", () => {
-    const step = onTick(memory, NOW, "route-test-1", STARTED, SELF);
+    const step = onTick(memory, NOW, "example-route", STARTED, SELF);
     expect(step.publishes.map((p) => [p.topic, p.body, p.retain])).toEqual([
       [
         "scent-control/v1/listener",
@@ -209,13 +209,13 @@ describe("onTick", () => {
       ],
       [
         "scentiment-mqtt-prod/device/TESTDEVICE01",
-        '{"action":"PING","payload":{"userid":"route-test-1"}}',
+        '{"action":"PING","payload":{"userid":"example-route"}}',
         false,
       ],
       [STATE_01, expect.any(String), true],
       [
         "scentiment-mqtt-prod/device/TESTDEVICE02",
-        '{"action":"PING","payload":{"userid":"route-test-1"}}',
+        '{"action":"PING","payload":{"userid":"example-route"}}',
         false,
       ],
       ["scentiment-mqtt-prod/device/TESTDEVICE02", '{"action":"GET_STATUS","payload":{}}', false],
@@ -227,7 +227,7 @@ describe("onTick", () => {
   });
 
   test("a tick asks again only after 300 s", () => {
-    const asked = onTick(memory, NOW, "route-test-1", STARTED, SELF).memory;
+    const asked = onTick(memory, NOW, "example-route", STARTED, SELF).memory;
     const stillHeard = (at: number): Memory =>
       new Map(
         [...asked].map(([id, record]): [string, DeviceRecord] => [id, { ...record, heardAt: at }]),
@@ -239,7 +239,7 @@ describe("onTick", () => {
         (p) =>
           p.topic === "scentiment-mqtt-prod/device/TESTDEVICE02" && p.body.includes("GET_STATUS"),
       ).length;
-    expect(asks(onTick(stillHeard(NOW + 298), NOW + 299, "route-test-1", STARTED, SELF))).toBe(0);
-    expect(asks(onTick(stillHeard(NOW + 299), NOW + 300, "route-test-1", STARTED, SELF))).toBe(1);
+    expect(asks(onTick(stillHeard(NOW + 298), NOW + 299, "example-route", STARTED, SELF))).toBe(0);
+    expect(asks(onTick(stillHeard(NOW + 299), NOW + 300, "example-route", STARTED, SELF))).toBe(1);
   });
 });

@@ -1,6 +1,6 @@
 {
   "instance_id": "example-home",
-  "route_id": "route-test-1",
+  "route_id": "example-route",
   "diffuser_broker": {
     "host": "broker.example.test",
     "port": 443,

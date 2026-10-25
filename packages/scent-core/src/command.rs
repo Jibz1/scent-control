@@ -261,10 +261,10 @@ mod tests {
         );
         assert_eq!(
             Command::Ping {
-                userid: Some("route-test-1".into())
+                userid: Some("example-route".into())
             }
             .ble_frame(),
-            br#"{"action":"PING","payload":{"userid":"route-test-1"}}-|"#.to_vec()
+            br#"{"action":"PING","payload":{"userid":"example-route"}}-|"#.to_vec()
         );
         assert_eq!(
             Command::GetStatus.ble_frame(),

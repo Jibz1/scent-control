@@ -9,14 +9,14 @@ const settings = Layer.succeed(ListenerConfig, {
   brokerUrl: "wss://broker.example.test/mqtt",
   username: "someone",
   password: Redacted.make("pw-test-secret"),
-  routeId: "route-test-1",
+  routeId: "example-route",
 });
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
 const report = {
   _tag: "Message",
-  topic: "scentiment-mqtt-prod/user/route-test-1",
+  topic: "scentiment-mqtt-prod/user/example-route",
   body: bytes(
     '{"action":"update_status","payload":{"deviceId":"TESTDEVICE01","data":{"data":[85,170,11,255,1,2,200,50,255,2,3,255,255,0,92,106]},"rssi":-66}}',
   ),
@@ -69,7 +69,7 @@ test("ticks are handled in turn with the broker's messages, so the last record i
   // the broker would keep "on".
   const off = {
     _tag: "Message",
-    topic: "scentiment-mqtt-prod/user/route-test-1",
+    topic: "scentiment-mqtt-prod/user/example-route",
     body: bytes(
       '{"action":"notification","payload":{"deviceId":"TESTDEVICE01","data":enable:0,"rssi":-66}}',
     ),

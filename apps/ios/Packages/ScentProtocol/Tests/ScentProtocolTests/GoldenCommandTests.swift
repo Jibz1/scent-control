@@ -53,7 +53,7 @@ private let commands: [(String, Command)] = {
     ("set_level_2", .setLevel(level(2))),
     ("set_level_3", .setLevel(level(3))),
     ("ping", .ping(userid: nil)),
-    ("ping_with_userid", .ping(userid: "route-test-1")),
+    ("ping_with_userid", .ping(userid: "example-route")),
     ("ping_with_empty_userid", .ping(userid: "")),
     ("get_status", .getStatus),
     ("sync_time", .syncTime(serverTime: 1_792_510_200)),

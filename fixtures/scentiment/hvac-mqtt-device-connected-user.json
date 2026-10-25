@@ -3,7 +3,7 @@
   "device": "hvac",
   "firmware": "2.30",
   "channel": "mqtt",
-  "topic": "scentiment-mqtt-prod/user/route-test-1",
+  "topic": "scentiment-mqtt-prod/user/example-route",
   "note": "first connect after SAVE_MQTT; user ID stored earlier over Bluetooth",
   "text": "{\"action\":\"device_connected\",\"payload\":{\"deviceId\":\"TESTDEVICE02\",\"fw\":\"2.30\",\"model\":\"Hvac\",\"variant\":\"Black\",\"manufacturer\":\"03\"}}"
 }

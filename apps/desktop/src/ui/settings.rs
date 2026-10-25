@@ -612,7 +612,7 @@ mod tests {
             validate(
                 &format!(" {} ", example.url),
                 " example-user ",
-                " route-test-1 "
+                " example-route "
             ),
             Ok(example)
         );

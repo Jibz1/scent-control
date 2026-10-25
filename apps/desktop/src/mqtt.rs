@@ -90,7 +90,7 @@ impl BrokerSettings {
         BrokerSettings {
             url: "wss://broker.example.test/mqtt".to_owned(),
             username: "example-user".to_owned(),
-            route_id: "route-test-1".to_owned(),
+            route_id: "example-route".to_owned(),
         }
     }
 }
@@ -618,7 +618,7 @@ mod tests {
         let (handle, _eventloop) = handle(true);
         for foreign in [
             "scentiment-mqtt-prod/device/TESTDEVICE01",
-            "scentiment-mqtt-prod/user/route-test-1",
+            "scentiment-mqtt-prod/user/example-route",
             "scentiment-mqtt-prod/#",
             "",
             "scent-control/v1",
@@ -820,7 +820,7 @@ mod tests {
         let built = BrokerSettings::from_values(
             Some(" wss://broker.example.test/mqtt "),
             Some("example-user"),
-            Some("route-test-1"),
+            Some("example-route"),
         );
         assert_eq!(built, BrokerSettings::example());
         assert!(built.is_set());
@@ -845,12 +845,12 @@ mod tests {
             "wss://someone:secret@broker.example.test/mqtt",
         ] {
             let built =
-                BrokerSettings::from_values(Some(bad), Some("example-user"), Some("route-test-1"));
+                BrokerSettings::from_values(Some(bad), Some("example-user"), Some("example-route"));
             assert_eq!(built.url, "", "{bad}");
             assert!(!built.is_set(), "{bad}");
             // Who we would be on the broker stays, for Settings to show.
             assert_eq!(built.username, "example-user", "{bad}");
-            assert_eq!(built.route_id, "route-test-1", "{bad}");
+            assert_eq!(built.route_id, "example-route", "{bad}");
         }
     }
 

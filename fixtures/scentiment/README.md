@@ -17,5 +17,5 @@ Sanitizing rules:
 
 Everything else is byte-for-byte what the device sent, including invalid JSON. For MQTT
 messages, `text` is the full message body and `topic` is the topic it arrived on, with
-the synthetic user ID `route-test-1`. `tools/tests/test_fixtures.py` checks that every
+the synthetic user ID `example-route`. `tools/tests/test_fixtures.py` checks that every
 fixture parses and that every message shape seen in Phase 0 has one.

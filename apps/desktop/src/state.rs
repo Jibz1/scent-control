@@ -1137,7 +1137,7 @@ mod tests {
     const BLE1: &str = "ble-peripheral-1";
     /// The clock for events that carry no time of their own.
     const NOW: i64 = 5_000;
-    const USER_TOPIC: &str = "scentiment-mqtt-prod/user/route-test-1";
+    const USER_TOPIC: &str = "scentiment-mqtt-prod/user/example-route";
     const DEVICE1_TOPIC: &str = "scentiment-mqtt-prod/device/TESTDEVICE01";
     /// Power 1, intensity 2, charging 2, battery 200, rssi -66.
     const UPDATE_STATUS: &str =
@@ -2376,7 +2376,7 @@ mod tests {
     /// A `PING` from this app, as the broker hands it back on the diffuser's topic.
     fn our_ping(at: i64) -> Event {
         let ping = Command::Ping {
-            userid: Some("route-test-1".to_owned()),
+            userid: Some("example-route".to_owned()),
         };
         Event::Mqtt {
             topic: DEVICE1_TOPIC.to_owned(),
@@ -2425,7 +2425,7 @@ mod tests {
         };
         // Another acknowledgement with a result, and one that isn't JSON.
         s.apply_at(
-            ack(r#"{"user_id":"route-test-1","result":"BATTERY_MODE"}"#),
+            ack(r#"{"user_id":"example-route","result":"BATTERY_MODE"}"#),
             NOW,
         );
         s.apply_at(ack("Credentials saved"), NOW);

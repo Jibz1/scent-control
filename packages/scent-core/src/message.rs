@@ -332,7 +332,7 @@ fn quote_unquoted_data(text: &str) -> String {
 mod tests {
     use super::*;
 
-    const USER_TOPIC: &str = "scentiment-mqtt-prod/user/route-test-1";
+    const USER_TOPIC: &str = "scentiment-mqtt-prod/user/example-route";
 
     // parse_notification: cases ported from tools/tests/test_scentiment_ble.py
 
@@ -545,7 +545,7 @@ mod tests {
     fn takes_the_device_id_from_a_device_topic() {
         let m = parse_mqtt(
             "scentiment-mqtt-prod/device/TESTDEVICE01",
-            br#"{"action":"PING","payload":{"userid":"route-test-1"}}"#,
+            br#"{"action":"PING","payload":{"userid":"example-route"}}"#,
         );
         assert_eq!(m.direction, Direction::ToDevice);
         assert_eq!(m.device_id.as_deref(), Some("TESTDEVICE01"));
@@ -590,7 +590,7 @@ mod tests {
     fn reads_acknowledgement_results() {
         let ack = |result: &str| {
             let msg =
-                serde_json::json!({ "user_id": "route-test-1", "result": result }).to_string();
+                serde_json::json!({ "user_id": "example-route", "result": result }).to_string();
             let body = serde_json::json!({
                 "action": "acknowledgement",
                 "payload": { "deviceId": "TESTDEVICE01", "msg": msg }
@@ -631,7 +631,7 @@ mod tests {
             br#"{"action":5}"#,
             br#"{"payload":{"data":{"data":"x"}}}"#,
         ] {
-            let m = parse_mqtt("scentiment-mqtt-prod/user/route-test-1", body);
+            let m = parse_mqtt("scentiment-mqtt-prod/user/example-route", body);
             assert!(!m.raw.is_empty() || body.is_empty());
         }
     }

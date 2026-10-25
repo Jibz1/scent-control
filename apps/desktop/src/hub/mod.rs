@@ -1358,7 +1358,7 @@ mod tests {
         }
 
         pub(super) fn broker_up(&self) {
-            *lock(&self.fake().route_id) = Some("route-test-1".to_owned());
+            *lock(&self.fake().route_id) = Some("example-route".to_owned());
         }
 
         pub(super) fn events(&self) -> Vec<Event> {
@@ -2391,7 +2391,7 @@ mod tests {
             [(
                 ONE.to_owned(),
                 Command::Ping {
-                    userid: Some("route-test-1".to_owned())
+                    userid: Some("example-route".to_owned())
                 }
             )]
         );

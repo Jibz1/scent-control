@@ -6,7 +6,7 @@ from capture import CaptureLog
 from devices import load_devices, resolve
 
 ALLOWED = [("TURN_ON", {"on": 1}), ("SET_LEVEL", {"intensity": 3}), ("SET_RGB_LEVEL", {"red": 1, "green": 2, "blue": 3}),
-           ("SET_RGB_LED", {"on": 0}), ("PING", None), ("PING", {"userid": "route-test-1"}), ("WIFI_CONNECT", {"ssid": "x", "password": "y"}),
+           ("SET_RGB_LED", {"on": 0}), ("PING", None), ("PING", {"userid": "example-route"}), ("WIFI_CONNECT", {"ssid": "x", "password": "y"}),
            ("SAVE_MQTT", {"broker": "wss://b.example.test/mqtt", "username": "u", "password": "p"}), ("SYNC_TIME", {"serverTime": 1}),
            ("UPDATE_PROFILE", {"profile": {"schedule": []}, "timezone": -4.0, "schedule_flag": 1}), ("INITIAL_LOAD", {"profile": {"schedule": []}}),
            ("GET_STATUS", {}), ("RESET", {"mode": "soft"}), ("SECRET_COMMAND", {"command": "restart"})]

@@ -63,8 +63,8 @@ import Testing
     )
     #expect(text(Command.turnOn(true).bleFrame()) == #"{"action":"TURN_ON","payload":{"on":1}}-|"#)
     #expect(
-      text(Command.ping(userid: "route-test-1").bleFrame())
-        == #"{"action":"PING","payload":{"userid":"route-test-1"}}-|"#)
+      text(Command.ping(userid: "example-route").bleFrame())
+        == #"{"action":"PING","payload":{"userid":"example-route"}}-|"#)
     #expect(text(Command.getStatus.bleFrame()) == #"{"action":"GET_STATUS","payload":{}}-|"#)
     #expect(
       text(Command.syncTime(serverTime: 1_790_000_000).bleFrame())
