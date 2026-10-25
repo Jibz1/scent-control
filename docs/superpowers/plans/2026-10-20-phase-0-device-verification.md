@@ -504,7 +504,7 @@ connection_messages true
     - how to deploy;
     - how to watch.
 
-- [ ] **Step 6: Choose the workspace with the owner (owner).** The owner is creating a new Pro workspace for this project. Ask for its name, then confirm it with `railway list` / the `list-workspaces` tool. If it doesn't exist yet, ask whether to use the personal workspace "Godwin Jibs's Projects" for now. Railway can transfer projects between workspaces later.
+- [ ] **Step 6: Choose the workspace with the owner (owner).** The owner is creating a new Pro workspace for this project. Ask for its name, then confirm it with `railway list` / the `list-workspaces` tool. If it doesn't exist yet, ask whether to use the owner's personal workspace for now. Railway can transfer projects between workspaces later.
 
 - [ ] **Step 7: Deploy.** Steps:
   1. Generate a password with `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`, without echoing it into any committed file. The owner keeps it in their password manager.
